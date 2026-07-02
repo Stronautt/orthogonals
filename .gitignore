@@ -1,0 +1,9 @@
+/orthogonals
+/test/integration/orthogonals
+/test/integration/fixture-root/
+/dist/
+# rpmbuild --build-in-place byproducts
+/debug*.list
+/elfbins.list
+*.test
+coverage.out

@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Terminal output to stdout/stderr — an unwritable terminal has no
+      # meaningful recovery for a CLI.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln

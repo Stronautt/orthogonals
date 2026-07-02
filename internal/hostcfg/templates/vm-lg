@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# written by orthogonals: one-click {{.DisplayName}} — start the VM if it is off,
+# wait for its SPICE display, connect with Looking Glass fullscreen.
+set -euo pipefail
+
+VM="{{.VMName}}"
+VIRSH=(virsh --connect qemu:///system)
+
+if [[ "$("${VIRSH[@]}" domstate "$VM" 2>/dev/null)" != "running" ]]; then
+    # a refused start (GPU held by a host app) surfaces the hook's error here
+    "${VIRSH[@]}" start "$VM"
+fi
+
+TIMEOUT=60
+display=""
+for _ in $(seq 1 "$TIMEOUT"); do
+    if display="$("${VIRSH[@]}" domdisplay "$VM" 2>/dev/null)" && [[ -n "$display" ]]; then
+        break
+    fi
+    sleep 1
+done
+if [[ -z "$display" ]]; then
+    echo "{{.Launcher}}: $VM has no SPICE display after ${TIMEOUT}s — check virsh domstate $VM" >&2
+    exit 1
+fi
+
+# domdisplay prints the SPICE URI libvirt actually gave THIS domain, e.g.
+# spice://127.0.0.1:5901. The client's default (127.0.0.1:5900) is whichever
+# VM grabbed the first autoport — with a second VM running, input and
+# clipboard would ride SPICE into the wrong guest.
+hostport="${display#*://}"
+exec looking-glass-client -F -c "${hostport%:*}" -p "${hostport##*:}"

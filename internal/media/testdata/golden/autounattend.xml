@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  orthogonals unattended Windows 11 answer file (generated once with the
+  Schneegans generator, trimmed, and checked in as a template).
+
+  Deliberately NO hardware-check bypass registry keys (research §B2): the VM
+  passes the Win11 checks legitimately via OVMF Secure Boot + emulated TPM
+  2.0, and the bypass machinery is exactly what 24H2/25H2 Setup keeps
+  breaking. No product key either - the edition is selected by image name
+  and the user activates later.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+    <!-- VirtIO storage/net drivers from the attached virtio-win CD; Setup
+         cannot see the VirtIO disk without viostor. The CD's drive letter
+         depends on device order, so the plausible letters are all listed. -->
+    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1">
+          <Path>D:\viostor\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="2">
+          <Path>E:\viostor\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="3">
+          <Path>F:\viostor\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="4">
+          <Path>D:\NetKVM\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="5">
+          <Path>E:\NetKVM\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="6">
+          <Path>F:\NetKVM\w11\amd64</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>300</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>System</Label>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>Windows 11 Pro</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <!-- Microsoft's published generic installation key for Pro: selects
+             the edition on retail media so Setup skips the product-key page.
+             It never activates; the user supplies a real license in Windows. -->
+        <ProductKey>
+          <Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>
+          <WillShowUI>OnError</WillShowUI>
+        </ProductKey>
+      </UserData>
+    </component>
+  </settings>
+  <settings pass="specialize">
+    <!-- A hard stop (virsh destroy, host crash) can wedge Windows in
+         "Preparing Automatic Repair", which blocks every unattended flow -
+         recovery is disabled so boot always proceeds to the OS. -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>disable automatic repair</Description>
+          <Path>bcdedit /set {default} recoveryenabled No</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Description>ignore boot failures</Description>
+          <Path>bcdedit /set {default} bootstatuspolicy IgnoreAllFailures</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>user</Name>
+            <DisplayName>user</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>s3cretPassw0rd16</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <!-- autologon so the first-logon command (and provisioning re-runs
+           across its reboots) proceed unattended; provisioning disables it
+           when done -->
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <Username>user</Username>
+        <Password>
+          <Value>s3cretPassw0rd16</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <LogonCount>5</LogonCount>
+      </AutoLogon>
+      <FirstLogonCommands>
+        <!-- drive letters vary, so the provision CD is located by label -->
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>orthogonals guest provisioning</Description>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$d = (Get-Volume -FileSystemLabel 'ORTHOGONALS').DriveLetter; &amp; ($d + ':\provision.ps1')"</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>

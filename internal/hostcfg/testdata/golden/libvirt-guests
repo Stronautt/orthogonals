@@ -1,0 +1,6 @@
+# written by orthogonals: host shutdown cleanly shuts the guest down —
+# never suspend a VM that owns the GPU.
+ON_BOOT=ignore
+ON_SHUTDOWN=shutdown
+SHUTDOWN_TIMEOUT=90
+PARALLEL_SHUTDOWN=1

@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: make test-integration
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, integration]
+    runs-on: ubuntu-latest
+    container: fedora:44
+    permissions:
+      contents: write
+    steps:
+      - name: Install build tools
+        run: dnf install -y git golang rpm-build copr-cli gh
+
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches VERSION
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
+
+      - name: Build SRPM
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          make srpm
+
+      - name: Build in COPR
+        shell: bash
+        env:
+          COPR_API_CONFIG: ${{ secrets.COPR_API_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          echo "$COPR_API_CONFIG" > ~/.config/copr
+          copr-cli build orthogonals dist/orthogonals-*.src.rpm \
+            | tee copr-build.log
+          BUILD_ID=$(grep -oP 'Created builds:\s*\K\d+' copr-build.log)
+          copr-cli download-build --dest dist/copr "$BUILD_ID"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rpms=$(find dist/copr -name 'orthogonals-*.rpm' ! -name '*debug*' ! -name '*.src.rpm')
+          test -n "$rpms" # no installable rpm → fail, never publish an empty release
+          gh release create "$GITHUB_REF_NAME" \
+            $rpms \
+            dist/orthogonals-*.src.rpm \
+            --title "$GITHUB_REF_NAME" --generate-notes

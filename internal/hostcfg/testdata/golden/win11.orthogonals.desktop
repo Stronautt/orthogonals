@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Windows 11
+Comment=Start the win11 VM and connect via Looking Glass
+Exec=/usr/local/bin/_ort-run-win11-lg
+Icon=computer
+Terminal=false
+Categories=System;

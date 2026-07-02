@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Virtual Display Driver settings: the "monitor" the passed-through GPU
+     renders to (provision.ps1 installs this to C:\VirtualDisplayDriver).
+     GPU_FRIENDLY_NAME is substituted in-guest by provision.ps1 with the
+     detected NVIDIA adapter name - host-side detect only knows PCI IDs. -->
+<vdd_settings>
+    <monitors>
+        <count>1</count>
+    </monitors>
+    <gpu>
+        <friendlyname>GPU_FRIENDLY_NAME</friendlyname>
+    </gpu>
+    <global>
+        <!-- global rates replicate to every resolution below; Windows picks
+             the actual mode in display settings, no re-provision needed -->
+        <g_refresh_rate>60</g_refresh_rate>
+        <g_refresh_rate>120</g_refresh_rate>
+        <g_refresh_rate>144</g_refresh_rate>
+        <g_refresh_rate>165</g_refresh_rate>
+    </global>
+    <resolutions>
+        <resolution>
+            <width>1920</width>
+            <height>1080</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>2560</width>
+            <height>1440</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>3440</width>
+            <height>1440</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>3840</width>
+            <height>2160</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+    </resolutions>
+    <options>
+        <HardwareCursor>true</HardwareCursor>
+        <logging>false</logging>
+    </options>
+</vdd_settings>

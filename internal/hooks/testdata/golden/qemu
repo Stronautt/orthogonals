@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# libvirt qemu hook — orthogonals dispatcher.
+# $1=VM name  $2=operation  $3=sub-operation
+# Managed by orthogonals: regenerated on apply, removed on undo.
+# libvirt refuses to start the domain when this hook exits non-zero and
+# surfaces our stderr in its error message — that is the fail-safe.
+set -u
+VMS_DIR="/etc/orthogonals/vms"
+RUN_DIR="/run/libvirt/qemu"
+HOOKS_DIR="/etc/libvirt/hooks"
+LOG="/var/log/orthogonals/hooks.log"
+
+# orthogonals-managed domains are registered as <name>.xml domain files;
+# anything else is none of our business
+[ -f "$VMS_DIR/${1:-}.xml" ] || exit 0
+
+case "${2:-}/${3:-}" in
+    prepare/begin)
+        # one dGPU, one VM at a time: refuse the start while another managed
+        # domain is live (its status XML exists), instead of letting QEMU die
+        # on a cryptic vfio device-busy error
+        for m in "$VMS_DIR"/*.xml; do
+            [ -f "$m" ] || continue
+            other=${m##*/}
+            other=${other%.xml}
+            [ "$other" = "$1" ] && continue
+            if [ -e "$RUN_DIR/$other.xml" ]; then
+                echo "orthogonals: VM $other is running and holds the dGPU — one VM at a time. Shut it down first: virsh shutdown $other" >&2
+                exit 1
+            fi
+        done
+        if ! "$HOOKS_DIR/orthogonals-gpu-detach.sh"; then
+            echo "orthogonals: GPU handover to vfio-pci failed — VM start aborted. Details: $LOG" >&2
+            exit 1
+        fi
+        # Sleeping the host with an active VFIO VM can hard-lock it.
+        systemd-run --unit="libvirt-nosleep-$1" \
+            systemd-inhibit --what=sleep --why="VFIO VM $1 is running" \
+            sleep infinity || true
+        ;;
+    release/end)
+        systemctl stop "libvirt-nosleep-$1" 2>/dev/null || true
+        if ! "$HOOKS_DIR/orthogonals-gpu-reattach.sh"; then
+            echo "orthogonals: GPU reattach to the host driver failed — run: sudo orthogonals recover --yes. Details: $LOG" >&2
+            exit 1
+        fi
+        ;;
+esac

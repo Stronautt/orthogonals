@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name={{.DisplayName}}
+Comment=Start the {{.VMName}} VM and connect via Looking Glass
+Exec=/usr/local/bin/{{.Launcher}}
+Icon=computer
+Terminal=false
+Categories=System;

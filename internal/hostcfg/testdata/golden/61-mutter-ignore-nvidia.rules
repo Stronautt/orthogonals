@@ -1,0 +1,5 @@
+# written by orthogonals: keep GNOME's compositor off the NVIDIA DRM node —
+# mutter adopting it on the post-VM reattach hotplug degrades shell rendering.
+# mutter 50 checks the TAG; the ENV property covers older mutter versions.
+ACTION=="add|change", SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="nvidia", \
+  TAG+="mutter-device-ignore", ENV{MUTTER_DEVICE_IGNORE}="1"

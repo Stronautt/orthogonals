@@ -1,0 +1,139 @@
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>win11</name>
+  <metadata>
+    <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
+      <orthogonals:user></orthogonals:user>
+      <orthogonals:password></orthogonals:password>
+      <orthogonals:locale></orthogonals:locale>
+      <orthogonals:resolution>1920x1080</orthogonals:resolution>
+    </orthogonals:guest>
+  </metadata>
+  <memory unit='MiB'>16384</memory>
+  <currentMemory unit='MiB'>16384</currentMemory>
+  <vcpu placement='static'>10</vcpu>
+  <iothreads>1</iothreads>
+  <cputune>
+    <vcpupin vcpu='0' cpuset='2'/>
+    <vcpupin vcpu='1' cpuset='3'/>
+    <vcpupin vcpu='2' cpuset='4'/>
+    <vcpupin vcpu='3' cpuset='5'/>
+    <vcpupin vcpu='4' cpuset='6'/>
+    <vcpupin vcpu='5' cpuset='7'/>
+    <vcpupin vcpu='6' cpuset='8'/>
+    <vcpupin vcpu='7' cpuset='9'/>
+    <vcpupin vcpu='8' cpuset='10'/>
+    <vcpupin vcpu='9' cpuset='11'/>
+    <emulatorpin cpuset='12,13,14,15'/>
+    <iothreadpin iothread='1' cpuset='16,17,18,19'/>
+  </cputune>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <firmware>
+      <feature enabled='yes' name='enrolled-keys'/>
+      <feature enabled='yes' name='secure-boot'/>
+    </firmware>
+    <loader secure='yes'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <hyperv mode='custom'>
+      <relaxed state='on'/>
+      <vapic state='on'/>
+      <spinlocks state='on' retries='8191'/>
+      <vpindex state='on'/>
+      <runtime state='on'/>
+      <synic state='on'/>
+      <stimer state='on'/>
+      <frequencies state='on'/>
+      <tlbflush state='on'/>
+      <ipi state='on'/>
+    </hyperv>
+    <smm state='on'/>
+  </features>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
+    <topology sockets='1' cores='5' threads='2'/>
+    <cache mode='passthrough'/>
+    <maxphysaddr mode='emulate' bits='39'/>
+  </cpu>
+  <clock offset='localtime'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+    <timer name='hypervclock' present='yes'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <pm>
+    <suspend-to-mem enabled='no'/>
+    <suspend-to-disk enabled='no'/>
+  </pm>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' iothread='1'/>
+      <source file='/var/lib/libvirt/images/win11.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+      <boot order='1'/>
+    </disk>
+    <interface type='network'>
+      <source network='default'/>
+      <model type='virtio'/>
+    </interface>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <!-- spice-vdagent's transport: without it the guest has no clipboard, and
+         Looking Glass takes its clipboard from SPICE too -->
+    <channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <input type='tablet' bus='usb'/>
+    <graphics type='spice' autoport='yes'>
+      <listen type='address'/>
+    </graphics>
+    <!-- guest audio reaches the Looking Glass client over SPICE; the dGPU's
+         HDA function only drives an attached HDMI/DP sink, and this card
+         runs headless -->
+    <sound model='ich9'>
+      <audio id='1'/>
+    </sound>
+    <audio id='1' type='spice'/>
+    <!-- install-time display: Windows OOBE crash-loops with zero display
+         adapters, and inline definition is what lands qxl on the canonical
+         primary-video slot where OVMF produces a GOP framebuffer (an edit
+         into an existing topology gets parked behind a root port and the
+         guest renders to nowhere). up flips this to model=none once
+         provisioning completes — Looking Glass needs the VDD monitor to be
+         the guest's only display. -->
+    <video>
+      <model type='qxl'/>
+    </video>
+    <hostdev mode='subsystem' type='pci' managed='no'>
+      <source>
+        <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
+      </source>
+      <!-- OVMF hangs before console init when it executes the GPU's option
+           ROM; the Windows driver initializes the card without the ROM BAR.
+           If a guest driver ever needs the VBIOS, switch to <rom file=...>. -->
+      <rom bar='off'/>
+    </hostdev>
+    <hostdev mode='subsystem' type='pci' managed='no'>
+      <source>
+        <address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
+      </source>
+    </hostdev>
+    <shmem name='looking-glass'>
+      <model type='ivshmem-plain'/>
+      <size unit='M'>32</size>
+    </shmem>
+    <tpm model='tpm-crb'>
+      <backend type='emulator' version='2.0'/>
+    </tpm>
+    <memballoon model='none'/>
+  </devices>
+  <qemu:commandline>
+    <qemu:arg value='-fw_cfg'/>
+    <qemu:arg value='opt/ovmf/X-PciMmio64Mb,string=65536'/>
+  </qemu:commandline>
+</domain>
