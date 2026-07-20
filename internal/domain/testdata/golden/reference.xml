@@ -1,6 +1,9 @@
 <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
   <name>win11</name>
   <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'>
+      <libosinfo:os id='http://microsoft.com/win/11'/>
+    </libosinfo:libosinfo>
     <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
       <orthogonals:user></orthogonals:user>
       <orthogonals:password></orthogonals:password>
@@ -8,8 +11,8 @@
       <orthogonals:resolution>3840x2160</orthogonals:resolution>
     </orthogonals:guest>
   </metadata>
-  <memory unit='MiB'>16384</memory>
-  <currentMemory unit='MiB'>16384</currentMemory>
+  <memory unit='MiB'>24576</memory>
+  <currentMemory unit='MiB'>24576</currentMemory>
   <vcpu placement='static'>10</vcpu>
   <iothreads>1</iothreads>
   <cputune>
@@ -44,7 +47,9 @@
       <vpindex state='on'/>
       <runtime state='on'/>
       <synic state='on'/>
-      <stimer state='on'/>
+      <stimer state='on'>
+        <direct state='on'/>
+      </stimer>
       <frequencies state='on'/>
       <tlbflush state='on'/>
       <ipi state='on'/>
@@ -108,6 +113,10 @@
       <target type='virtio' name='com.redhat.spice.0'/>
     </channel>
     <input type='tablet' bus='usb'/>
+    <!-- Looking Glass sends raw input through the virtio pair; the usb
+         tablet remains the absolute-pointer path for plain SPICE sessions -->
+    <input type='mouse' bus='virtio'/>
+    <input type='keyboard' bus='virtio'/>
     <graphics type='spice' autoport='yes'>
       <listen type='address'/>
     </graphics>
@@ -123,7 +132,8 @@
          primary-video slot where OVMF produces a GOP framebuffer (an edit
          into an existing topology gets parked behind a root port and the
          guest renders to nowhere). up flips this to model=none once
-         provisioning completes — Looking Glass needs the VDD monitor to be
+         provisioning completes, and a redefine of a provisioned domain
+         renders none directly — Looking Glass needs the VDD monitor to be
          the guest's only display. -->
     <video>
       <model type='qxl'/>

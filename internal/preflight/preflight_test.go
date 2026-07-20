@@ -10,8 +10,10 @@ import (
 // refResult mirrors the PoC reference machine (i5-13600K + RTX 3080) but with
 // a 46-bit address width and Secure Boot off so the base case is all-pass.
 func refResult() *hw.Result {
-	igpu := hw.PCIDevice{Address: "0000:00:02.0", Vendor: hw.VendorIntel, Device: "0xa780", Class: "0x030000", Driver: "i915", IOMMUGroup: 0, HasReset: true}
-	gpu := hw.PCIDevice{Address: "0000:01:00.0", Vendor: hw.VendorNVIDIA, Device: "0x2206", Class: "0x030000", Driver: "nvidia", IOMMUGroup: 1, HasReset: true}
+	igpu := hw.PCIDevice{Address: "0000:00:02.0", Vendor: hw.VendorIntel, Device: "0xa780", Class: "0x030000", Driver: "i915", IOMMUGroup: 0, HasReset: true,
+		BootVGA: true, DRMCard: "card0", Connectors: []string{"DP-1"}}
+	gpu := hw.PCIDevice{Address: "0000:01:00.0", Vendor: hw.VendorNVIDIA, Device: "0x2206", Class: "0x030000", Driver: "nvidia", IOMMUGroup: 1, HasReset: true,
+		DRMCard: "card1"}
 	audio := hw.PCIDevice{Address: "0000:01:00.1", Vendor: hw.VendorNVIDIA, Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", IOMMUGroup: 1, HasReset: true}
 	tools := map[string]bool{}
 	for _, tool := range hw.RequiredTools {
@@ -115,6 +117,52 @@ func TestAnalyzers(t *testing.T) {
 			check: "gpu-topology", want: Fail, has: []string{"AMD"},
 		},
 		{
+			name: "monitor on dgpu only fails with cable remedy",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.GPUs.IGPU.Connectors = nil
+				r.GPUs.DGPUs[0].Connectors = []string{"DP-1"}
+			},
+			check: "display-topology", want: Fail, has: []string{"NVIDIA", "DP-1", "motherboard"},
+		},
+		{
+			name: "monitor on both gpus warns about dark monitor",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.GPUs.DGPUs[0].Connectors = []string{"HDMI-A-1"}
+			},
+			check: "display-topology", want: Warn, has: []string{"HDMI-A-1", "dark"},
+		},
+		{
+			name: "igpu without drm card warns",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.GPUs.IGPU.DRMCard = ""
+				r.GPUs.IGPU.Connectors = nil
+			},
+			check: "display-topology", want: Warn, has: []string{"cannot verify"},
+		},
+		{
+			name:   "no connected display anywhere warns",
+			mutate: func(r *hw.Result, _ *Facts) { r.GPUs.IGPU.Connectors = nil },
+			check:  "display-topology", want: Warn, has: []string{"no connected display", "headless"},
+		},
+		{
+			name:   "display topology skipped without igpu",
+			mutate: func(r *hw.Result, _ *Facts) { r.GPUs.IGPU = nil },
+			check:  "display-topology", want: Pass, has: []string{"skipped"},
+		},
+		{
+			name: "dgpu as firmware primary warns with optional bios remedy",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.GPUs.IGPU.BootVGA = false
+				r.GPUs.DGPUs[0].BootVGA = true
+			},
+			check: "boot-vga", want: Warn, has: []string{"0000:01:00.0", "optional", "Primary Display"},
+		},
+		{
+			name:   "no boot_vga marker passes as skipped",
+			mutate: func(r *hw.Result, _ *Facts) { r.GPUs.IGPU.BootVGA = false },
+			check:  "boot-vga", want: Pass, has: []string{"skipped"},
+		},
+		{
 			name:   "laptop chassis fails",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.ChassisType = 10 },
 			check:  "chassis", want: Fail, has: []string{"laptop"},
@@ -170,8 +218,8 @@ func TestAnalyzers(t *testing.T) {
 			// host gets mutated + rebooted before `vm define` fails.
 			name: "non-hybrid small cpu is refused to match pinning",
 			mutate: func(r *hw.Result, _ *Facts) {
-				r.CPU = hw.CPU{Threads: 6, Cores: 3,
-					PCores: []int{0, 1, 2, 3, 4, 5}}
+				r.CPU = hw.CPU{Threads: 4, Cores: 2,
+					PCores: []int{0, 1, 2, 3}}
 			},
 			check: "cpu", want: Fail, has: []string{"vCPU"},
 		},

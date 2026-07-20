@@ -1,6 +1,9 @@
 <domain type='kvm'>
   <name>win11</name>
   <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'>
+      <libosinfo:os id='http://microsoft.com/win/11'/>
+    </libosinfo:libosinfo>
     <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
       <orthogonals:user></orthogonals:user>
       <orthogonals:password></orthogonals:password>
@@ -8,9 +11,9 @@
       <orthogonals:resolution>3840x2160</orthogonals:resolution>
     </orthogonals:guest>
   </metadata>
-  <memory unit='MiB'>16384</memory>
-  <currentMemory unit='MiB'>16384</currentMemory>
-  <vcpu placement='static'>12</vcpu>
+  <memory unit='MiB'>57344</memory>
+  <currentMemory unit='MiB'>57344</currentMemory>
+  <vcpu placement='static'>14</vcpu>
   <iothreads>1</iothreads>
   <cputune>
     <vcpupin vcpu='0' cpuset='2'/>
@@ -25,8 +28,10 @@
     <vcpupin vcpu='9' cpuset='11'/>
     <vcpupin vcpu='10' cpuset='12'/>
     <vcpupin vcpu='11' cpuset='13'/>
-    <emulatorpin cpuset='14,15'/>
-    <iothreadpin iothread='1' cpuset='14,15'/>
+    <vcpupin vcpu='12' cpuset='14'/>
+    <vcpupin vcpu='13' cpuset='15'/>
+    <emulatorpin cpuset='0,1'/>
+    <iothreadpin iothread='1' cpuset='0,1'/>
   </cputune>
   <os firmware='efi'>
     <type arch='x86_64' machine='q35'>hvm</type>
@@ -46,7 +51,9 @@
       <vpindex state='on'/>
       <runtime state='on'/>
       <synic state='on'/>
-      <stimer state='on'/>
+      <stimer state='on'>
+        <direct state='on'/>
+      </stimer>
       <frequencies state='on'/>
       <tlbflush state='on'/>
       <ipi state='on'/>
@@ -54,7 +61,7 @@
     <smm state='on'/>
   </features>
   <cpu mode='host-passthrough' check='none' migratable='off'>
-    <topology sockets='1' cores='6' threads='2'/>
+    <topology sockets='1' cores='7' threads='2'/>
     <cache mode='passthrough'/>
   </cpu>
   <clock offset='localtime'>
@@ -90,6 +97,10 @@
       <target type='virtio' name='com.redhat.spice.0'/>
     </channel>
     <input type='tablet' bus='usb'/>
+    <!-- Looking Glass sends raw input through the virtio pair; the usb
+         tablet remains the absolute-pointer path for plain SPICE sessions -->
+    <input type='mouse' bus='virtio'/>
+    <input type='keyboard' bus='virtio'/>
     <graphics type='spice' autoport='yes'>
       <listen type='address'/>
     </graphics>
@@ -105,7 +116,8 @@
          primary-video slot where OVMF produces a GOP framebuffer (an edit
          into an existing topology gets parked behind a root port and the
          guest renders to nowhere). up flips this to model=none once
-         provisioning completes — Looking Glass needs the VDD monitor to be
+         provisioning completes, and a redefine of a provisioned domain
+         renders none directly — Looking Glass needs the VDD monitor to be
          the guest's only display. -->
     <video>
       <model type='qxl'/>

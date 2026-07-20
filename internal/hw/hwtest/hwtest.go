@@ -53,6 +53,14 @@ func BuildReferenceRoot(root string) error {
 		{"sys/fs/selinux/enforce", "1"},
 		{"sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", "\x06\x00\x00\x00\x01"},
 		{"sys/class/dmi/id/chassis_type", "3\n"},
+		// Firmware primary GPU + display cabling: monitor on the iGPU, none
+		// on the dGPU. The renderD entry pins the card-only DRM filter.
+		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
 	}
 	coreIDs := []int{0, 0, 4, 4, 8, 8, 12, 12, 16, 16, 20, 20, 24, 25, 26, 27, 28, 29, 30, 31}
 	for cpu, id := range coreIDs {

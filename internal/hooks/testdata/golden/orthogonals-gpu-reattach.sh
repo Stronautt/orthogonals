@@ -24,6 +24,19 @@ notify_user() {
         notify-send -u critical -i video-display "Windows VM" "$1" 2>/dev/null || true
 }
 
+# Undo the detach hook's governor flip before anything can exit: release/end
+# also fires when the reattach below fails, and `orthogonals recover` reuses
+# this script. No state file means no flip happened — nothing to restore.
+GOV_SAVE=/run/orthogonals-governor
+if [ -f "$GOV_SAVE" ]; then
+    gov="$(cat "$GOV_SAVE")"
+    for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo "$gov" > "$g" 2>/dev/null || true
+    done
+    rm -f "$GOV_SAVE"
+    log "cpu governor restored: $gov"
+fi
+
 # GUARD: libvirt fires release/end even for a FAILED start. If the GPU never
 # left the nvidia driver, unbinding it here would yank it from live apps
 # (PoC incident 9). Only proceed when it is actually on vfio-pci.
@@ -55,11 +68,33 @@ log "nvidia modules loaded, devices probed"
 # desktop's dGPU menu reflects the rebind.
 systemctl try-restart switcheroo-control.service 2>/dev/null || true
 
-# Stage 3 — health check: healthy or surface the failure.
-if timeout 15 nvidia-smi --query-gpu=name,memory.used --format=csv,noheader >> "$LOG" 2>&1; then
+healthy() {
+    timeout 15 nvidia-smi --query-gpu=name,memory.used --format=csv,noheader >> "$LOG" 2>&1
+}
+
+# Stage 3 — health check; on failure try one PCI remove + rescan before
+# giving up (fresh config space, fresh probe). The vfio guard above means
+# this only ever touches a GPU this script detached.
+if healthy; then
     log "GPU back on host, healthy"
-else
-    log "nvidia-smi failed after reattach — recovery: sudo orthogonals recover --yes; last resort: reboot"
-    notify_user "GPU reattach failed — run: sudo orthogonals recover --yes (see $LOG)"
-    exit 1
+    exit 0
 fi
+log "nvidia-smi failed — trying PCI remove + rescan"
+for dev in "${DEVS[@]}"; do
+    echo 1 > "/sys/bus/pci/devices/$dev/remove"
+done
+echo 1 > /sys/bus/pci/rescan
+modprobe nvidia
+modprobe nvidia_uvm
+modprobe nvidia_drm
+for dev in "${DEVS[@]}"; do
+    echo "$dev" > /sys/bus/pci/drivers_probe
+done
+systemctl try-restart switcheroo-control.service 2>/dev/null || true
+if healthy; then
+    log "GPU back on host after PCI rescan, healthy"
+    exit 0
+fi
+log "nvidia-smi failed after reattach — recovery: sudo orthogonals recover --yes; last resort: reboot"
+notify_user "GPU reattach failed — run: sudo orthogonals recover --yes (see $LOG)"
+exit 1

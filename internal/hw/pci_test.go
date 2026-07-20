@@ -25,8 +25,10 @@ func TestScanPCIReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []PCIDevice{
-		{Address: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", IOMMUGroup: 0, HasReset: true},
-		{Address: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", IOMMUGroup: 1, HasReset: true},
+		{Address: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", IOMMUGroup: 0, HasReset: true,
+			BootVGA: true, DRMCard: "card0", Connectors: []string{"DP-1"}},
+		{Address: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", IOMMUGroup: 1, HasReset: true,
+			DRMCard: "card1"},
 		{Address: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", IOMMUGroup: 1, HasReset: true},
 	}
 	if !reflect.DeepEqual(devs, want) {
@@ -54,6 +56,54 @@ func TestScanPCIUnboundNoIOMMU(t *testing.T) {
 	}
 	if d.HasReset {
 		t.Error("HasReset = true, want false without reset file")
+	}
+}
+
+func TestScanDRM(t *testing.T) {
+	const addr = "0000:02:00.0"
+	dev := hwtest.Dev{Addr: addr, Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 2}
+	tests := []struct {
+		name      string
+		files     map[string]string // rel path under the device dir -> content
+		wantCard  string
+		wantConns []string
+	}{
+		{name: "no drm dir", wantCard: "", wantConns: nil},
+		{name: "renderD only", files: map[string]string{"drm/renderD129/dev": "226:129\n"}, wantCard: "", wantConns: nil},
+		{
+			name: "only disconnected connectors",
+			files: map[string]string{
+				"drm/card2/card2-DP-1/status":     "disconnected\n",
+				"drm/card2/card2-HDMI-A-1/status": "disconnected\n",
+			},
+			wantCard: "card2", wantConns: nil,
+		},
+		{
+			name: "connected connectors sorted",
+			files: map[string]string{
+				"drm/card2/card2-DP-1/status":     "connected\n",
+				"drm/card2/card2-DP-2/status":     "connected\n",
+				"drm/card2/card2-HDMI-A-1/status": "disconnected\n",
+				"drm/renderD129/dev":              "226:129\n",
+			},
+			wantCard: "card2", wantConns: []string{"DP-1", "DP-2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			hwtest.AddPCI(t, root, dev)
+			for rel, content := range tt.files {
+				hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+addr+"/"+rel, content)
+			}
+			card, conns := scanDRM(root + "/sys/bus/pci/devices/" + addr)
+			if card != tt.wantCard {
+				t.Errorf("card = %q, want %q", card, tt.wantCard)
+			}
+			if !reflect.DeepEqual(conns, tt.wantConns) {
+				t.Errorf("connectors = %v, want %v", conns, tt.wantConns)
+			}
+		})
 	}
 }
 

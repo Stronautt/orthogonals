@@ -128,12 +128,22 @@ $stages = @(
     },
     @{
         Name = 'looking-glass-host'   # /S bundles the IVSHMEM driver since B6
-        Done = { Test-Path "$env:ProgramFiles\Looking Glass (host)\looking-glass-host.exe" }
+        Done = {
+            (Test-Path "$env:ProgramFiles\Looking Glass (host)\looking-glass-host.exe") -and
+            (Test-Path "$env:ProgramFiles\Looking Glass (host)\looking-glass-host.ini")
+        }
         Run  = {
             $dir = Join-Path $workDir 'looking-glass'
             Expand-Archive -Path (Find-CDFile 'looking-glass-host.zip') -DestinationPath $dir -Force
             $setup = Get-ChildItem -Path $dir -Recurse -Filter 'looking-glass-host-setup.exe' | Select-Object -First 1
             if (-not $setup) { throw 'looking-glass-host.zip does not contain looking-glass-host-setup.exe' }
+            # B7's default D12 capture backend restart-loops (DXGI_ERROR_ACCESS_LOST
+            # -> reinit, one black blink each) against the VDD; force the D3D11
+            # backend. The host reads its ini from the exe's directory, not
+            # ProgramData, and it must exist before the installer starts the service.
+            $lgDir = "$env:ProgramFiles\Looking Glass (host)"
+            New-Item -ItemType Directory -Path $lgDir -Force | Out-Null
+            Set-Content -Path (Join-Path $lgDir 'looking-glass-host.ini') -Value '[app]','capture=DXGI' -Encoding ascii
             $code = Invoke-Installer $setup.FullName '/S'
             if ($code -ne 0) { throw "Looking Glass host setup exit code $code" }
         }

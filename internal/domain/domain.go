@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -33,8 +34,10 @@ const (
 	// Sizing minima and defaults from the plan's Defaults table. Exported
 	// because preflight gates on the same values — a host that passes
 	// preflight must never fail these limits at `vm define`.
-	MinRAMGiB          = 8
-	MaxDefaultRAMGiB   = 16
+	MinRAMGiB = 8
+	// HostReserveRAMGiB is what default sizing leaves the host: the desktop,
+	// the Looking Glass client, and qemu's own overhead.
+	HostReserveRAMGiB  = 8
 	MinVCPUs           = 4
 	DefaultDiskSizeGiB = 100
 	// The default buffer maximum is 4K: per Looking Glass docs, oversizing
@@ -56,14 +59,14 @@ const (
 	WideAddressWidthBits = 40
 )
 
-// DefaultGuestRAMGiB is the guest RAM a host gets by default: half the
-// installed RAM, capped at MaxDefaultRAMGiB. MemTotal excludes firmware and
-// kernel reservations (~15.5 GiB on a 16 GiB host), so it rounds up to the
-// installed size first or the documented minimum host would default below
-// the MinRAMGiB guest minimum.
+// DefaultGuestRAMGiB is the guest RAM a host gets by default: everything but
+// HostReserveRAMGiB — the guest is the workload, the host only displays it.
+// MemTotal excludes firmware and kernel reservations (~15.5 GiB on a 16 GiB
+// host), so it rounds up to the installed size first or the documented
+// minimum host would default below the MinRAMGiB guest minimum.
 func DefaultGuestRAMGiB(hostBytes uint64) int {
-	memGiB := (hostBytes + gib - 1) / gib
-	return int(min(memGiB/2, MaxDefaultRAMGiB))
+	memGiB := int((hostBytes + gib - 1) / gib)
+	return memGiB - HostReserveRAMGiB
 }
 
 // Options are the user-tunable knobs from the Defaults table; zero values
@@ -120,6 +123,16 @@ type Profile struct {
 	Locale          string
 	GPU             BDF
 	Audio           *BDF
+	// VideoNone is set by Converge once the pipeline's install-video step
+	// flipped the domain's display: the template then renders model=none
+	// directly, so a redefine converges to the post-install state instead of
+	// regressing to the install-time qxl (Looking Glass needs the VDD to be
+	// the guest's only display).
+	VideoNone bool
+	// UUID is the existing domain's UUID on a redefine — virsh define
+	// refuses a name that already exists under a different UUID, and a
+	// UUID-less XML gets a fresh one. Empty on first define.
+	UUID string
 }
 
 // NewProfile derives the domain profile from a detect result, validating the
@@ -218,8 +231,8 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	return p, nil
 }
 
-// AssignableVCPUs is how many P-core threads remain for the guest after
-// reserve's host/emulator reservations (0 when the topology is unusable).
+// AssignableVCPUs is how many P-core threads reserve assigns to the guest
+// (0 when the topology is unusable).
 // Preflight gates on it, so a passing host can never fail pinning's minimum.
 func AssignableVCPUs(c hw.CPU) int {
 	vcpu, _, _, _, err := reserve(c)
@@ -244,10 +257,14 @@ func pinning(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
 	return vcpu, emu, iot, tpc, nil
 }
 
-// reserve keeps physical core 0 for the host, gives every remaining P-core
-// thread to the guest, and parks emulator and iothread on the E-cores (first
-// half / second half). Without E-cores the last P-core is taken back from
-// the guest for emulator+iothread instead.
+// reserve keeps the first physical P-core for the host and gives the guest the
+// remaining P-core threads; emulator and iothread park on the E-cores (first
+// half / second half). The host half of the Looking Glass pipeline — client
+// render, compositor, and SPICE input via the emulator thread — must have a
+// fast core while the guest games: with every P-thread assigned to vCPUs it
+// crowds onto the E-cores and frame/input delivery visibly stalls (FPS and
+// UPS sag, the cursor jumps). Without E-cores the host core also absorbs
+// emulator+iothread.
 // TODO(refactor): assumes sibling threads are adjacent in the kernel cpulists —
 // true for the Intel desktop parts v1 targets.
 func reserve(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
@@ -264,14 +281,7 @@ func reserve(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
 	case len(c.ECores) == 1:
 		emu, iot = c.ECores, c.ECores
 	default:
-		if len(vcpu) <= tpc {
-			// every remaining thread goes to the emulator: nothing assignable
-			emu, iot, vcpu = vcpu, vcpu, nil
-		} else {
-			emu = vcpu[len(vcpu)-tpc:]
-			iot = emu
-			vcpu = vcpu[:len(vcpu)-tpc]
-		}
+		emu, iot = c.PCores[:tpc], c.PCores[:tpc]
 	}
 	return vcpu, emu, iot, tpc, nil
 }
@@ -371,6 +381,81 @@ func DiskRestoreconID(vm string) string   { return "vm-disk-restorecon-" + vm }
 func DefineStepID(vm string) string       { return "vm-define-" + vm }
 func InstallVideoStepID(vm string) string { return "vm-install-video-" + vm }
 
+// DetachMediaStepID names the journaled removal of one installer cdrom.
+func DetachMediaStepID(vm, target string) string { return "vm-detach-media-" + vm + "-" + target }
+
+// detachMediaTargets are the SATA cdrom targets vm define always attaches
+// (Windows ISO, virtio-win ISO, provision ISO — see Options).
+var detachMediaTargets = []string{"sda", "sdb", "sdc"}
+
+// Converge folds the journaled post-pipeline transitions into the profile, so
+// a redefine renders the domain's true current state instead of the
+// install-time one the first define produced. The target↔field pairing must
+// match the template's cdrom order: sda renders from Win11ISO, sdb from
+// VirtioISO, sdc from ProvisionISO — an empty field omits its cdrom, which is
+// exactly what the journaled virt-xml removal did to the live domain.
+func Converge(p *Profile, m *steps.Manifest) {
+	p.VideoNone = m.Has(InstallVideoStepID(p.Name))
+	if m.Has(DetachMediaStepID(p.Name, "sda")) {
+		p.Win11ISO = ""
+	}
+	if m.Has(DetachMediaStepID(p.Name, "sdb")) {
+		p.VirtioISO = ""
+	}
+	if m.Has(DetachMediaStepID(p.Name, "sdc")) {
+		p.ProvisionISO = ""
+	}
+}
+
+// JournaledDisk reports the disk image path and size the vm's journaled
+// qemu-img step created. The disk is a create-time setting that lives only in
+// the journal (not the metadata block): a redefine without --disk must render
+// that image — the default path would be refused by the engine, and pointing
+// the domain at a different disk than the install would be worse.
+func JournaledDisk(m *steps.Manifest, vm string) (string, int, bool) {
+	cmd := m.Cmd(DiskImageID(vm))
+	if len(cmd) != 6 {
+		return "", 0, false
+	}
+	size, err := strconv.Atoi(strings.TrimSuffix(cmd[5], "G"))
+	if err != nil {
+		return "", 0, false
+	}
+	return cmd[4], size, true
+}
+
+// InstallMediaDetached reports whether the pipeline already removed the
+// Windows install cdrom — a redefine then no longer needs --win11-iso.
+func InstallMediaDetached(m *steps.Manifest, vm string) bool {
+	return m.Has(DetachMediaStepID(vm, detachMediaTargets[0]))
+}
+
+// DetachMediaStepIDs lists the detach step IDs in undo order (reverse apply);
+// cli's undefine consumes it.
+func DetachMediaStepIDs(vm string) []string {
+	ids := make([]string, 0, len(detachMediaTargets))
+	for _, target := range slices.Backward(detachMediaTargets) {
+		ids = append(ids, DetachMediaStepID(vm, target))
+	}
+	return ids
+}
+
+// DetachMediaSteps removes the installer cdroms once the pipeline verified —
+// the guest never boots from them again, and Windows stops enumerating three
+// phantom DVD drives. virt-xml edits the persistent config; a running guest
+// keeps the drives until its next boot. No UndoCmd: undo removes the whole
+// domain via the define step's paired virsh undefine.
+func DetachMediaSteps(vm string) []steps.Step {
+	list := make([]steps.Step, 0, len(detachMediaTargets))
+	for _, target := range detachMediaTargets {
+		list = append(list, steps.Step{
+			ID: DetachMediaStepID(vm, target), Kind: steps.KindRunCmd,
+			Cmd: []string{"virt-xml", vm, "--remove-device", "--disk", "target=" + target},
+		})
+	}
+	return list
+}
+
 // InstallVideoStep flips the domain's install-time emulated display (defined
 // in the domain template — see the comment there) to video=none for Looking
 // Glass, once the install pipeline reports provisioning complete. virt-xml
@@ -414,7 +499,10 @@ func Steps(p Profile) ([]steps.Step, error) {
 		},
 		{
 			ID: DefineStepID(p.Name), Kind: steps.KindRunCmd,
-			Cmd:     []string{"virsh", "define", xmlPath(p.Name)},
+			Cmd: []string{"virsh", "define", xmlPath(p.Name)},
+			// the rendered XML is the define's input: a release that renders
+			// a different domain re-defines instead of "already applied"
+			Input:   xml,
 			UndoCmd: []string{"virsh", "undefine", p.Name, "--nvram", "--tpm"},
 		},
 	}, nil

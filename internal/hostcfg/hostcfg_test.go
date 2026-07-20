@@ -101,10 +101,10 @@ func TestArtifactsGolden(t *testing.T) {
 
 }
 
-// TestVMStepsGolden pins the default win11 VM's launcher and desktop entry —
-// IDs, paths, modes, and rendered bytes.
+// TestVMStepsGolden pins the default win11 VM's launcher, desktop entry, and
+// ~/Desktop link — IDs, paths, modes, commands, and rendered bytes.
 func TestVMStepsGolden(t *testing.T) {
-	list, err := VMSteps("win11", "Windows 11")
+	list, err := VMSteps("win11", "Windows 11", "testuser")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,17 +113,41 @@ func TestVMStepsGolden(t *testing.T) {
 		mode     fs.FileMode
 	}{
 		{"_ort-run-win11-lg", "/usr/local/bin/_ort-run-win11-lg", 0o755},
-		{"desktop-entry-win11", "/usr/share/applications/win11.orthogonals.desktop", 0o644},
+		{"desktop-entry-win11", "/usr/share/applications/win11.orthogonals.desktop", 0o755},
 	}
-	if len(list) != len(want) {
-		t.Fatalf("got %d steps, want %d", len(list), len(want))
+	if len(list) != len(want)+1 {
+		t.Fatalf("got %d steps, want %d", len(list), len(want)+1)
 	}
-	for i, s := range list {
-		if s.ID != want[i].id || s.Path != want[i].path || s.Mode != want[i].mode {
-			t.Errorf("step %d = %s %s %o, want %s %s %o", i, s.ID, s.Path, s.Mode, want[i].id, want[i].path, want[i].mode)
+	for i, w := range want {
+		s := list[i]
+		if s.ID != w.id || s.Path != w.path || s.Mode != w.mode {
+			t.Errorf("step %d = %s %s %o, want %s %s %o", i, s.ID, s.Path, s.Mode, w.id, w.path, w.mode)
 		}
 	}
+	link := list[2]
+	if link.ID != "desktop-link-win11" {
+		t.Errorf("link step ID = %s", link.ID)
+	}
+	const entry = "/usr/share/applications/win11.orthogonals.desktop"
+	const linkPath = "/home/testuser/Desktop/win11.orthogonals.desktop"
+	wantCmd := "runuser -u testuser -- sh -c " +
+		"mkdir -p /home/testuser/Desktop && ln -sfn " + entry + " " + linkPath +
+		" && DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus gio set " + linkPath + " metadata::trusted true"
+	if got := strings.Join(link.Cmd, " "); got != wantCmd {
+		t.Errorf("link cmd = %q\nwant       %q", got, wantCmd)
+	}
+	if got := strings.Join(link.UndoCmd, " "); got != "rm -f "+linkPath {
+		t.Errorf("link undo = %q", got)
+	}
+	// a hand-deleted link must be recreated on re-define, not skipped as
+	// already applied
+	if link.CreatesPath != linkPath {
+		t.Errorf("link CreatesPath = %q, want %q", link.CreatesPath, linkPath)
+	}
 	for _, s := range list {
+		if s.Kind != steps.KindWriteFile {
+			continue
+		}
 		golden := filepath.Join("testdata", "golden", filepath.Base(s.Path))
 		if *update {
 			if err := os.WriteFile(golden, s.Content, 0o644); err != nil {
@@ -154,7 +178,7 @@ func TestVMStepsGolden(t *testing.T) {
 }
 
 func TestVMStepsSecondVM(t *testing.T) {
-	list, err := VMSteps("gaming", "Gaming Rig")
+	list, err := VMSteps("gaming", "Gaming Rig", "testuser")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +197,11 @@ func TestVMStepsSecondVM(t *testing.T) {
 			t.Errorf("desktop entry missing %q:\n%s", want, desktop.Content)
 		}
 	}
-	if _, err := VMSteps("bad name", "x"); err == nil {
+	if _, err := VMSteps("bad name", "x", "testuser"); err == nil {
 		t.Error("invalid VM name must be rejected")
+	}
+	if _, err := VMSteps("gaming", "x", ""); err == nil {
+		t.Error("empty user must be rejected — the ~/Desktop link path would be garbage")
 	}
 }
 
@@ -182,7 +209,7 @@ func TestVMStepsSecondVM(t *testing.T) {
 // re-define without --display-name keeps the name the VM was defined with.
 func TestDisplayNameFromDesktopEntry(t *testing.T) {
 	root := t.TempDir()
-	list, err := VMSteps("gaming", "Gaming Rig")
+	list, err := VMSteps("gaming", "Gaming Rig", "testuser")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +284,7 @@ func TestShellArtifactsBashSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vmList, err := VMSteps("win11", "Windows 11")
+	vmList, err := VMSteps("win11", "Windows 11", "testuser")
 	if err != nil {
 		t.Fatal(err)
 	}

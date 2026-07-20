@@ -306,6 +306,129 @@ func TestRunCmdAppliesAndUndoes(t *testing.T) {
 	}
 }
 
+// A journaled run_cmd whose product was deleted by hand (e.g. the ~/Desktop
+// link) must re-run, not report "already applied" against reality.
+func TestRunCmdReappliesWhenProductGone(t *testing.T) {
+	root := t.TempDir()
+	dir := fakePath(t)
+	linkerLog := fakeBin(t, dir, "linker", "")
+	product := filepath.Join(t.TempDir(), "product")
+	e, _, _ := eng(root, true)
+
+	step := Step{
+		ID: "link", Kind: KindRunCmd,
+		Cmd:         []string{"linker", product},
+		CreatesPath: product,
+	}
+	if err := e.Apply([]Step{step}); err != nil {
+		t.Fatal(err)
+	}
+	// product still missing (the fake creates nothing): re-apply must re-run
+	if err := e.Apply([]Step{step}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, linkerLog); len(lines) != 2 {
+		t.Fatalf("re-apply with the product gone must re-run, got %d invocations", len(lines))
+	}
+	// product present: re-apply skips like any journaled step
+	if err := os.WriteFile(product, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Apply([]Step{step}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, linkerLog); len(lines) != 2 {
+		t.Fatalf("re-apply with the product present re-ran the command: %v", lines)
+	}
+	if m := mustLoad(t, root); len(m.Records) != 1 {
+		t.Fatalf("re-runs must not duplicate the journal record, got %+v", m.Records)
+	}
+}
+
+// A run_cmd that declares Input re-runs when that content drifts (a new
+// release rendering different domain XML) instead of "already applied".
+func TestRunCmdInputRerunsOnDrift(t *testing.T) {
+	root := t.TempDir()
+	dir := fakePath(t)
+	virshLog := fakeBin(t, dir, "virsh", "")
+	e, _, _ := eng(root, true)
+
+	step := func(input string) Step {
+		return Step{
+			ID: "define", Kind: KindRunCmd,
+			Cmd:   []string{"virsh", "define", "/etc/orthogonals/vms/win11.xml"},
+			Input: []byte(input),
+		}
+	}
+	if err := e.Apply([]Step{step("xml-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	m := mustLoad(t, root)
+	if len(m.Records) != 1 || m.Records[0].InputSHA256 != sha256hex([]byte("xml-v1")) {
+		t.Fatalf("record must carry the input hash, got %+v", m.Records)
+	}
+
+	// same input: skip
+	if err := e.Apply([]Step{step("xml-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, virshLog); len(lines) != 1 {
+		t.Fatalf("unchanged input re-ran the command: %v", lines)
+	}
+
+	// drifted input, dry-run: announce, do not execute
+	dry, out, _ := eng(root, false)
+	if err := dry.Apply([]Step{step("xml-v2")}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "(journaled input changed)") {
+		t.Errorf("dry-run must name the re-run reason, got %q", out.String())
+	}
+	if lines := logLines(t, virshLog); len(lines) != 1 {
+		t.Fatalf("dry-run executed the command: %v", lines)
+	}
+
+	// drifted input: re-run, refresh the hash, no duplicate record
+	if err := e.Apply([]Step{step("xml-v2")}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, virshLog); len(lines) != 2 {
+		t.Fatalf("drifted input must re-run, got %v", lines)
+	}
+	m = mustLoad(t, root)
+	if len(m.Records) != 1 || m.Records[0].InputSHA256 != sha256hex([]byte("xml-v2")) {
+		t.Fatalf("re-run must refresh the hash on the single record, got %+v", m.Records)
+	}
+}
+
+// A record journaled before Input existed (empty hash) re-runs once when the
+// step starts declaring Input, then converges.
+func TestRunCmdInputMissingHashRerunsOnce(t *testing.T) {
+	root := t.TempDir()
+	dir := fakePath(t)
+	virshLog := fakeBin(t, dir, "virsh", "")
+	e, _, _ := eng(root, true)
+
+	bare := Step{ID: "define", Kind: KindRunCmd, Cmd: []string{"virsh", "define", "x.xml"}}
+	if err := e.Apply([]Step{bare}); err != nil {
+		t.Fatal(err)
+	}
+	withInput := bare
+	withInput.Input = []byte("xml")
+	if err := e.Apply([]Step{withInput}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, virshLog); len(lines) != 2 {
+		t.Fatalf("pre-Input record must re-run once, got %v", lines)
+	}
+	if err := e.Apply([]Step{withInput}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, virshLog); len(lines) != 2 {
+		t.Fatalf("converged record re-ran again: %v", lines)
+	}
+}
+
 func TestPartialFailureLeavesManifestConsistent(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "etc/foo.conf", "old\n", 0o644)
@@ -502,6 +625,11 @@ func TestApplyRefusesDivergedRunCmd(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--args=a vfio-pci.ids=x") || !strings.Contains(err.Error(), "--args=a") {
 		t.Errorf("error should show both commands: %v", err)
+	}
+	// refusal outranks the Input re-run path
+	err = e2.Apply([]Step{{ID: "args", Kind: KindRunCmd, Cmd: []string{"grubby", "--args=b"}, Input: []byte("drifted")}})
+	if err == nil || !strings.Contains(err.Error(), "undo first") {
+		t.Fatalf("diverged run_cmd with Input must still refuse, got %v", err)
 	}
 }
 

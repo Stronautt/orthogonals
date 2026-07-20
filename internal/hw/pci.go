@@ -27,13 +27,16 @@ const (
 
 // PCIDevice is one entry from sys/bus/pci/devices.
 type PCIDevice struct {
-	Address    string `json:"address"`     // 0000:01:00.0
-	Vendor     string `json:"vendor"`      // 0x10de
-	Device     string `json:"device"`      // 0x2206
-	Class      string `json:"class"`       // 0x030000
-	Driver     string `json:"driver"`      // empty when unbound
-	IOMMUGroup int    `json:"iommu_group"` // -1 when IOMMU is off
-	HasReset   bool   `json:"has_reset"`   // sysfs reset file present
+	Address    string   `json:"address"`              // 0000:01:00.0
+	Vendor     string   `json:"vendor"`               // 0x10de
+	Device     string   `json:"device"`               // 0x2206
+	Class      string   `json:"class"`                // 0x030000
+	Driver     string   `json:"driver"`               // empty when unbound
+	IOMMUGroup int      `json:"iommu_group"`          // -1 when IOMMU is off
+	HasReset   bool     `json:"has_reset"`            // sysfs reset file present
+	BootVGA    bool     `json:"boot_vga"`             // firmware primary GPU (vgaarb marker)
+	DRMCard    string   `json:"drm_card,omitempty"`   // e.g. "card0"; empty = no DRM card (vfio-bound, driverless)
+	Connectors []string `json:"connectors,omitempty"` // connected connector names, e.g. "DP-1"
 }
 
 // VendorDeviceID renders the vendor:device pair in the vfio-pci.ids= form:
@@ -69,6 +72,8 @@ func ScanPCI(root string) ([]PCIDevice, error) {
 		if _, err := os.Stat(filepath.Join(dir, "reset")); err == nil {
 			d.HasReset = true
 		}
+		d.BootVGA = readTrim(filepath.Join(dir, "boot_vga")) == "1"
+		d.DRMCard, d.Connectors = scanDRM(dir)
 		devs = append(devs, d)
 	}
 	return devs, nil
@@ -164,6 +169,40 @@ func audioSibling(devices []PCIDevice, gpu PCIDevice) *PCIDevice {
 		}
 	}
 	return nil
+}
+
+// scanDRM reads a PCI device's drm/ directory and the connected connectors
+// of its card. A "" card means unknown (vfio-bound and driverless GPUs have
+// no drm/ dir), never "no monitors".
+func scanDRM(devDir string) (card string, connected []string) {
+	entries, err := os.ReadDir(filepath.Join(devDir, "drm"))
+	if err != nil {
+		return "", nil
+	}
+	for _, e := range entries {
+		// cardN only: renderD* nodes and cardN-<connector> dirs are siblings.
+		if strings.HasPrefix(e.Name(), "card") && !strings.Contains(e.Name(), "-") {
+			card = e.Name()
+			break
+		}
+	}
+	if card == "" {
+		return "", nil
+	}
+	conns, err := os.ReadDir(filepath.Join(devDir, "drm", card))
+	if err != nil {
+		return card, nil
+	}
+	for _, c := range conns {
+		if !strings.HasPrefix(c.Name(), card+"-") {
+			continue
+		}
+		status := readTrim(filepath.Join(devDir, "drm", card, c.Name(), "status"))
+		if status == "connected" {
+			connected = append(connected, strings.TrimPrefix(c.Name(), card+"-"))
+		}
+	}
+	return card, connected
 }
 
 func readTrim(path string) string {

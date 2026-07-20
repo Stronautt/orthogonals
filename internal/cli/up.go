@@ -73,29 +73,6 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "up: VM %s is not defined yet — running the pipeline for it on the prepared host\n", name)
 		st = orchestrate.StateFresh
 	}
-	if !cfg.Yes {
-		fmt.Fprintf(stdout, "pipeline state: %s\n", st)
-		for _, s := range orchestrate.Remaining(st) {
-			fmt.Fprintf(stdout, "  next: %s\n", s)
-		}
-		fmt.Fprintln(stdout, "dry run — re-run with --yes to run the pipeline")
-		return 0
-	}
-	// the media stage needs the ISO; only demand it while that stage is ahead
-	if *win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
-		fmt.Fprintln(stderr, "usage: orthogonals up --yes --win11-iso <path> [flags]")
-		return 2
-	}
-	if err := orchestrate.SaveVMName(cfg.Root, name); err != nil {
-		return fail(err)
-	}
-	if restart {
-		// Machine.Run reloads the state from disk, so the restart must land
-		// there before the run starts
-		if err := orchestrate.SaveState(cfg.Root, st); err != nil {
-			return fail(err)
-		}
-	}
 
 	run := func(cmd command, cmdArgs []string) error {
 		if code := cmd(cfg, cmdArgs, stdout, stderr); code != 0 {
@@ -104,7 +81,10 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		return nil
 	}
 	applyArgs := []string{"--binding", *binding, "--user", *user}
-	vmArgs := []string{"--vm-name", name, "--win11-iso", *win11ISO}
+	vmArgs := []string{"--vm-name", name, "--user", *user}
+	if *win11ISO != "" {
+		vmArgs = append(vmArgs, "--win11-iso", *win11ISO)
+	}
 	if *displayName != "" {
 		vmArgs = append(vmArgs, "--display-name", *displayName)
 	}
@@ -131,14 +111,58 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	vmArgs = append(vmArgs, "define")
+	launchHint := fmt.Sprintf("launch with %s or the %q desktop entry",
+		hostcfg.LauncherName(name), resolveDisplayName(cfg.Root, name, *displayName))
+
+	// a VM whose pipeline completed: converge instead of "setup complete" — a
+	// new release may render different host artifacts or domain XML, and the
+	// engine re-applies exactly what drifted. Completion is judged from the
+	// journal (media detach only ever runs after verify succeeds), not from
+	// state.json: the state file is ephemeral (undo removes it) while the
+	// manifest is the durable record. Both subcommands dry-run without --yes.
+	if defined && domain.InstallMediaDetached(man, name) {
+		fmt.Fprintf(stdout, "up: setup complete — converging host and VM %s to this binary's settings\n", name)
+		if err := run(cmdApply, applyArgs); err != nil {
+			return fail(err)
+		}
+		if err := run(cmdVM, vmArgs); err != nil {
+			return fail(err)
+		}
+		if cfg.Yes {
+			fmt.Fprintf(stdout, "converged — %s\n", launchHint)
+		}
+		return 0
+	}
+	if !cfg.Yes {
+		fmt.Fprintf(stdout, "pipeline state: %s\n", st)
+		for _, s := range orchestrate.Remaining(st) {
+			fmt.Fprintf(stdout, "  next: %s\n", s)
+		}
+		fmt.Fprintln(stdout, "dry run — re-run with --yes to run the pipeline")
+		return 0
+	}
+	// the media stage needs the ISO; only demand it while that stage is ahead
+	if *win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
+		fmt.Fprintln(stderr, "usage: orthogonals up --yes --win11-iso <path> [flags]")
+		return 2
+	}
+	if err := orchestrate.SaveVMName(cfg.Root, name); err != nil {
+		return fail(err)
+	}
+	if restart {
+		// Machine.Run reloads the state from disk, so the restart must land
+		// there before the run starts
+		if err := orchestrate.SaveState(cfg.Root, st); err != nil {
+			return fail(err)
+		}
+	}
 	mediaArgs := []string{"--win11-iso", *win11ISO, "--vm-name", name}
 	if *nvidiaInstaller != "" {
 		mediaArgs = append(mediaArgs, "--nvidia-installer", *nvidiaInstaller)
 	}
 
 	m := &orchestrate.Machine{Root: cfg.Root, Out: stdout,
-		LaunchHint: fmt.Sprintf("launch with %s or the %q desktop entry",
-			hostcfg.LauncherName(name), resolveDisplayName(cfg.Root, name, *displayName)),
+		LaunchHint: launchHint,
 		Stages: orchestrate.Stages{
 			Apply:      func() error { return run(cmdApply, applyArgs) },
 			VerifyBoot: func() error { return orchestrate.VerifyBoot(cfg.Root) },
@@ -157,7 +181,13 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 				if err := orchestrate.Verify(cfg.Root, name, stdout); err != nil {
 					return err
 				}
-				// only now: a failed verify may still want the install media around
+				// only now: a failed verify may still want the install media
+				// around. Verified means the guest never boots from it again —
+				// drop the cdrom devices and the credentials-bearing ISO.
+				e := &steps.Engine{Root: cfg.Root, Yes: cfg.Yes, Out: stdout, Err: stderr}
+				if err := e.Apply(domain.DetachMediaSteps(name)); err != nil {
+					return err
+				}
 				removeProvisionISO(cfg.Root, name, stdout)
 				return nil
 			},

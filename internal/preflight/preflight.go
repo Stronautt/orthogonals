@@ -60,6 +60,8 @@ func Analyze(r *hw.Result, f Facts) []Check {
 	return []Check{
 		checkIOMMU(r),
 		checkGPUTopology(r),
+		checkDisplayTopology(r),
+		checkBootVGA(r),
 		checkDuplicateGPUIDs(r),
 		checkIOMMUGroup(r),
 		checkGPUReset(r),
@@ -134,6 +136,76 @@ func checkGPUTopology(r *hw.Result) Check {
 	default:
 		return Check{name, Pass, fmt.Sprintf("Intel iGPU %s + NVIDIA dGPU %s", r.GPUs.IGPU.Address, nvidia[0].Address), ""}
 	}
+}
+
+func vendorName(vendor string) string {
+	switch vendor {
+	case hw.VendorIntel:
+		return "Intel"
+	case hw.VendorNVIDIA:
+		return "NVIDIA"
+	case hw.VendorAMD:
+		return "AMD"
+	}
+	return vendor
+}
+
+// checkDisplayTopology verifies the one physical requirement software cannot
+// remove: every monitor must be cabled to the iGPU, because a vfio-bound
+// dGPU cannot scan out the host desktop. A GPU without a DRM card reports
+// nothing about its connectors (vfio-bound or driverless), so absence of
+// evidence never Fails — only a display positively seen on a dGPU while the
+// iGPU has none does.
+func checkDisplayTopology(r *hw.Result) Check {
+	const name = "display-topology"
+	if r.GPUs.IGPU == nil {
+		return Check{name, Pass, "skipped (no Intel iGPU — see gpu-topology)", ""}
+	}
+	igpu := r.GPUs.IGPU
+	if igpu.DRMCard == "" {
+		return Check{name, Warn, "cannot verify display cabling: the iGPU exposes no DRM card (Intel graphics driver not loaded?)",
+			"make sure every monitor is plugged into the motherboard video outputs, not the graphics card, then re-run preflight"}
+	}
+	var dgpuConnected []string
+	for _, d := range r.GPUs.DGPUs {
+		if len(d.Connectors) > 0 {
+			dgpuConnected = append(dgpuConnected,
+				fmt.Sprintf("%s dGPU %s (%s)", vendorName(d.Vendor), d.Address, strings.Join(d.Connectors, ", ")))
+		}
+	}
+	switch {
+	case len(igpu.Connectors) > 0 && len(dgpuConnected) == 0:
+		return Check{name, Pass, fmt.Sprintf("all connected displays are on the iGPU (%s)", strings.Join(igpu.Connectors, ", ")), ""}
+	case len(igpu.Connectors) > 0:
+		return Check{name, Warn, fmt.Sprintf("a display is also connected to the %s — after apply the desktop session ignores the dGPU, so that monitor stays dark",
+			strings.Join(dgpuConnected, " and ")),
+			"move that cable to a motherboard video output"}
+	case len(dgpuConnected) > 0:
+		return Check{name, Fail, fmt.Sprintf("no display is connected to the iGPU; your monitor(s) are on the %s", strings.Join(dgpuConnected, " and ")),
+			"shut down and move the monitor cable(s) from the listed connector(s) to the motherboard video outputs — the desktop looks and behaves the same afterwards, and GPU apps still run on the NVIDIA card while no VM is running"}
+	default:
+		return Check{name, Warn, "no connected display found on any GPU",
+			"if a monitor is plugged into the graphics card, move it to the motherboard video outputs (a vfio-bound or non-KMS dGPU cannot report its connectors); headless hosts can ignore this"}
+	}
+}
+
+// checkBootVGA reports which GPU the firmware lit as primary. A dGPU that is
+// boot_vga still works — the udev mutter-ignore rule keeps the session on
+// the iGPU — but GRUB and early boot render on the dGPU's outputs, which is
+// invisible once the monitors are on the motherboard. That matters for the
+// GRUB escape-hatch recovery flow, so it warns instead of passing silently.
+func checkBootVGA(r *hw.Result) Check {
+	const name = "boot-vga"
+	if r.GPUs.IGPU != nil && r.GPUs.IGPU.BootVGA {
+		return Check{name, Pass, "the firmware primary GPU (boot_vga) is the Intel iGPU", ""}
+	}
+	for _, d := range r.GPUs.DGPUs {
+		if d.BootVGA {
+			return Check{name, Warn, fmt.Sprintf("the firmware primary GPU is the dGPU at %s — the desktop still runs on the iGPU, but GRUB and early boot output render on the dGPU's outputs, invisible once your monitors are on the motherboard", d.Address),
+				"optional: set the BIOS primary display to the CPU/integrated graphics (ASUS: Advanced > System Agent > Graphics Configuration > \"Primary Display: CPU Graphics\") so the boot menu stays visible — this matters if you ever need the GRUB recovery steps"}
+		}
+	}
+	return Check{name, Pass, "skipped (no boot_vga marker in sysfs)", ""}
 }
 
 // checkIOMMUGroup enforces the whole-group rule: everything in the dGPU's
@@ -279,8 +351,8 @@ func checkMemory(r *hw.Result) Check {
 	assignable := domain.DefaultGuestRAMGiB(r.Platform.MemTotalBytes)
 	if assignable < domain.MinRAMGiB {
 		return Check{name, Fail,
-			fmt.Sprintf("host has %.1f GiB RAM; the guest gets min(half, %d GiB) = %d GiB but needs at least %d GiB",
-				gib(r.Platform.MemTotalBytes), domain.MaxDefaultRAMGiB, assignable, domain.MinRAMGiB),
+			fmt.Sprintf("host has %.1f GiB RAM; the guest gets all but %d GiB = %d GiB but needs at least %d GiB",
+				gib(r.Platform.MemTotalBytes), domain.HostReserveRAMGiB, assignable, domain.MinRAMGiB),
 			"Windows 11 needs 8 GiB minimum; v1 requires a 16 GiB host"}
 	}
 	return Check{name, Pass, fmt.Sprintf("%.1f GiB host RAM, %d GiB assignable", gib(r.Platform.MemTotalBytes), assignable), ""}

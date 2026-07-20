@@ -153,6 +153,7 @@ func CurrentKargTokens() ([]string, error) {
 // desktop entry is the user-facing way in.
 func LauncherName(vm string) string   { return "_ort-run-" + vm + "-lg" }
 func DesktopEntryID(vm string) string { return "desktop-entry-" + vm }
+func DesktopLinkID(vm string) string  { return "desktop-link-" + vm }
 
 // Artifact is one rendered configuration file ready for a WriteFile step.
 type Artifact struct {
@@ -198,8 +199,9 @@ func renderTemplate(name string, data any) ([]byte, error) {
 }
 
 // VMSteps renders the per-VM artifacts `vm define` journals alongside the
-// domain: the launcher and the desktop entry named after the display name.
-func VMSteps(vmName, displayName string) ([]steps.Step, error) {
+// domain: the launcher, the desktop entry named after the display name, and
+// the user's ~/Desktop symlink to it.
+func VMSteps(vmName, displayName, user string) ([]steps.Step, error) {
 	if err := steps.CheckVMName(vmName); err != nil {
 		return nil, err
 	}
@@ -207,10 +209,15 @@ func VMSteps(vmName, displayName string) ([]steps.Step, error) {
 	if strings.ContainsAny(displayName, "\n\r") {
 		return nil, fmt.Errorf("bad display name %q: newlines not allowed", displayName)
 	}
+	// the user lands in the ~/Desktop link path and a shell command below
+	if user == "" || strings.ContainsAny(user, " \t\n'\"`$\\") {
+		return nil, fmt.Errorf("bad desktop user %q — pass --user", user)
+	}
 	data := struct{ VMName, DisplayName, Launcher string }{vmName, displayName, LauncherName(vmName)}
 	specs := []tplSpec{
 		{"vm-lg", "/usr/local/bin/" + LauncherName(vmName), LauncherName(vmName), 0o755},
-		{"vm-looking-glass.desktop", desktopEntryPath(vmName), DesktopEntryID(vmName), 0o644},
+		// +x: GNOME/KDE refuse to launch a non-executable .desktop from ~/Desktop
+		{"vm-looking-glass.desktop", desktopEntryPath(vmName), DesktopEntryID(vmName), 0o755},
 	}
 	var list []steps.Step
 	for _, spec := range specs {
@@ -223,6 +230,25 @@ func VMSteps(vmName, displayName string) ([]steps.Step, error) {
 			Path: spec.path, Content: content, Mode: spec.mode,
 		})
 	}
+	// a symlink, not a copy: the entry stays single-sourced, and undefine
+	// leaves no stale file behind. -sfn converges an existing .orthogonals
+	// file (only ever ours, per the marker) to the link. GNOME only honors
+	// double-click launch once the per-user gvfs metadata marks the entry
+	// trusted, so gio rides in the same step and runs whenever the link does
+	// — everything as the user, on their session bus, so ownership and the
+	// metadata store come out right. CreatesPath re-runs the step when the
+	// link was deleted by hand; the journal alone cannot see that.
+	// ponytail: hardcodes /home/<user>/Desktop; xdg-user-dir DESKTOP if
+	// localized desktop dirs ever matter.
+	link := "/home/" + user + "/Desktop/" + vmName + ".orthogonals.desktop"
+	list = append(list, steps.Step{
+		ID: DesktopLinkID(vmName), Kind: steps.KindRunCmd,
+		Cmd: []string{"runuser", "-u", user, "--", "sh", "-c",
+			"mkdir -p /home/" + user + "/Desktop && ln -sfn " + desktopEntryPath(vmName) + " " + link +
+				" && DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus gio set " + link + " metadata::trusted true"},
+		UndoCmd:     []string{"rm", "-f", link},
+		CreatesPath: link,
+	})
 	return list, nil
 }
 

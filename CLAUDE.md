@@ -26,9 +26,11 @@ vm → media → install → verify, all orchestrated by `up`.
   backed up, so `undo` restores byte-identically. Dry-run is the default;
   `--yes` gates all mutation. A journaled step whose command/path diverges
   from the current settings is refused (undo first), never silently skipped
-  or rebound.
+  or rebound; a run_cmd that declares `Input` content re-runs when that
+  content drifts (how `virsh define` converges on a new release's XML).
 - `up` is a persisted state machine (`state.json`) that re-invokes the
-  subcommand funcs via argv; it stops cleanly at the reboot boundary.
+  subcommand funcs via argv; it stops cleanly at the reboot boundary. On a
+  completed install it runs a converge pass (apply + vm define) instead.
 - All download pins (URL/version/SHA256) and the host package list live in
   `internal/artifacts/artifacts.go` — the single bump place.
 - Templates render via `embed.FS` next to their package; every rendered

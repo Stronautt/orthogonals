@@ -21,6 +21,7 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet(cfg, stderr)
 	vmName := fs.String("vm-name", "", "libvirt domain name (default: win11 for define, the sole managed VM for undefine)")
 	displayName := fs.String("display-name", "", "desktop shortcut name (default: the registered name, \"Windows 11\" for the default VM, else the VM name)")
+	user := fs.String("user", defaultUser(), "desktop user whose ~/Desktop gets the VM shortcut link")
 	ram := fs.Int("ram", 0, "guest RAM in GiB (default min(half of host RAM, 16))")
 	disk := fs.String("disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
 	diskSize := fs.Int("disk-size", 0, "disk image size in GiB (default 100)")
@@ -69,13 +70,21 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		*vmName = steps.DefaultVMName
 	}
 
-	if *win11ISO == "" {
+	m, err := steps.Load(cfg.Root)
+	if err != nil {
+		return fail(err)
+	}
+	// the install ISO is load-bearing only until the pipeline detached the
+	// installer media; a converging redefine of an installed VM needs no ISO
+	if *win11ISO == "" && !domain.InstallMediaDetached(m, *vmName) {
 		fmt.Fprintln(stderr, "usage: orthogonals vm --win11-iso <path> [flags] define")
 		return 2
 	}
-	isoPath, err := filepath.Abs(*win11ISO)
-	if err != nil {
-		return fail(err)
+	isoPath := ""
+	if *win11ISO != "" {
+		if isoPath, err = filepath.Abs(*win11ISO); err != nil {
+			return fail(err)
+		}
 	}
 	// re-defines keep the guest settings the VM's <metadata> block already
 	// carries unless a flag overrides them — a rebuild must not silently
@@ -95,8 +104,17 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	diskPath, diskSizeGiB := *disk, *diskSize
+	if diskPath == "" {
+		if jp, jsize, ok := domain.JournaledDisk(m, *vmName); ok {
+			diskPath = jp
+			if diskSizeGiB == 0 {
+				diskSizeGiB = jsize
+			}
+		}
+	}
 	p, err := domain.NewProfile(res, domain.Options{
-		VMName: *vmName, RAMGiB: *ram, DiskPath: *disk, DiskSizeGiB: *diskSize,
+		VMName: *vmName, RAMGiB: *ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
 		Width: w, Height: h,
 		GuestUser:     keep(*guestUser, prev.User),
 		GuestPassword: keep(*guestPassword, prev.Password),
@@ -110,9 +128,11 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	m, err := steps.Load(cfg.Root)
-	if err != nil {
-		return fail(err)
+	domain.Converge(&p, m)
+	// a redefine must carry the live domain's UUID: virsh define refuses a
+	// name that already exists under a different one
+	if m.Has(domain.DefineStepID(p.Name)) {
+		p.UUID = steps.DomainUUID(p.Name)
 	}
 	// qemu-img create truncates: refuse to run it over a disk image we did
 	// not create (a journaled step means the image is ours and is skipped on
@@ -126,7 +146,7 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	vmSteps, err := hostcfg.VMSteps(p.Name, resolveDisplayName(cfg.Root, p.Name, *displayName))
+	vmSteps, err := hostcfg.VMSteps(p.Name, resolveDisplayName(cfg.Root, p.Name, *displayName), *user)
 	if err != nil {
 		return fail(err)
 	}
@@ -136,6 +156,9 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 	}
 	if !cfg.Yes {
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to apply")
+	} else if state := steps.DomainState(p.Name); steps.DomainLive(state) {
+		// virsh define only replaces the persistent config of a live domain
+		fmt.Fprintf(stdout, "VM %s is %s — the updated definition takes effect on its next boot\n", p.Name, state)
 	}
 	return 0
 }
@@ -167,8 +190,11 @@ func vmUndefine(cfg *Config, e *steps.Engine, name string, purge bool, stdout, s
 		fmt.Fprintf(stderr, "orthogonals vm: VM %s is %s — shut it down first: virsh shutdown %s\n", name, state, name)
 		return 1
 	}
-	// reverse apply order; the install-video edit rode on the defined domain
-	ids := []string{domain.InstallVideoStepID(name), hostcfg.DesktopEntryID(name), hostcfg.LauncherName(name), domain.DefineStepID(name)}
+	// reverse apply order; the media-detach and install-video edits rode on
+	// the defined domain
+	ids := append(domain.DetachMediaStepIDs(name),
+		domain.InstallVideoStepID(name), hostcfg.DesktopLinkID(name), hostcfg.DesktopEntryID(name),
+		hostcfg.LauncherName(name), domain.DefineStepID(name))
 	if purge {
 		// the disk records go only after the domain
 		ids = append(ids, domain.DiskRestoreconID(name), domain.DiskFcontextID(name), domain.DiskImageID(name))

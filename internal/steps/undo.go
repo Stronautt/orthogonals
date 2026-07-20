@@ -88,6 +88,20 @@ func DomainState(name string) string {
 	return line
 }
 
+// DomainUUID reports a defined domain's UUID, "" when the domain does not
+// exist or libvirt is unreachable. A redefine must render it into the XML:
+// virsh define refuses a name that already exists under a different UUID.
+func DomainUUID(name string) string {
+	cmd := exec.Command("virsh", "domuuid", name)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return line
+}
+
 // DomainLive reports whether a DomainState means the guest still holds its
 // resources (the GPU included) — anything between start and a completed
 // shutdown or destroy.

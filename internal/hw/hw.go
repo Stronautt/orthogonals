@@ -64,7 +64,7 @@ func (r *Result) Summary() string {
 	}
 
 	if r.GPUs.IGPU != nil {
-		fmt.Fprintf(&b, "iGPU: %s\n", devLine(*r.GPUs.IGPU))
+		fmt.Fprintf(&b, "iGPU: %s\n", gpuLine(*r.GPUs.IGPU))
 	} else {
 		b.WriteString("iGPU: none\n")
 	}
@@ -72,7 +72,7 @@ func (r *Result) Summary() string {
 		b.WriteString("dGPU: none\n")
 	}
 	for _, d := range r.GPUs.DGPUs {
-		fmt.Fprintf(&b, "dGPU: %s\n", devLine(d.PCIDevice))
+		fmt.Fprintf(&b, "dGPU: %s\n", gpuLine(d.PCIDevice))
 		if d.Audio != nil {
 			fmt.Fprintf(&b, "  audio: %s\n", devLine(*d.Audio))
 		}
@@ -124,4 +124,22 @@ func devLine(d PCIDevice) string {
 		group = fmt.Sprintf("IOMMU group %d", d.IOMMUGroup)
 	}
 	return fmt.Sprintf("%s %s (%s, %s)", d.Address, d.VendorDeviceID(), driver, group)
+}
+
+// gpuLine is devLine plus firmware-primary and cabling facts, so detect
+// output doubles as cabling guidance. A GPU without a DRM card says nothing
+// about displays: absence is unknown, not "no monitors".
+func gpuLine(d PCIDevice) string {
+	line := devLine(d)
+	if d.BootVGA {
+		line += ", firmware primary"
+	}
+	switch {
+	case d.DRMCard == "":
+	case len(d.Connectors) == 0:
+		line += ", no displays connected"
+	default:
+		line += ", displays: " + strings.Join(d.Connectors, " ")
+	}
+	return line
 }

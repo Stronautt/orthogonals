@@ -94,27 +94,44 @@ func TestGuestConfigRoundTrip(t *testing.T) {
 
 func TestRenderGolden(t *testing.T) {
 	cases := []struct {
-		name string
-		res  *hw.Result
-		opts Options
+		name        string
+		res         *hw.Result
+		opts        Options
+		provisioned bool
 	}{
-		// 39-bit host, hybrid CPU, defaults (4K buffer, 16 GiB, 100 GiB disk),
+		// 39-bit host, hybrid CPU, defaults (4K buffer, 24 GiB, 100 GiB disk),
 		// installer media attached as SATA cdroms
 		{"reference.xml", reference(t), Options{
 			Win11ISO:     "/home/user/Win11.iso",
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
-		}},
+		}, false},
 		// 32M IVSHMEM sizing at an explicit 1080p maximum on the same 39-bit
 		// reference host; no media (the cdrom blocks must disappear when the
 		// ISO paths are empty)
-		{"reference-1080p.xml", reference(t), Options{Width: 1920, Height: 1080}},
+		{"reference-1080p.xml", reference(t), Options{Width: 1920, Height: 1080}, false},
 		// no E-cores + 46-bit host: pinning fallback, no maxphysaddr/fw_cfg
-		{"no-ecores-46bit.xml", noECores(), Options{}},
+		{"no-ecores-46bit.xml", noECores(), Options{}, false},
+		// a redefine after the pipeline finished: Converge must drop the
+		// cdroms the ISO options carry and render video model=none
+		{"provisioned.xml", reference(t), Options{
+			Win11ISO:     "/home/user/Win11.iso",
+			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
+			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mustRender(t, mustProfile(t, tc.res, tc.opts))
+			p := mustProfile(t, tc.res, tc.opts)
+			if tc.provisioned {
+				Converge(&p, &steps.Manifest{Records: []steps.Record{
+					{ID: InstallVideoStepID(p.Name)},
+					{ID: DetachMediaStepID(p.Name, "sda")},
+					{ID: DetachMediaStepID(p.Name, "sdb")},
+					{ID: DetachMediaStepID(p.Name, "sdc")},
+				}})
+			}
+			got := mustRender(t, p)
 
 			// well-formedness (including the qemu: namespace binding)
 			d := xml.NewDecoder(bytes.NewReader(got))
@@ -153,16 +170,17 @@ func TestReferenceProfile(t *testing.T) {
 	if p.Name != "win11" {
 		t.Errorf("Name = %q, want win11", p.Name)
 	}
-	if p.RAMMiB != 16*1024 {
-		t.Errorf("RAMMiB = %d, want 16384 (min(host/2, 16 GiB))", p.RAMMiB)
+	if p.RAMMiB != 24*1024 {
+		t.Errorf("RAMMiB = %d, want 24576 (host minus the 8 GiB reserve)", p.RAMMiB)
 	}
 	if p.VCPUs != 10 || p.Cores != 5 || p.ThreadsPerCore != 2 {
 		t.Errorf("topology = %d vCPUs %d cores × %d threads, want 10 = 5×2", p.VCPUs, p.Cores, p.ThreadsPerCore)
 	}
-	// reserve physical core 0 (threads 0-1) for the host: vCPU i → CPU 2+i
+	// the first physical P-core (CPUs 0,1) stays with the host for the Looking
+	// Glass client and SPICE input; the guest gets the rest: vCPU i → CPU i+2
 	for i, pin := range p.VCPUPins {
-		if pin.VCPU != i || pin.CPU != 2+i {
-			t.Errorf("pin %d = vcpu %d → cpu %d, want vcpu %d → cpu %d", i, pin.VCPU, pin.CPU, i, 2+i)
+		if pin.VCPU != i || pin.CPU != i+2 {
+			t.Errorf("pin %d = vcpu %d → cpu %d, want vcpu %d → cpu %d", i, pin.VCPU, pin.CPU, i, i+2)
 		}
 	}
 	if p.EmulatorPin != "12,13,14,15" {
@@ -191,18 +209,18 @@ func TestReferenceProfile(t *testing.T) {
 	}
 }
 
-// TestNoECoresFallback: without E-cores the last P-core is taken back from
-// the guest for emulator+iothread.
+// TestNoECoresFallback: without E-cores physical core 0 stays with the host
+// and absorbs emulator+iothread; the guest gets every other thread.
 func TestNoECoresFallback(t *testing.T) {
 	p := mustProfile(t, noECores(), Options{})
-	if p.VCPUs != 12 || p.Cores != 6 || p.ThreadsPerCore != 2 {
-		t.Errorf("topology = %d vCPUs %d cores × %d threads, want 12 = 6×2", p.VCPUs, p.Cores, p.ThreadsPerCore)
+	if p.VCPUs != 14 || p.Cores != 7 || p.ThreadsPerCore != 2 {
+		t.Errorf("topology = %d vCPUs %d cores × %d threads, want 14 = 7×2", p.VCPUs, p.Cores, p.ThreadsPerCore)
 	}
-	if last := p.VCPUPins[len(p.VCPUPins)-1]; last.CPU != 13 {
-		t.Errorf("last vCPU pin = cpu %d, want 13 (cpus 14-15 reserved for emulator)", last.CPU)
+	if last := p.VCPUPins[len(p.VCPUPins)-1]; last.CPU != 15 {
+		t.Errorf("last vCPU pin = cpu %d, want 15 (only cpus 0-1 reserved)", last.CPU)
 	}
-	if p.EmulatorPin != "14,15" || p.IOThreadPin != "14,15" {
-		t.Errorf("emulator/iothread pins = %q/%q, want 14,15 for both", p.EmulatorPin, p.IOThreadPin)
+	if p.EmulatorPin != "0,1" || p.IOThreadPin != "0,1" {
+		t.Errorf("emulator/iothread pins = %q/%q, want 0,1 for both", p.EmulatorPin, p.IOThreadPin)
 	}
 	if p.MaxPhysAddrBits != 0 {
 		t.Errorf("MaxPhysAddrBits = %d, want 0 on a 46-bit host", p.MaxPhysAddrBits)
@@ -255,6 +273,10 @@ func TestQuirkFixes(t *testing.T) {
 		"<sound model='ich9'>",   // guest audio rides SPICE: the dGPU HDA has no sink on a headless card
 		"<audio id='1' type='spice'/>",
 		"machine='q35'",
+		"<libosinfo:os id='http://microsoft.com/win/11'/>", // virt tools show the guest as Windows 11
+		"<input type='mouse' bus='virtio'/>",               // Looking Glass raw-input path
+		"<input type='keyboard' bus='virtio'/>",
+		"<direct state='on'/>", // hv-stimer-direct: Windows takes synthetic timers without an intercept
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("domain missing %q", want)
@@ -275,12 +297,13 @@ func TestAssignableVCPUs(t *testing.T) {
 		cpu  hw.CPU
 		want int
 	}{
-		// 6 P-cores ×2 threads + 8 E-cores: core 0 reserved → 10
+		// 6 P-cores ×2 threads + 8 E-cores: first P-core kept for the host → 10
 		{"hybrid 6P+8E", hw.CPU{Threads: 20, Cores: 14, PCores: pcores(12), ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}}, 10},
-		// flat 8 cores, no HT, no E-cores: host core + emulator core → 6
-		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 6},
-		// 2 cores HT: everything is reserved, nothing assignable
-		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 0},
+		// flat 8 cores, no HT, no E-cores: core 0 kept for host+emulator → 7
+		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 7},
+		// 2 cores HT: one core left after the host reserve — under MinVCPUs,
+		// so pinning still refuses it downstream
+		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 2},
 		{"unusable topology", hw.CPU{}, 0},
 	}
 	for _, tc := range cases {
@@ -296,9 +319,9 @@ func TestDefaultGuestRAMGiB(t *testing.T) {
 		want int
 	}{
 		{15872 << 20, 8}, // a "16 GiB" host reports ~15.5 GiB; round-up keeps it at the minimum
-		{32 << 30, 16},
-		{128 << 30, 16}, // capped at MaxDefaultRAMGiB
-		{12 << 30, 6},   // below the guest minimum — NewProfile rejects it downstream
+		{32 << 30, 24},
+		{128 << 30, 120},
+		{12 << 30, 4}, // below the guest minimum — NewProfile rejects it downstream
 	}
 	for _, tc := range cases {
 		if got := DefaultGuestRAMGiB(tc.host); got != tc.want {
@@ -325,7 +348,7 @@ func TestIVSHMEMSizing(t *testing.T) {
 
 func TestNewProfileErrors(t *testing.T) {
 	small := reference(t)
-	small.Platform.MemTotalBytes = 12 << 30 // half = 6 GiB < 8 GiB minimum
+	small.Platform.MemTotalBytes = 12 << 30 // 12 − 8 reserve = 4 GiB < 8 GiB minimum
 
 	tiny := noECores()
 	tiny.CPU = hw.CPU{Threads: 4, Cores: 2, PCores: []int{0, 1, 2, 3}}
@@ -364,6 +387,77 @@ func TestNewProfileErrors(t *testing.T) {
 	}
 }
 
+func TestConverge(t *testing.T) {
+	manifest := func(ids ...string) *steps.Manifest {
+		m := &steps.Manifest{}
+		for _, id := range ids {
+			m.Records = append(m.Records, steps.Record{ID: id})
+		}
+		return m
+	}
+	cases := []struct {
+		name          string
+		m             *steps.Manifest
+		wantVideoNone bool
+		wantISOs      [3]string // Win11, Virtio, Provision after Converge
+	}{
+		{"fresh pipeline", manifest(), false, [3]string{"w.iso", "v.iso", "p.iso"}},
+		{"video flipped only", manifest(InstallVideoStepID("win11")), true, [3]string{"w.iso", "v.iso", "p.iso"}},
+		{"partial detach", manifest(DetachMediaStepID("win11", "sda")), false, [3]string{"", "v.iso", "p.iso"}},
+		{"fully provisioned", manifest(
+			InstallVideoStepID("win11"),
+			DetachMediaStepID("win11", "sda"),
+			DetachMediaStepID("win11", "sdb"),
+			DetachMediaStepID("win11", "sdc"),
+		), true, [3]string{"", "", ""}},
+		{"other VM's records", manifest(InstallVideoStepID("gaming"), DetachMediaStepID("gaming", "sda")), false, [3]string{"w.iso", "v.iso", "p.iso"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Profile{Name: "win11", Win11ISO: "w.iso", VirtioISO: "v.iso", ProvisionISO: "p.iso"}
+			Converge(&p, tc.m)
+			if p.VideoNone != tc.wantVideoNone {
+				t.Errorf("VideoNone = %v, want %v", p.VideoNone, tc.wantVideoNone)
+			}
+			if got := [3]string{p.Win11ISO, p.VirtioISO, p.ProvisionISO}; got != tc.wantISOs {
+				t.Errorf("ISOs = %v, want %v", got, tc.wantISOs)
+			}
+		})
+	}
+	if InstallMediaDetached(manifest(), "win11") {
+		t.Error("fresh manifest must not report media detached")
+	}
+	if !InstallMediaDetached(manifest(DetachMediaStepID("win11", "sda")), "win11") {
+		t.Error("journaled sda detach must report media detached")
+	}
+}
+
+func TestJournaledDisk(t *testing.T) {
+	record := func(cmd ...string) *steps.Manifest {
+		return &steps.Manifest{Records: []steps.Record{{ID: DiskImageID("win11"), Cmd: cmd}}}
+	}
+	cases := []struct {
+		name     string
+		m        *steps.Manifest
+		wantPath string
+		wantSize int
+		wantOK   bool
+	}{
+		{"journaled", record("qemu-img", "create", "-f", "qcow2", "/tank/win11.qcow2", "200G"), "/tank/win11.qcow2", 200, true},
+		{"not journaled", &steps.Manifest{}, "", 0, false},
+		{"foreign argv shape", record("qemu-img", "create", "/x.qcow2"), "", 0, false},
+		{"unparseable size", record("qemu-img", "create", "-f", "qcow2", "/x.qcow2", "big"), "", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, size, ok := JournaledDisk(tc.m, "win11")
+			if path != tc.wantPath || size != tc.wantSize || ok != tc.wantOK {
+				t.Errorf("got (%q, %d, %v), want (%q, %d, %v)", path, size, ok, tc.wantPath, tc.wantSize, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestSteps(t *testing.T) {
 	list, err := Steps(mustProfile(t, reference(t), Options{}))
 	if err != nil {
@@ -397,8 +491,41 @@ func TestSteps(t *testing.T) {
 	if got := strings.Join(list[4].Cmd, " "); got != "virsh define /etc/orthogonals/vms/win11.xml" {
 		t.Errorf("define cmd = %q", got)
 	}
+	// the define re-runs when the rendered domain drifts, keyed on the same
+	// bytes the XML write step lands
+	if !bytes.Equal(list[4].Input, list[0].Content) {
+		t.Error("define step Input must be the rendered domain XML")
+	}
 	if got := strings.Join(list[4].UndoCmd, " "); got != "virsh undefine win11 --nvram --tpm" {
 		t.Errorf("define undo = %q", got)
+	}
+}
+
+// TestDetachMediaSteps: one virt-xml removal per installer cdrom, and the ID
+// list cli's undefine consumes is the exact reverse of apply order.
+func TestDetachMediaSteps(t *testing.T) {
+	list := DetachMediaSteps("win11")
+	wantCmds := []string{
+		"virt-xml win11 --remove-device --disk target=sda",
+		"virt-xml win11 --remove-device --disk target=sdb",
+		"virt-xml win11 --remove-device --disk target=sdc",
+	}
+	if len(list) != len(wantCmds) {
+		t.Fatalf("got %d steps, want %d", len(list), len(wantCmds))
+	}
+	for i, want := range wantCmds {
+		if got := strings.Join(list[i].Cmd, " "); got != want {
+			t.Errorf("step %d cmd = %q, want %q", i, got, want)
+		}
+		if list[i].UndoCmd != nil {
+			t.Errorf("step %d has an UndoCmd — undo drops the whole domain instead", i)
+		}
+	}
+	ids := DetachMediaStepIDs("win11")
+	for i := range list {
+		if ids[i] != list[len(list)-1-i].ID {
+			t.Errorf("undo id %d = %q, want %q (reverse apply order)", i, ids[i], list[len(list)-1-i].ID)
+		}
 	}
 }
 

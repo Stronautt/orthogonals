@@ -42,6 +42,14 @@ type Step struct {
 	// KindRunCmd
 	Cmd     []string
 	UndoCmd []string // paired inverse or regeneration command; empty = nothing to undo
+	// CreatesPath is the command's product (un-rooted, like Cmd). When set, a
+	// journaled step whose product was externally deleted re-runs instead of
+	// skipping — the command must be idempotent. Empty keeps skip-on-record.
+	CreatesPath string
+	// Input is the content the command consumes (e.g. the XML virsh define
+	// reads). When set, a journaled input-hash mismatch re-runs the command
+	// instead of skipping — the command must be idempotent.
+	Input []byte
 
 	// KindEnableUnit
 	Unit   string
@@ -213,6 +221,7 @@ func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restor
 }
 
 func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
+	inputDrift := false
 	if rec := m.find(s.ID); rec != nil {
 		if !slices.Equal(rec.Cmd, s.Cmd) {
 			// e.g. --binding or --disk changed since apply: skipping would
@@ -220,17 +229,39 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 			return fmt.Errorf("journaled command differs from the current settings — undo first (orthogonals undo, or vm undefine for VM steps)\nwas: %s\nnow: %s",
 				strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
 		}
-		fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
-		return nil
+		switch {
+		case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
+			// a pre-Input record (empty hash) also lands here: one extra
+			// idempotent re-run converges it
+			inputDrift = true
+		case s.CreatesPath != "":
+			// Stat, not Lstat: a dangling symlink product counts as gone too
+			if _, err := os.Stat(s.CreatesPath); err == nil {
+				fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+				return nil
+			}
+			fmt.Fprintf(e.Out, "%s: %s is gone — reapplying\n", s.ID, s.CreatesPath)
+		default:
+			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+			return nil
+		}
 	}
 	if !e.Yes {
-		fmt.Fprintf(e.Out, "would run: %s\n", strings.Join(s.Cmd, " "))
+		if inputDrift {
+			fmt.Fprintf(e.Out, "would run: %s (journaled input changed)\n", strings.Join(s.Cmd, " "))
+		} else {
+			fmt.Fprintf(e.Out, "would run: %s\n", strings.Join(s.Cmd, " "))
+		}
 		return nil
 	}
 	if err := RunCmd(e.Out, s.Cmd...); err != nil {
 		return err
 	}
-	m.put(Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot, Cmd: s.Cmd, UndoCmd: s.UndoCmd})
+	r := Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot, Cmd: s.Cmd, UndoCmd: s.UndoCmd}
+	if len(s.Input) > 0 {
+		r.InputSHA256 = sha256hex(s.Input)
+	}
+	m.put(r)
 	return m.save(e.Root)
 }
 

@@ -2,13 +2,43 @@
 # written by orthogonals: one-click Windows 11 — start the VM if it is off,
 # wait for its SPICE display, connect with Looking Glass fullscreen.
 set -euo pipefail
+# virsh output is localized (domstate prints "виконання" under uk_UA, never
+# matching "running"); force C so state checks and parsed output are stable
+export LC_ALL=C
 
 VM="win11"
 VIRSH=(virsh --connect qemu:///system)
 
+# the desktop entry runs with Terminal=false, so stderr is invisible there:
+# failures surface as a notification unless stderr is an interactive terminal
+die() {
+    echo "_ort-run-win11-lg: $*" >&2
+    if [[ ! -t 2 ]] && command -v notify-send >/dev/null; then
+        notify-send -u critical -i computer -a "Windows 11" "Windows 11" "$*"
+    fi
+    exit 1
+}
+
 if [[ "$("${VIRSH[@]}" domstate "$VM" 2>/dev/null)" != "running" ]]; then
-    # a refused start (GPU held by a host app) surfaces the hook's error here
-    "${VIRSH[@]}" start "$VM"
+    # VFIO pins all guest RAM up front: if it does not fit in MemAvailable
+    # the OOM killer shoots QEMU mid-boot with no useful error, so refuse
+    # loudly here instead. dumpxml because dominfo output is localized.
+    need_kib="$("${VIRSH[@]}" dumpxml "$VM" | sed -n "s|.*<memory unit='KiB'>\([0-9]*\)</memory>.*|\1|p")"
+    avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    if [[ -n "$need_kib" ]] && (( avail_kib < need_kib )); then
+        die "$VM needs $((need_kib / 1048576)) GiB of pinned RAM but the host has $((avail_kib / 1048576)) GiB available — close apps or shut down other VMs"
+    fi
+    # a refused start (GPU held by a host app) surfaces the hook's error
+    # here. The gpu-detach hook already notifies the desktop with a clean
+    # reason on every failure path, so a hook failure only goes to stderr —
+    # notifying again would stack a raw duplicate on top of its message
+    out="$("${VIRSH[@]}" start "$VM" 2>&1)" || {
+        if [[ "$out" == *"gpu-detach: "* ]]; then
+            echo "_ort-run-win11-lg: $out" >&2
+            exit 1
+        fi
+        die "$out"
+    }
 fi
 
 TIMEOUT=60
@@ -20,8 +50,7 @@ for _ in $(seq 1 "$TIMEOUT"); do
     sleep 1
 done
 if [[ -z "$display" ]]; then
-    echo "_ort-run-win11-lg: $VM has no SPICE display after ${TIMEOUT}s — check virsh domstate $VM" >&2
-    exit 1
+    die "$VM has no SPICE display after ${TIMEOUT}s — check virsh domstate $VM"
 fi
 
 # domdisplay prints the SPICE URI libvirt actually gave THIS domain, e.g.

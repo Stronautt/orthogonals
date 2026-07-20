@@ -1,29 +1,33 @@
-<domain type='kvm'{{if .MaxPhysAddrBits}} xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'{{end}}>
-  <name>{{.Name}}</name>
-{{- if .UUID}}
-  <uuid>{{xml .UUID}}</uuid>
-{{- end}}
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>win11</name>
   <metadata>
     <libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'>
       <libosinfo:os id='http://microsoft.com/win/11'/>
     </libosinfo:libosinfo>
     <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
-      <orthogonals:user>{{xml .GuestUser}}</orthogonals:user>
-      <orthogonals:password>{{xml .GuestPassword}}</orthogonals:password>
-      <orthogonals:locale>{{xml .Locale}}</orthogonals:locale>
-      <orthogonals:resolution>{{.Width}}x{{.Height}}</orthogonals:resolution>
+      <orthogonals:user></orthogonals:user>
+      <orthogonals:password></orthogonals:password>
+      <orthogonals:locale></orthogonals:locale>
+      <orthogonals:resolution>3840x2160</orthogonals:resolution>
     </orthogonals:guest>
   </metadata>
-  <memory unit='MiB'>{{.RAMMiB}}</memory>
-  <currentMemory unit='MiB'>{{.RAMMiB}}</currentMemory>
-  <vcpu placement='static'>{{.VCPUs}}</vcpu>
+  <memory unit='MiB'>24576</memory>
+  <currentMemory unit='MiB'>24576</currentMemory>
+  <vcpu placement='static'>10</vcpu>
   <iothreads>1</iothreads>
   <cputune>
-{{- range .VCPUPins}}
-    <vcpupin vcpu='{{.VCPU}}' cpuset='{{.CPU}}'/>
-{{- end}}
-    <emulatorpin cpuset='{{.EmulatorPin}}'/>
-    <iothreadpin iothread='1' cpuset='{{.IOThreadPin}}'/>
+    <vcpupin vcpu='0' cpuset='2'/>
+    <vcpupin vcpu='1' cpuset='3'/>
+    <vcpupin vcpu='2' cpuset='4'/>
+    <vcpupin vcpu='3' cpuset='5'/>
+    <vcpupin vcpu='4' cpuset='6'/>
+    <vcpupin vcpu='5' cpuset='7'/>
+    <vcpupin vcpu='6' cpuset='8'/>
+    <vcpupin vcpu='7' cpuset='9'/>
+    <vcpupin vcpu='8' cpuset='10'/>
+    <vcpupin vcpu='9' cpuset='11'/>
+    <emulatorpin cpuset='12,13,14,15'/>
+    <iothreadpin iothread='1' cpuset='16,17,18,19'/>
   </cputune>
   <os firmware='efi'>
     <type arch='x86_64' machine='q35'>hvm</type>
@@ -53,11 +57,9 @@
     <smm state='on'/>
   </features>
   <cpu mode='host-passthrough' check='none' migratable='off'>
-    <topology sockets='1' cores='{{.Cores}}' threads='{{.ThreadsPerCore}}'/>
+    <topology sockets='1' cores='5' threads='2'/>
     <cache mode='passthrough'/>
-{{- if .MaxPhysAddrBits}}
-    <maxphysaddr mode='emulate' bits='{{.MaxPhysAddrBits}}'/>
-{{- end}}
+    <maxphysaddr mode='emulate' bits='39'/>
   </cpu>
   <clock offset='localtime'>
     <timer name='rtc' tickpolicy='catchup'/>
@@ -75,35 +77,10 @@
   <devices>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' iothread='1'/>
-      <source file='{{.DiskPath}}'/>
+      <source file='/var/lib/libvirt/images/win11.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>
     </disk>
-{{- if .Win11ISO}}
-    <disk type='file' device='cdrom'>
-      <driver name='qemu' type='raw'/>
-      <source file='{{.Win11ISO}}' startupPolicy='optional'/>
-      <target dev='sda' bus='sata'/>
-      <readonly/>
-      <boot order='2'/>
-    </disk>
-{{- end}}
-{{- if .VirtioISO}}
-    <disk type='file' device='cdrom'>
-      <driver name='qemu' type='raw'/>
-      <source file='{{.VirtioISO}}' startupPolicy='optional'/>
-      <target dev='sdb' bus='sata'/>
-      <readonly/>
-    </disk>
-{{- end}}
-{{- if .ProvisionISO}}
-    <disk type='file' device='cdrom'>
-      <driver name='qemu' type='raw'/>
-      <source file='{{.ProvisionISO}}' startupPolicy='optional'/>
-      <target dev='sdc' bus='sata'/>
-      <readonly/>
-    </disk>
-{{- end}}
     <interface type='network'>
       <source network='default'/>
       <model type='virtio'/>
@@ -140,41 +117,33 @@
          renders none directly — Looking Glass needs the VDD monitor to be
          the guest's only display. -->
     <video>
-{{- if .VideoNone}}
       <model type='none'/>
-{{- else}}
-      <model type='qxl'/>
-{{- end}}
     </video>
     <hostdev mode='subsystem' type='pci' managed='no'>
       <source>
-        <address domain='0x{{.GPU.Domain}}' bus='0x{{.GPU.Bus}}' slot='0x{{.GPU.Slot}}' function='0x{{.GPU.Function}}'/>
+        <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
       </source>
       <!-- OVMF hangs before console init when it executes the GPU's option
            ROM; the Windows driver initializes the card without the ROM BAR.
            If a guest driver ever needs the VBIOS, switch to <rom file=...>. -->
       <rom bar='off'/>
     </hostdev>
-{{- if .Audio}}
     <hostdev mode='subsystem' type='pci' managed='no'>
       <source>
-        <address domain='0x{{.Audio.Domain}}' bus='0x{{.Audio.Bus}}' slot='0x{{.Audio.Slot}}' function='0x{{.Audio.Function}}'/>
+        <address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
       </source>
     </hostdev>
-{{- end}}
     <shmem name='looking-glass'>
       <model type='ivshmem-plain'/>
-      <size unit='M'>{{.IVSHMEMMiB}}</size>
+      <size unit='M'>128</size>
     </shmem>
     <tpm model='tpm-crb'>
       <backend type='emulator' version='2.0'/>
     </tpm>
     <memballoon model='none'/>
   </devices>
-{{- if .MaxPhysAddrBits}}
   <qemu:commandline>
     <qemu:arg value='-fw_cfg'/>
     <qemu:arg value='opt/ovmf/X-PciMmio64Mb,string=65536'/>
   </qemu:commandline>
-{{- end}}
 </domain>

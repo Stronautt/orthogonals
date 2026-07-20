@@ -84,23 +84,31 @@ no VM runs, games and GPU apps still use it (see
 [Which GPU runs your apps](#which-gpu-runs-your-apps)).
 
 1. Shut the PC down and move every monitor cable from the graphics card to
-   the motherboard video outputs.
-2. In BIOS, set the primary display to the CPU (integrated) graphics and
-   enable the iGPU multi-monitor option. On ASUS boards both settings live
-   under Advanced, System Agent, Graphics Configuration: "Primary Display:
-   CPU Graphics" and "iGPU Multi-Monitor: Enabled". Other vendors have the
-   same two options under slightly different names.
-3. While in BIOS, check that VT-d (also called IOMMU or "Intel Virtualization
-   Technology for Directed I/O") is enabled. On most boards it already is.
-4. Boot Fedora and make sure the NVIDIA driver from
+   the motherboard video outputs. After the move your desktop looks and
+   behaves the same — the only difference is which chip sends the image to
+   the monitor.
+2. Boot Fedora and make sure the NVIDIA driver from
    [RPM Fusion](https://rpmfusion.org/Howto/NVIDIA) is installed and
    `nvidia-smi` works.
-5. Download a Windows 11 ISO from
+3. Download a Windows 11 ISO from
    [microsoft.com](https://www.microsoft.com/software-download/windows11).
    The standard multi-edition ISO works; **it must include the Pro edition.**
 
-After the cable move, your desktop looks and behaves the same. The only
-difference is which chip sends the image to the monitor.
+No BIOS visit is needed up front. `orthogonals preflight` checks the
+firmware side and names the exact option on the rare board where one
+matters:
+
+- VT-d (IOMMU) disabled → fails and names the switch to enable. On most
+  boards it is already on.
+- iGPU disabled by the firmware (a common default when a graphics card is
+  installed) → fails and names the option, usually "iGPU Multi-Monitor".
+- Graphics card still set as the firmware's primary display → warns with an
+  optional "Primary Display: CPU Graphics" change. Everything works without
+  it; it only keeps the GRUB boot menu visible on your monitors.
+
+`orthogonals detect` shows which connectors have displays, and preflight
+names the exact cable to move if a monitor is still plugged into the
+graphics card.
 
 ### 2. Install and run
 
@@ -125,6 +133,7 @@ NVIDIA driver and Looking Glass inside the guest, and verifies the whole
 pipeline. When it finishes, a "Windows 11" entry sits in your app grid; one
 click starts the VM and opens the Looking Glass window.
 
+> [!TIP]
 > The guest account is `user` and its password is `password`. Change it inside Windows.
 
 The host setup is a one-time step. Once it is done, you can create any number
@@ -135,7 +144,31 @@ sudo orthogonals up --yes --vm-name gaming --display-name "Gaming" \
     --win11-iso ~/Downloads/Win11.iso
 ```
 
-### 3. Undo everything
+### 3. Upgrading
+
+After upgrading the package, re-run `up` on the completed install:
+
+```sh
+sudo dnf upgrade orthogonals
+sudo orthogonals up          # dry run: shows exactly what the new version changes
+sudo orthogonals up --yes    # converge
+```
+
+On a finished setup, `up` converges instead of reinstalling: host configs are
+rewritten only where the new version renders them differently, and the VM
+definition is re-applied to libvirt only when its XML actually changed —
+keeping the installed guest's display setup, credentials, TPM, and Secure
+Boot state. No `--win11-iso` is needed once a VM is installed. A running VM
+picks up a changed definition on its next boot.
+
+Changed *settings* (`--disk`, `--disk-size`, `--binding`) are a different
+story from a new version's defaults: those are refused with "journaled
+command differs" — see [the troubleshooting entry](#apply-or-vm-refuses-journaled-command-differs-from-the-current-settings).
+Fixes inside the Windows guest (provisioning scripts, guest-side config)
+reach existing VMs only through a reinstall (`vm undefine --purge`, then
+`up`).
+
+### 4. Undo everything
 
 ```sh
 sudo orthogonals undo        # dry run: lists everything it would restore
@@ -177,7 +210,7 @@ The full list is printed by the dry run before anything happens.
   open, which would block every handover), `libvirt-guests` enabled (host
   shutdown shuts the guest down cleanly), `switcheroo-control` enabled.
 - The Looking Glass client, built from the SHA256-pinned B7 source tarball,
-  plus a launcher and desktop entry per VM.
+  plus a launcher, desktop entry, and `~/Desktop` shortcut link per VM.
 - Your desktop user joins the `libvirt` group, so the one-click launcher can
   start the VM without a password prompt.
 
@@ -267,7 +300,7 @@ sudo orthogonals up --yes --vm-name gaming --ram 24 \
 - `--user`: desktop user that owns the Looking Glass shm file (default: the user invoking sudo).
 - `--vm-name`: libvirt domain name (default `win11`).
 - `--display-name`: desktop shortcut name (default "Windows 11" for the default VM, else the VM name).
-- `--ram`: guest RAM in GiB (default: half of host RAM, capped at 16).
+- `--ram`: guest RAM in GiB (default: all of host RAM minus 8 GiB for the host).
 - `--disk`: qcow2 path (default `/var/lib/libvirt/images/<vm-name>.qcow2`).
 - `--disk-size`: disk size in GiB (default 100).
 - `--resolution`: maximum guest resolution `WxH` (default 3840x2160).

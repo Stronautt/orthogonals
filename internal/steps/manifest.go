@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/hw"
@@ -33,8 +34,9 @@ type Record struct {
 	MadeDirs   []string `json:"made_dirs,omitempty"` // dirs apply created, deepest first
 
 	// run_cmd
-	Cmd     []string `json:"cmd,omitempty"`
-	UndoCmd []string `json:"undo_cmd,omitempty"`
+	Cmd         []string `json:"cmd,omitempty"`
+	UndoCmd     []string `json:"undo_cmd,omitempty"`
+	InputSHA256 string   `json:"input_sha256,omitempty"` // re-run when the step's declared input drifts
 
 	// enable_unit
 	Unit       string `json:"unit,omitempty"`
@@ -111,6 +113,14 @@ func (m *Manifest) save(root string) error {
 // tell a fresh mutation from a no-op re-run (e.g. "reboot required" only
 // when the kargs step actually landed this time).
 func (m *Manifest) Has(id string) bool { return m.find(id) != nil }
+
+// Cmd returns the journaled argv for id, nil if not journaled.
+func (m *Manifest) Cmd(id string) []string {
+	if r := m.find(id); r != nil {
+		return slices.Clone(r.Cmd)
+	}
+	return nil
+}
 
 func (m *Manifest) find(id string) *Record {
 	for i := range m.Records {

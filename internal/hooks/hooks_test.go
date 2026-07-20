@@ -144,6 +144,13 @@ func TestDetach(t *testing.T) {
 	if stop == -1 || gate == -1 || stop > gate {
 		t.Errorf("persistenced stop must precede the holder gate:\n%s", got)
 	}
+	// the governor flip runs only after the start can no longer fail: libvirt
+	// skips release/end when prepare fails, and nothing would restore it
+	boost := strings.LastIndex(got, "boost_governor")
+	verify := strings.Index(got, "not vfio-pci — aborting VM start")
+	if boost == -1 || verify == -1 || boost < verify {
+		t.Errorf("governor flip must follow the verify-or-abort stage:\n%s", got)
+	}
 }
 
 func TestReattach(t *testing.T) {
@@ -162,10 +169,36 @@ func TestReattach(t *testing.T) {
 		"nvidia-smi",
 		"orthogonals recover",
 		"systemctl try-restart switcheroo-control.service",
+		"/remove",
+		"/sys/bus/pci/rescan",
 		LogPath,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("reattach missing %q:\n%s", want, got)
+		}
+	}
+	// the remove+rescan fallback runs only after a failed health check
+	smi := strings.Index(got, "nvidia-smi")
+	rescan := strings.Index(got, "/sys/bus/pci/rescan")
+	if smi == -1 || rescan == -1 || smi > rescan {
+		t.Errorf("health check must precede the PCI rescan fallback:\n%s", got)
+	}
+	// the governor restore must precede the vfio guard's exit — a refused or
+	// failed start would otherwise leave the host stuck on performance
+	restore := strings.Index(got, "GOV_SAVE")
+	if restore == -1 || restore > guard {
+		t.Errorf("governor restore must precede the vfio guard:\n%s", got)
+	}
+}
+
+// Both scripts name the same governor state file; drift would leave the host
+// stuck on the performance governor after VM shutdown.
+func TestGovernorStateFileShared(t *testing.T) {
+	const save = "GOV_SAVE=/run/orthogonals-governor"
+	list := referenceSteps(t)
+	for _, id := range []string{"hook-gpu-detach", "hook-gpu-reattach"} {
+		if !strings.Contains(stepContent(t, list, id), save) {
+			t.Errorf("%s missing %q", id, save)
 		}
 	}
 }

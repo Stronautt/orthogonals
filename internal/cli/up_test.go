@@ -188,12 +188,22 @@ exit 0
 	if !strings.Contains(string(x), "win11 --edit --video clearxml=yes,model=none") {
 		t.Errorf("install display not removed after provisioning:\n%s", x)
 	}
+	// verified means the guest never boots from the installer media again:
+	// the three cdroms come off the domain
+	for _, dev := range []string{"sda", "sdb", "sdc"} {
+		if !strings.Contains(string(x), "win11 --remove-device --disk target="+dev) {
+			t.Errorf("installer cdrom %s not detached after verify:\n%s", dev, x)
+		}
+	}
 	m, err := steps.Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !m.Has(domain.InstallVideoStepID("win11")) {
 		t.Error("install-video edit not journaled")
+	}
+	if !m.Has(domain.DetachMediaStepID("win11", "sda")) {
+		t.Error("media detach not journaled")
 	}
 }
 
@@ -253,24 +263,64 @@ func TestUpNewVMRestartsPipeline(t *testing.T) {
 	}
 }
 
-// a verified pipeline for an already-defined VM stays a no-op and names the
-// VM's launcher and desktop entry in the completion banner.
-func TestUpVerifiedNamesLauncher(t *testing.T) {
-	fakeVMPath(t)
+// a VM whose pipeline completed (journaled media detach) converges the host
+// artifacts and the domain to the current binary (a release rendering
+// different XML must reach libvirt), and still names the VM's launcher.
+// Deliberately no state.json here: completion is judged from the manifest —
+// the state file is ephemeral (undo removes it) and a converged host may not
+// have one.
+func TestUpCompletedInstallConverges(t *testing.T) {
+	t.Setenv("SUDO_USER", "testuser")
+	dir := fakeBinDir(t, append(append([]string{}, vmFakeBins...), applyFakeBins...))
+	// systemctl is-enabled must answer, or the engine treats units as absent
+	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "systemctl.log") +
+		"\"\nif [ \"$1\" = \"is-enabled\" ]; then echo enabled; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "gamer",
 		"--display-name", "Gaming Rig", "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("define failed: %s", stderr)
 	}
-	if err := orchestrate.SaveState(root, orchestrate.StateVerified); err != nil {
+	// the pipeline's post-install transitions, then its final state
+	e := &steps.Engine{Root: root, Yes: true, Out: os.Stderr, Err: os.Stderr}
+	if err := e.Apply([]steps.Step{domain.InstallVideoStep("gamer")}); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errOut := runUp(t, root, "--yes", "--vm-name", "gamer")
+	if err := e.Apply(domain.DetachMediaSteps("gamer")); err != nil {
+		t.Fatal(err)
+	}
+
+	// dry run announces the pending redefine without mutating
+	code, out, errOut := runUp(t, root, "--vm-name", "gamer")
+	if code != 0 {
+		t.Fatalf("dry exit %d\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "(journaled input changed)") {
+		t.Errorf("dry run must announce the pending redefine:\n%s", out)
+	}
+
+	code, out, errOut = runUp(t, root, "--yes", "--vm-name", "gamer")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}
+	if !strings.Contains(out, "converging host and VM gamer") {
+		t.Errorf("converge banner missing:\n%s", out)
+	}
 	if !strings.Contains(out, `launch with _ort-run-gamer-lg or the "Gaming Rig" desktop entry`) {
-		t.Errorf("completion banner must name the per-VM launcher:\n%s", out)
+		t.Errorf("converge must still name the per-VM launcher:\n%s", out)
+	}
+	// the redefine reached libvirt: define ran again with the converged XML
+	if got := strings.Count(binLog(t, dir, "virsh"), "define /etc/orthogonals/vms/gamer.xml"); got != 2 {
+		t.Errorf("virsh define ran %d times, want 2:\n%s", got, binLog(t, dir, "virsh"))
+	}
+	xml, err := os.ReadFile(filepath.Join(root, "/etc/orthogonals/vms/gamer.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xml), "<model type='none'/>") || strings.Contains(string(xml), "cdrom") {
+		t.Errorf("converged XML must carry the post-install state:\n%s", xml)
 	}
 }
 

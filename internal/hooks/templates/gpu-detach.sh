@@ -43,9 +43,27 @@ driver_of() {
     fi
 }
 
+# CPU governor: performance while the VM owns the GPU. All CPUs on purpose —
+# the E-cores carry the emulator, iothread, and Looking Glass client. Every
+# write is guarded: a cpufreq quirk must never block the VM. The reattach
+# hook restores the saved governor; /run clears on reboot in step with the
+# governors themselves. Called only where the start can no longer fail:
+# libvirt skips release/end when prepare fails, and nothing would restore.
+GOV_SAVE=/run/orthogonals-governor
+boost_governor() {
+    gov0=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+    [ -f "$gov0" ] || return 0    # no cpufreq on this host
+    [ -f "$GOV_SAVE" ] || cat "$gov0" > "$GOV_SAVE" 2>/dev/null || return 0
+    for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo performance > "$g" 2>/dev/null || true
+    done
+    log "cpu governor performance (restore target: $(cat "$GOV_SAVE"))"
+}
+
 # Already on vfio-pci (static binding, or a previous failed start)? Done.
 if [ "$(driver_of "$GPU")" = "vfio-pci" ]; then
     log "GPU already on vfio-pci — nothing to do"
+    boost_governor
     exit 0
 fi
 log "handover start: ${DEVS[*]}"
@@ -104,4 +122,5 @@ done
 # switcheroo-control enumerates GPUs only at startup; restart it so the
 # desktop's dGPU menu reflects the rebind.
 systemctl try-restart switcheroo-control.service 2>/dev/null || true
+boost_governor
 log "GPU handed to vfio-pci"
