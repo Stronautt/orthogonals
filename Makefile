@@ -98,8 +98,10 @@ lint:
 test-integration:
 	test -n "$(ENGINE)" || { echo "podman or docker required" >&2; exit 1; }
 	CGO_ENABLED=0 GOOS=linux go build -o test/integration/orthogonals .
-	rm -rf test/integration/fixture-root
-	go run ./test/fixture test/integration/fixture-root
+	rm -rf test/integration/fixture-root test/integration/fixture-root-laptop test/integration/fixture-root-laptop-amd
+	go run ./test/fixture test/integration/fixture-root reference
+	go run ./test/fixture test/integration/fixture-root-laptop laptop
+	go run ./test/fixture test/integration/fixture-root-laptop-amd laptop-amd
 	$(ENGINE) build -t orthogonals-integration -f test/integration/Containerfile test/integration
 	$(ENGINE) run --rm orthogonals-integration
 

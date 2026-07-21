@@ -46,11 +46,6 @@ var hardTools = map[string]bool{
 	"dracut": true,
 }
 
-// laptopChassis are SMBIOS chassis types refused in v1.
-var laptopChassis = map[int]bool{
-	8: true, 9: true, 10: true, 11: true, 14: true, 30: true, 31: true, 32: true,
-}
-
 // Analyze runs every analyzer over the detect result and gathered facts.
 func Analyze(r *hw.Result, f Facts) []Check {
 	return []Check{
@@ -63,6 +58,8 @@ func Analyze(r *hw.Result, f Facts) []Check {
 		checkGPUReset(r),
 		checkForeignVFIO(f),
 		checkChassis(r),
+		checkMux(r),
+		checkGPUMux(r),
 		checkTools(r),
 		checkCPU(r),
 		checkMemory(r),
@@ -113,16 +110,42 @@ func Overall(checks []Check) Status {
 }
 
 func checkIOMMU(r *hw.Result) Check {
-	switch {
-	case r.Platform.IOMMUAddressWidth > 0:
-		return Check{"iommu", Pass, fmt.Sprintf("IOMMU active, host address width %d bits", r.Platform.IOMMUAddressWidth), ""}
-	case r.Platform.DMARTable:
-		return Check{"iommu", Warn, "IOMMU is not active, but the firmware exposes VT-d (ACPI DMAR table present)",
-			"no action needed — apply adds intel_iommu=on iommu=pt (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group"}
-	default:
-		return Check{"iommu", Fail, "IOMMU is off or unsupported — passthrough is impossible without it",
-			"enable VT-d (Intel Virtualization Technology for Directed I/O) in the BIOS/UEFI setup"}
+	const name = "iommu"
+	if r.Platform.IOMMUAddressWidth > 0 {
+		return Check{name, Pass, fmt.Sprintf("IOMMU active, host address width %d bits", r.Platform.IOMMUAddressWidth), ""}
 	}
+	tech, karg, bios := iommuTech(r.CPU.Vendor)
+	if r.Platform.IOMMUTable {
+		return Check{name, Warn, "IOMMU is not active, but the firmware exposes " + tech,
+			fmt.Sprintf("no action needed — apply adds %s (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group", karg)}
+	}
+	if fw := firmwareIOMMUHint(r.Platform.FirmwareIOMMU); fw != "" {
+		bios += "; " + fw
+	}
+	return Check{name, Fail, "IOMMU is off or unsupported — passthrough is impossible without it", bios}
+}
+
+// firmwareIOMMUHint names an OS-visible BIOS attribute controlling the IOMMU.
+func firmwareIOMMUHint(attrs []hw.FirmwareAttr) string {
+	if len(attrs) == 0 {
+		return ""
+	}
+	a := attrs[0]
+	hint := fmt.Sprintf("this BIOS exposes the setting %q (currently %q", a.Name, a.Current)
+	if len(a.PossibleValues) > 0 {
+		hint += ", options: " + strings.Join(a.PossibleValues, "/")
+	}
+	return hint + fmt.Sprintf(") — set it via /sys/class/firmware-attributes/%s/attributes/%s/current_value and reboot", a.Driver, a.Name)
+}
+
+// iommuTech names the vendor's IOMMU technology, kernel args, and BIOS remedy; unknown gets Intel.
+func iommuTech(cpuVendor string) (tech, karg, bios string) {
+	if cpuVendor == hw.CPUVendorAMD {
+		return "AMD-Vi (ACPI IVRS table present)", "iommu=pt",
+			"enable AMD-Vi / IOMMU in the BIOS/UEFI setup"
+	}
+	return "VT-d (ACPI DMAR table present)", "intel_iommu=on iommu=pt",
+		"enable VT-d (Intel Virtualization Technology for Directed I/O) in the BIOS/UEFI setup"
 }
 
 func checkGPUTopology(r *hw.Result) Check {
@@ -137,10 +160,13 @@ func checkGPUTopology(r *hw.Result) Check {
 	switch {
 	case r.GPUs.IGPU == nil && len(r.GPUs.DGPUs) == 1:
 		return Check{name, Fail, "single-GPU host: the only GPU cannot both drive the desktop and be passed through",
-			"v1 requires an Intel iGPU for the desktop plus an NVIDIA dGPU for the guest"}
+			"v1 requires an iGPU for the desktop plus an NVIDIA dGPU for the guest"}
 	case r.GPUs.IGPU == nil:
-		return Check{name, Fail, "no Intel iGPU found to drive the host desktop",
-			"enable the iGPU in the BIOS (often \"iGPU Multi-Monitor\") and connect a display to it"}
+		remedy := "enable the iGPU in the BIOS (often \"iGPU Multi-Monitor\") and connect a display to it"
+		if hw.IsLaptopChassis(r.Platform.ChassisType) {
+			remedy = "set the BIOS/vendor-tool graphics mode to hybrid (not discrete-only) so the iGPU drives the internal panel"
+		}
+		return Check{name, Fail, "no iGPU found to drive the host desktop", remedy}
 	case len(amd) > 0:
 		return Check{name, Fail, fmt.Sprintf("AMD dGPU %s is unsupported in v1 (reset quirks need vendor-reset gating)", amd[0].Address),
 			"v1 supports NVIDIA dGPUs only; AMD support is on the roadmap"}
@@ -150,7 +176,8 @@ func checkGPUTopology(r *hw.Result) Check {
 		return Check{name, Fail, fmt.Sprintf("found %d NVIDIA dGPUs; v1 supports exactly one NVIDIA dGPU", len(nvidia)),
 			"remove or ignore the extra GPU (multi-dGPU selection is on the roadmap)"}
 	default:
-		return Check{name, Pass, fmt.Sprintf("Intel iGPU %s + NVIDIA dGPU %s", r.GPUs.IGPU.Address, nvidia[0].Address), ""}
+		return Check{name, Pass, fmt.Sprintf("%s iGPU %s + NVIDIA dGPU %s",
+			vendorName(r.GPUs.IGPU.Vendor), r.GPUs.IGPU.Address, nvidia[0].Address), ""}
 	}
 }
 
@@ -170,12 +197,16 @@ func vendorName(vendor string) string {
 func checkDisplayTopology(r *hw.Result) Check {
 	const name = "display-topology"
 	if r.GPUs.IGPU == nil {
-		return Check{name, Pass, "skipped (no Intel iGPU — see gpu-topology)", ""}
+		return Check{name, Pass, "skipped (no iGPU — see gpu-topology)", ""}
 	}
+	laptop := hw.IsLaptopChassis(r.Platform.ChassisType)
 	igpu := r.GPUs.IGPU
 	if igpu.DRMCard == "" {
-		return Check{name, Warn, "cannot verify display cabling: the iGPU exposes no DRM card (Intel graphics driver not loaded?)",
-			"make sure every monitor is plugged into the motherboard video outputs, not the graphics card, then re-run preflight"}
+		remedy := "make sure every monitor is plugged into the motherboard video outputs, not the graphics card, then re-run preflight"
+		if laptop {
+			remedy = "the internal panel runs on the iGPU whose graphics driver looks unloaded — check it, then re-run preflight"
+		}
+		return Check{name, Warn, "cannot verify display cabling: the iGPU exposes no DRM card (iGPU graphics driver not loaded?)", remedy}
 	}
 	var dgpuConnected []string
 	for _, d := range r.GPUs.DGPUs {
@@ -188,12 +219,18 @@ func checkDisplayTopology(r *hw.Result) Check {
 	case len(igpu.Connectors) > 0 && len(dgpuConnected) == 0:
 		return Check{name, Pass, fmt.Sprintf("all connected displays are on the iGPU (%s)", strings.Join(igpu.Connectors, ", ")), ""}
 	case len(igpu.Connectors) > 0:
+		remedy := "move that cable to a motherboard video output"
+		if laptop {
+			remedy = "that external monitor is on the dGPU and goes dark while the VM runs — use the internal panel or an iGPU-driven port"
+		}
 		return Check{name, Warn, fmt.Sprintf("a display is also connected to the %s — after apply the desktop session ignores the dGPU, so that monitor stays dark",
-			strings.Join(dgpuConnected, " and ")),
-			"move that cable to a motherboard video output"}
+			strings.Join(dgpuConnected, " and ")), remedy}
 	case len(dgpuConnected) > 0:
-		return Check{name, Fail, fmt.Sprintf("no display is connected to the iGPU; your monitor(s) are on the %s", strings.Join(dgpuConnected, " and ")),
-			"shut down and move the monitor cable(s) from the listed connector(s) to the motherboard video outputs — the desktop looks and behaves the same afterwards, and GPU apps still run on the NVIDIA card while no VM is running"}
+		remedy := "shut down and move the monitor cable(s) from the listed connector(s) to the motherboard video outputs — the desktop looks and behaves the same afterwards, and GPU apps still run on the NVIDIA card while no VM is running"
+		if laptop {
+			remedy = "set the BIOS/vendor-tool graphics mode from discrete to hybrid so the iGPU drives the panel; an external monitor on a dGPU-only port goes dark while the VM runs"
+		}
+		return Check{name, Fail, fmt.Sprintf("no display is connected to the iGPU; your monitor(s) are on the %s", strings.Join(dgpuConnected, " and ")), remedy}
 	default:
 		return Check{name, Warn, "no connected display found on any GPU",
 			"if a monitor is plugged into the graphics card, move it to the motherboard video outputs (a vfio-bound or non-KMS dGPU cannot report its connectors); headless hosts can ignore this"}
@@ -208,6 +245,9 @@ func checkBootVGA(r *hw.Result) Check {
 	}
 	for _, d := range r.GPUs.DGPUs {
 		if d.BootVGA {
+			if hw.IsLaptopChassis(r.Platform.ChassisType) {
+				return Check{name, Pass, fmt.Sprintf("firmware primary GPU is the dGPU at %s — on a laptop the internal panel is the same screen, so the boot menu stays visible", d.Address), ""}
+			}
 			return Check{name, Warn, fmt.Sprintf("the firmware primary GPU is the dGPU at %s — the desktop still runs on the iGPU, but GRUB and early boot output render on the dGPU's outputs, invisible once your monitors are on the motherboard", d.Address),
 				"optional: set the BIOS primary display to the CPU/integrated graphics (ASUS: Advanced > System Agent > Graphics Configuration > \"Primary Display: CPU Graphics\") so the boot menu stays visible — this matters if you ever need the GRUB recovery steps"}
 		}
@@ -300,12 +340,45 @@ func checkGPUReset(r *hw.Result) Check {
 
 func checkChassis(r *hw.Result) Check {
 	const name = "chassis"
-	if laptopChassis[r.Platform.ChassisType] {
-		return Check{name, Fail,
-			fmt.Sprintf("laptop/portable chassis (%s) is unsupported in v1", hw.ChassisName(r.Platform.ChassisType)),
-			"laptop hybrid graphics (MUX switches, power gating) differ per model; v1 targets desktop machines"}
+	if hw.IsLaptopChassis(r.Platform.ChassisType) {
+		return Check{name, Pass,
+			fmt.Sprintf("laptop chassis (%s): hybrid-graphics passthrough — the panel stays on the iGPU while the dGPU is handed to the guest", hw.ChassisName(r.Platform.ChassisType)),
+			""}
 	}
 	return Check{name, Pass, fmt.Sprintf("chassis: %s", hw.ChassisName(r.Platform.ChassisType)), ""}
+}
+
+// checkGPUMux gates the ASUS display MUX: hybrid keeps the panel on the iGPU.
+func checkGPUMux(r *hw.Result) Check {
+	const name = "gpu-mux"
+	switch r.Platform.GPUMux {
+	case hw.GPUMuxHybrid:
+		return Check{name, Pass, "ASUS display MUX is in hybrid/Optimus mode (the iGPU drives the panel)", ""}
+	case hw.GPUMuxDiscrete:
+		return Check{name, Fail,
+			"ASUS display MUX is in discrete/Ultimate mode: the dGPU drives the panel and the iGPU is off, so the dGPU cannot be passed to the guest",
+			"switch to hybrid — `echo 1 | sudo tee " + hw.GPUMuxPath + "` then reboot, or set the BIOS / Armoury Crate GPU mode to Optimus/Standard"}
+	default:
+		return Check{name, Pass, "skipped (no ASUS gpu_mux_mode knob)", ""}
+	}
+}
+
+// checkMux warns when a laptop dGPU is MUXless (a 3D controller with no outputs).
+func checkMux(r *hw.Result) Check {
+	const name = "mux"
+	if !hw.IsLaptopChassis(r.Platform.ChassisType) {
+		return Check{name, Pass, "skipped (not a laptop)", ""}
+	}
+	nvidia := r.GPUs.NVIDIA()
+	if len(nvidia) != 1 {
+		return Check{name, Pass, "skipped (needs exactly one NVIDIA dGPU)", ""}
+	}
+	if strings.HasPrefix(nvidia[0].Class, hw.Class3DController) {
+		return Check{name, Warn,
+			fmt.Sprintf("MUXless laptop: the NVIDIA dGPU %s is a 3D controller with no display outputs", nvidia[0].Address),
+			"if the guest shows no image once the NVIDIA driver installs, extract the dGPU vBIOS and pass it with --gpu-rom"}
+	}
+	return Check{name, Pass, fmt.Sprintf("MUXed laptop: the NVIDIA dGPU %s drives display outputs", nvidia[0].Address), ""}
 }
 
 func checkTools(r *hw.Result) Check {

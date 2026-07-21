@@ -18,11 +18,16 @@ var RequiredTools = []string{
 // Platform holds host facts that gate or shape the passthrough setup.
 type Platform struct {
 	IOMMUAddressWidth int `json:"iommu_address_width"`
-	// DMARTable reports that the ACPI DMAR table exists.
-	DMARTable     bool            `json:"dmar_table"`
-	SELinux       string          `json:"selinux"`
-	SecureBoot    bool            `json:"secure_boot"`
-	ChassisType   int             `json:"chassis_type"`
+	// IOMMUTable reports that the firmware exposes an IOMMU via an ACPI table
+	// (Intel DMAR or AMD IVRS).
+	IOMMUTable  bool   `json:"iommu_table"`
+	SELinux     string `json:"selinux"`
+	SecureBoot  bool   `json:"secure_boot"`
+	ChassisType int    `json:"chassis_type"`
+	// GPUMux is the ASUS display MUX mode ("hybrid"/"discrete"/"").
+	GPUMux string `json:"gpu_mux,omitempty"`
+	// FirmwareIOMMU are BIOS attributes controlling the IOMMU, when exposed.
+	FirmwareIOMMU []FirmwareAttr  `json:"firmware_iommu,omitempty"`
 	MemTotalBytes uint64          `json:"mem_total_bytes"`
 	NVIDIA        NVIDIADriver    `json:"nvidia"`
 	Tools         map[string]bool `json:"tools"`
@@ -41,16 +46,16 @@ type NVIDIADriver struct {
 func detectPlatform(root string) Platform {
 	p := Platform{
 		IOMMUAddressWidth: iommuAddressWidth(root),
-		DMARTable:         dmarTablePresent(root),
+		IOMMUTable:        iommuTablePresent(root),
 		SELinux:           selinuxMode(root),
 		SecureBoot:        secureBootEnabled(root),
 		MemTotalBytes:     memTotalBytes(root),
 		NVIDIA:            DetectNVIDIA(root),
 		Tools:             map[string]bool{},
 	}
-	if n, err := strconv.Atoi(readTrim(filepath.Join(root, "/sys/class/dmi/id/chassis_type"))); err == nil {
-		p.ChassisType = n
-	}
+	p.ChassisType = ChassisType(root)
+	p.GPUMux = gpuMux(root)
+	p.FirmwareIOMMU = firmwareIOMMUAttrs(root)
 	for _, tool := range RequiredTools {
 		_, err := exec.LookPath(tool)
 		p.Tools[tool] = err == nil
@@ -58,13 +63,18 @@ func detectPlatform(root string) Platform {
 	return p
 }
 
-// dmarTablePresent stats the ACPI DMAR table.
-func dmarTablePresent(root string) bool {
-	_, err := os.Stat(filepath.Join(root, "/sys/firmware/acpi/tables/DMAR"))
-	return err == nil
+// iommuTablePresent stats the firmware IOMMU ACPI table: Intel DMAR or AMD IVRS.
+func iommuTablePresent(root string) bool {
+	for _, table := range []string{"DMAR", "IVRS"} {
+		if _, err := os.Stat(filepath.Join(root, "/sys/firmware/acpi/tables", table)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
-// iommuAddressWidth decodes the address width from VT-d CAP registers.
+// iommuAddressWidth decodes the host DMA address width from the VT-d CAP register.
+// ponytail: an AMD-Vi ivhd unit ⇒ 48; parse IVRS if a sub-40-bit AMD host appears.
 func iommuAddressWidth(root string) int {
 	caps, _ := filepath.Glob(filepath.Join(root, "/sys/class/iommu/dmar*/intel-iommu/cap"))
 	width := 0
@@ -76,6 +86,11 @@ func iommuAddressWidth(root string) int {
 		w := int((reg>>16)&0x3f) + 1
 		if width == 0 || w < width {
 			width = w
+		}
+	}
+	if width == 0 {
+		if ivhd, _ := filepath.Glob(filepath.Join(root, "/sys/class/iommu/ivhd*")); len(ivhd) > 0 {
+			return 48
 		}
 	}
 	return width
@@ -163,6 +178,22 @@ func secureBootEnabled(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root,
 		"/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"))
 	return err == nil && len(b) == 5 && b[4] == 1
+}
+
+// ChassisType reads the SMBIOS chassis type from sysfs, 0 when absent.
+func ChassisType(root string) int {
+	n, _ := strconv.Atoi(readTrim(filepath.Join(root, "/sys/class/dmi/id/chassis_type")))
+	return n
+}
+
+// laptopChassisTypes are the portable SMBIOS chassis types.
+var laptopChassisTypes = map[int]bool{
+	8: true, 9: true, 10: true, 11: true, 14: true, 30: true, 31: true, 32: true,
+}
+
+// IsLaptopChassis reports whether an SMBIOS chassis type is a portable machine.
+func IsLaptopChassis(t int) bool {
+	return laptopChassisTypes[t]
 }
 
 // ChassisName maps the SMBIOS chassis type to a human label.

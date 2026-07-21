@@ -1,11 +1,11 @@
 #!/bin/bash
 # Integration tier: runs the built orthogonals binary through
-# detect → preflight → apply --yes → undo --yes against a synthetic --root
-# tree (the PoC reference machine: i5-13600K + RTX 3080) with fake system
-# binaries on PATH. Asserts exit codes, manifest correctness, and
-# byte-identical filesystem restore. Designed for a clean fedora:44
-# container (make test-integration) but runs anywhere bash + python3 +
-# GNU diffutils exist.
+# detect → preflight → apply --yes → undo --yes against synthetic --root trees
+# (baked by `go run ./test/fixture` — the single source of every topology) with
+# fake system binaries on PATH. Asserts exit codes, manifest correctness, and
+# byte-identical filesystem restore for the reference desktop plus two laptop
+# fixtures. Designed for a clean fedora:44 container (make test-integration) but
+# runs anywhere bash + python3 + GNU diffutils exist.
 set -euo pipefail
 
 BIN=${ORTHOGONALS_BIN:-/usr/local/bin/orthogonals}
@@ -18,35 +18,18 @@ pass() { echo "ok: $*"; }
 
 [ -x "$BIN" ] || fail "orthogonals binary not found at $BIN (set ORTHOGONALS_BIN)"
 
-# --- synthetic sysfs tree (hwtest.BuildReferenceRoot, baked into the image
-# by `go run ./test/fixture` — the single source of the reference topology) --
-
 FIXTURE=${ORTHOGONALS_FIXTURE:-/usr/local/share/orthogonals-fixture}
-[ -e "$FIXTURE/sys/bus/pci/devices/0000:01:00.0" ] ||
-	fail "fixture tree missing at $FIXTURE (regenerate: go run ./test/fixture <dir>, set ORTHOGONALS_FIXTURE)"
-mkdir -p "$ROOT"
-cp -a "$FIXTURE/." "$ROOT/"
+FIXTURE_LAPTOP=${ORTHOGONALS_FIXTURE_LAPTOP:-/usr/local/share/orthogonals-fixture-laptop}
+FIXTURE_LAPTOP_AMD=${ORTHOGONALS_FIXTURE_LAPTOP_AMD:-/usr/local/share/orthogonals-fixture-laptop-amd}
 
-# base dirs every real host has (undo only removes dirs apply itself created)
-mkdir -p "$ROOT/etc" "$ROOT/var/lib" "$ROOT/usr/local/bin" "$ROOT/usr/share/applications"
-
-# BLS entries: apply edits these directly for the IOMMU kernel args (the
-# native replacement for grubby). Two entries prove the op touches all.
-mkdir -p "$ROOT/boot/loader/entries"
-for v in 6.15.0 6.14.0; do
-	printf 'title Fedora Linux (%s)\nlinux /vmlinuz-%s\noptions root=UUID=aaaa ro rhgb quiet\n' \
-		"$v" "$v" >"$ROOT/boot/loader/entries/fedora-$v.conf"
-done
-
-# --- fake system binaries (argv-logging stubs, like the Go test seam) -------
+# --- fake system binaries (argv-logging stubs, like the Go test seam) --------
+# libvirt/systemd are not faked: the binary speaks their APIs, and under --root
+# those steps journal and skip ("skipped under --root") — test-vm covers them
+# live. Only the exec'd vendor tools need stubs here.
 
 FAKEBIN=$WORK/fakebin
 mkdir -p "$FAKEBIN"
-# libvirt/systemd are not faked: the binary speaks their APIs, and under
-# --root those steps journal and skip ("skipped under --root") — test-vm
-# covers them live. Only the exec'd vendor tools need stubs here.
-for name in dracut semanage restorecon bash \
-	nvidia-smi usermod; do
+for name in dracut semanage restorecon bash nvidia-smi usermod; do
 	printf '#!/bin/sh\necho "$*" >> "%s/%s.log"\nexit 0\n' "$FAKEBIN" "$name" >"$FAKEBIN/$name"
 	chmod 0755 "$FAKEBIN/$name"
 done
@@ -66,6 +49,30 @@ run() { # expected-rc args... (fake PATH scoped to the binary, not this script)
 tree_state() { # dir → content-addressed listing (path, mode, type) on stdout
 	(cd "$1" && find . -exec stat -c '%n %a %F' {} + | sort)
 }
+
+prep_root() { # fixture-src dest
+	local fixture=$1 dest=$2
+	[ -e "$fixture/sys/bus/pci/devices/0000:01:00.0" ] ||
+		fail "fixture tree missing at $fixture (regenerate: go run ./test/fixture <dir> <kind>)"
+	mkdir -p "$dest"
+	cp -a "$fixture/." "$dest/"
+	# base dirs every real host has (undo only removes dirs apply itself created)
+	mkdir -p "$dest/etc" "$dest/var/lib" "$dest/usr/local/bin" "$dest/usr/share/applications"
+	# BLS entries: apply edits these directly for the IOMMU kernel args (the
+	# native replacement for grubby). Two entries prove the op touches all.
+	mkdir -p "$dest/boot/loader/entries"
+	local v
+	for v in 6.15.0 6.14.0; do
+		printf 'title Fedora Linux (%s)\nlinux /vmlinuz-%s\noptions root=UUID=aaaa ro rhgb quiet\n' \
+			"$v" "$v" >"$dest/boot/loader/entries/fedora-$v.conf"
+	done
+}
+
+# ============================================================================
+# reference desktop (i5-13600K + RTX 3080): the thorough scenario
+# ============================================================================
+
+prep_root "$FIXTURE" "$ROOT"
 
 # --- detect ------------------------------------------------------------------
 
@@ -102,8 +109,11 @@ for path in \
 	/var/lib/orthogonals/manifest.json; do
 	[ -e "$ROOT$path" ] || fail "missing $path after apply --yes"
 done
+# the reference is a desktop: no laptop-only RTD3 artifacts
+for path in /etc/modprobe.d/nvidia-rtd3.conf /etc/udev/rules.d/80-orthogonals-nvidia-pm.rules; do
+	[ -e "$ROOT$path" ] && fail "desktop apply installed the laptop-only $path"
+done
 [ "$(stat -c '%a' "$ROOT/etc/libvirt/hooks/qemu")" = 755 ] || fail "qemu hook is not executable"
-# the hook is a shim that execs the binary; the GPU logic is Go now
 grep -q 'hook --user testuser qemu' "$ROOT/etc/libvirt/hooks/qemu" ||
 	fail "qemu hook is not the orthogonals shim"
 for gone in orthogonals-gpu-detach.sh orthogonals-gpu-reattach.sh; do
@@ -167,5 +177,50 @@ diff -u "$WORK/pre.state" "$WORK/post.state" ||
 	fail "file modes/types differ from pre-apply snapshot after undo"
 grep -rq intel_iommu=on "$ROOT/boot/loader/entries" && fail "undo left IOMMU kargs in the BLS entries"
 pass "undo --yes (byte-identical restore)"
+
+# ============================================================================
+# laptop scenarios: chassis passes, RTD3 artifacts install, vendor-correct
+# kernel args, byte-identical undo
+# ============================================================================
+
+laptop_scenario() { # name fixture-src expected-kargs muxless(yes/no)
+	local name=$1 fixture=$2 kargs=$3 muxless=$4
+	local root=$WORK/$name
+	prep_root "$fixture" "$root"
+	cp -a "$root" "$WORK/$name-pre"
+	tree_state "$root" >"$WORK/$name-pre.state"
+
+	run 0 detect --json --root "$root"
+	grep -q '"chassis_type": *10' "$WORK/out" || fail "$name: detect JSON is not a laptop chassis"
+
+	run 2 preflight --root "$root"
+	grep -qi 'laptop' "$WORK/out" || fail "$name: preflight does not recognize the laptop chassis"
+	if [ "$muxless" = yes ]; then
+		grep -q -- '--gpu-rom' "$WORK/out" || fail "$name: MUXless preflight must mention --gpu-rom"
+	fi
+
+	run 0 apply --root "$root" --user testuser --yes
+	for path in /etc/modprobe.d/nvidia-rtd3.conf /etc/udev/rules.d/80-orthogonals-nvidia-pm.rules; do
+		[ -e "$root$path" ] || fail "$name: laptop apply did not install $path"
+	done
+	grep -q 'NVreg_DynamicPowerManagement=0x02' "$root/etc/modprobe.d/nvidia-rtd3.conf" ||
+		fail "$name: RTD3 modprobe option missing"
+	local e
+	for e in "$root"/boot/loader/entries/*.conf; do
+		grep -q "$kargs" "$e" || fail "$name: BLS entry $e missing kernel args '$kargs'"
+	done
+	if [ "$kargs" = "iommu=pt" ]; then
+		grep -rq intel_iommu "$root"/boot/loader/entries/ && fail "$name: AMD host got intel_iommu"
+	fi
+
+	run 0 undo --root "$root" --yes
+	diff -r --no-dereference "$WORK/$name-pre" "$root" || fail "$name: tree differs after undo"
+	tree_state "$root" >"$WORK/$name-post.state"
+	diff -u "$WORK/$name-pre.state" "$WORK/$name-post.state" || fail "$name: file modes differ after undo"
+	pass "$name (kargs='$kargs', RTD3 installed, byte-identical restore)"
+}
+
+laptop_scenario laptop "$FIXTURE_LAPTOP" "intel_iommu=on iommu=pt" yes
+laptop_scenario laptop-amd "$FIXTURE_LAPTOP_AMD" "iommu=pt" no
 
 echo "integration test: all checks passed"

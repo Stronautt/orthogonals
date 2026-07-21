@@ -63,6 +63,26 @@ func stubDeviceDriver(t *testing.T, fn func(root, addr string) string) {
 	t.Cleanup(func() { deviceDriver = old })
 }
 
+func stubRuntimeStatus(t *testing.T, fn func(root, addr string) string) {
+	t.Helper()
+	old := runtimeStatus
+	runtimeStatus = fn
+	t.Cleanup(func() { runtimeStatus = old })
+}
+
+// stubRuntimeStatusFromControl reports a device suspended until its power/control
+// is pinned "on", simulating the kernel's D3cold→D0 transition without a kernel.
+func stubRuntimeStatusFromControl(t *testing.T) {
+	t.Helper()
+	stubRuntimeStatus(t, func(root, addr string) string {
+		b, _ := os.ReadFile(filepath.Join(root, "sys/bus/pci/devices", addr, "power/control"))
+		if strings.TrimSpace(string(b)) == "on" {
+			return "active"
+		}
+		return "suspended"
+	})
+}
+
 func stubDeleteModule(t *testing.T, err error) *[]string {
 	t.Helper()
 	var got []string
@@ -140,6 +160,9 @@ func TestDetachSuccess(t *testing.T) {
 	}
 	if !sd.Logged("stop nvidia-persistenced.service") {
 		t.Errorf("persistenced not stopped: %v", sd.Calls)
+	}
+	if !sd.Logged("stop nvidia-powerd.service") {
+		t.Errorf("nvidia-powerd not stopped: %v", sd.Calls)
 	}
 	if !sd.Logged("try-restart switcheroo-control.service") {
 		t.Errorf("switcheroo not restarted: %v", sd.Calls)
@@ -231,6 +254,104 @@ func TestDetachVerifyFailureAborts(t *testing.T) {
 	err := Detach(root, "tester", &sysdtest.Fake{})
 	if err == nil || !strings.Contains(err.Error(), "not vfio-pci") {
 		t.Fatalf("err = %v, want a verify-failure abort", err)
+	}
+}
+
+func TestDetachWakesSuspendedDevice(t *testing.T) {
+	root := hookRoot(t)
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/power/control", "auto\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+audAddr+"/power/control", "auto\n")
+	stubRuntimeStatusFromControl(t)
+	stubDeviceDriver(t, driverFromOverride)
+	unloaded := stubDeleteModule(t, nil)
+	stubNotify(t)
+	fakeBin(t, "modprobe", "")
+
+	if err := Detach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	for _, d := range []string{gpuAddr, audAddr} {
+		if got := strings.TrimSpace(read(t, filepath.Join(root, "sys/bus/pci/devices", d, "power/control"))); got != "on" {
+			t.Errorf("%s power/control = %q, want on (woken before unbind)", d, got)
+		}
+	}
+	if len(*unloaded) == 0 {
+		t.Error("modules never unloaded — the wake blocked the handover")
+	}
+}
+
+func TestDetachWakeTimeoutAborts(t *testing.T) {
+	root := hookRoot(t)
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/power/control", "auto\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+audAddr+"/power/control", "auto\n")
+	stubRuntimeStatus(t, func(_, _ string) string { return "suspended" })
+	stubDeviceDriver(t, driverFromOverride)
+	unloaded := stubDeleteModule(t, nil)
+	stubNotify(t)
+	fakeBin(t, "modprobe", "")
+	oldSettle, oldTimeout := WakeSettle, WakeTimeout
+	WakeSettle, WakeTimeout = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { WakeSettle, WakeTimeout = oldSettle, oldTimeout })
+
+	err := Detach(root, "tester", &sysdtest.Fake{})
+	if err == nil || !strings.Contains(err.Error(), "resume from runtime suspend") {
+		t.Fatalf("err = %v, want a wake-timeout abort", err)
+	}
+	if len(*unloaded) != 0 {
+		t.Errorf("modules unloaded despite the wake failure: %v", *unloaded)
+	}
+}
+
+func TestDetachDesktopSkipsWake(t *testing.T) {
+	root := hookRoot(t) // reference desktop: no power/runtime_status nodes
+	stubDeviceDriver(t, driverFromOverride)
+	stubDeleteModule(t, nil)
+	stubNotify(t)
+	fakeBin(t, "modprobe", "")
+
+	if err := Detach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sys/bus/pci/devices", gpuAddr, "power/control")); err == nil {
+		t.Error("power/control written on a desktop with no runtime PM")
+	}
+}
+
+func TestReattachLaptopRestoresRuntimePM(t *testing.T) {
+	root := hookRoot(t)
+	hwtest.WriteFile(t, root, "sys/class/dmi/id/chassis_type", "10\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/driver_override", "vfio-pci\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/power/control", "on\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+audAddr+"/power/control", "on\n")
+	stubDeviceDriver(t, driverFromOverride)
+	stubNotify(t)
+	fakeBin(t, "modprobe", "")
+	fakeBin(t, "nvidia-smi", "")
+
+	if err := Reattach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Reattach: %v", err)
+	}
+	for _, d := range []string{gpuAddr, audAddr} {
+		if got := strings.TrimSpace(read(t, filepath.Join(root, "sys/bus/pci/devices", d, "power/control"))); got != "auto" {
+			t.Errorf("%s power/control = %q, want auto (runtime PM restored)", d, got)
+		}
+	}
+}
+
+func TestReattachDesktopLeavesRuntimePM(t *testing.T) {
+	root := hookRoot(t) // chassis 3 (desktop)
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/driver_override", "vfio-pci\n")
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/power/control", "on\n")
+	stubDeviceDriver(t, driverFromOverride)
+	stubNotify(t)
+	fakeBin(t, "modprobe", "")
+	fakeBin(t, "nvidia-smi", "")
+
+	if err := Reattach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Reattach: %v", err)
+	}
+	if got := strings.TrimSpace(read(t, filepath.Join(root, "sys/bus/pci/devices", gpuAddr, "power/control"))); got != "on" {
+		t.Errorf("desktop reattach touched power/control: got %q, want on untouched", got)
 	}
 }
 

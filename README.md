@@ -49,10 +49,10 @@ explains every refusal.
 | Component | Requirement |
 |---|---|
 | OS | Fedora Workstation. Immutable variants (Silverblue, Kinoite, Bazzite) are not supported. |
-| Machine | Desktop. Laptops are not supported. |
-| Desktop GPU | Intel iGPU. It drives the Linux desktop. |
+| Machine | Desktop, or a hybrid-graphics laptop (experimental — see below). |
+| Host GPU | Intel or AMD iGPU. It drives the Linux desktop. |
 | Passthrough GPU | One NVIDIA dGPU, alone in its IOMMU group. |
-| Firmware | VT-d (IOMMU) enabled. |
+| Firmware | IOMMU enabled: VT-d on Intel, AMD-Vi on AMD. |
 | RAM | 16 GiB or more. The guest needs at least 8 GiB. |
 
 Three setups are refused on purpose. Single-GPU machines: the only GPU cannot
@@ -61,6 +61,23 @@ reset bugs need extra handling, planned for a later version. A dGPU that
 shares its IOMMU group with other devices: orthogonals never applies the ACS
 override kernel patch, because it breaks the isolation that makes passthrough
 safe. Preflight tells you which case you hit and why.
+
+> [!WARNING]
+> **Laptop support is fully experimental.** It is built and tested only
+> against synthetic fixtures — no real hybrid-graphics laptop has run it yet.
+> Hybrid laptops vary far more than desktops (display MUX, power gating,
+> per-model firmware), so treat a laptop run as unproven and be ready to
+> `undo`. Reports from real hardware are very welcome.
+
+On a hybrid laptop the same model applies: the internal panel stays on the
+iGPU and the NVIDIA dGPU is handed to the guest. The BIOS graphics mode must
+be **hybrid/Optimus**, not discrete-only — preflight reads the ASUS display
+MUX and the Dell/Lenovo/HP firmware settings where the kernel exposes them,
+and names the exact switch otherwise. A MUXless dGPU (a 3D controller with no
+display outputs) often needs its vBIOS: pass `--gpu-rom <file>` and
+orthogonals installs it into the VM. On a laptop, apply also enables NVIDIA
+RTD3 runtime power management so the dGPU still suspends for battery when no
+VM runs.
 
 The project was extracted from a machine that runs this setup daily:
 
@@ -86,7 +103,9 @@ no VM runs, games and GPU apps still use it (see
 1. Shut the PC down and move every monitor cable from the graphics card to
    the motherboard video outputs. After the move your desktop looks and
    behaves the same — the only difference is which chip sends the image to
-   the monitor.
+   the monitor. On a laptop there is no cable to move: the internal panel
+   already runs on the iGPU in hybrid mode — just confirm the BIOS graphics
+   mode is hybrid/Optimus (preflight checks it).
 2. Boot Fedora and make sure the NVIDIA driver from
    [RPM Fusion](https://rpmfusion.org/Howto/NVIDIA) is installed and
    `nvidia-smi` works.
@@ -98,13 +117,18 @@ No BIOS visit is needed up front. `orthogonals preflight` checks the
 firmware side and names the exact option on the rare board where one
 matters:
 
-- VT-d (IOMMU) disabled → fails and names the switch to enable. On most
-  boards it is already on.
+- IOMMU (VT-d on Intel, AMD-Vi on AMD) disabled → fails and names the switch
+  to enable. On most boards it is already on. Where the kernel exposes the
+  BIOS settings (Dell, Lenovo, HP business models), preflight names the exact
+  attribute under `/sys/class/firmware-attributes` to flip.
 - iGPU disabled by the firmware (a common default when a graphics card is
   installed) → fails and names the option, usually "iGPU Multi-Monitor".
 - Graphics card still set as the firmware's primary display → warns with an
   optional "Primary Display: CPU Graphics" change. Everything works without
   it; it only keeps the GRUB boot menu visible on your monitors.
+- On a laptop the graphics mode must be hybrid/Optimus, not discrete-only.
+  Preflight reads the ASUS `gpu_mux_mode` knob and prints the one-liner to
+  switch it; on other laptops it names the BIOS "GPU Mode"/"Optimus" setting.
 
 `orthogonals detect` shows which connectors have displays, and preflight
 names the exact cable to move if a monitor is still plugged into the
@@ -195,9 +219,13 @@ refuses and explains instead of forcing and hoping.
 
 The full list is printed by the dry run before anything happens.
 
-- Kernel arguments, via grubby: `intel_iommu=on iommu=pt`.
+- Kernel arguments, via grubby: `intel_iommu=on iommu=pt` on Intel, `iommu=pt`
+  on AMD.
 - A dracut config that adds the vfio modules to the initramfs. This is the
   reason for the one reboot.
+- On a laptop only: a modprobe.d option and udev rules that enable NVIDIA RTD3,
+  so the dGPU still runtime-suspends to D3cold for battery when no VM runs, and
+  `nvidia-powerd` disabled (it holds the card open and blocks the handover).
 - An SELinux file-context rule and a tmpfiles entry for the Looking Glass
   shared-memory file.
 - libvirt hooks that hand the GPU over: when a VM starts, the NVIDIA driver
@@ -307,6 +335,7 @@ sudo orthogonals up --yes --vm-name gaming --ram 24 \
 - `--resolution`: maximum guest resolution `WxH` (default 3840x2160).
 - `--guest-user`, `--guest-password`: guest admin account (default `user` / `password`).
 - `--locale`: guest locale and keyboard, e.g. `uk-UA` (default: the ISO's default language).
+- `--gpu-rom`: an extracted GPU vBIOS ROM, for a MUXless laptop dGPU that gives no guest output.
 - `--nvidia-installer`: your own NVIDIA Windows driver installer, instead of the pinned download.
 
 ### `orthogonals detect`
@@ -354,7 +383,7 @@ sudo orthogonals vm define --yes --vm-name gaming --display-name "Gaming"
 sudo orthogonals vm undefine --yes --vm-name gaming --purge
 ```
 
-- `--vm-name`, `--display-name`, `--ram`, `--disk`, `--disk-size`, `--resolution`: as in `up`.
+- `--vm-name`, `--display-name`, `--ram`, `--disk`, `--disk-size`, `--resolution`, `--gpu-rom`: as in `up`.
 - `--win11-iso`: attach the install CD (needed for a VM that will install Windows).
 - `--purge`: with `undefine`, also delete the disk image and reset the `up` pipeline for a from-scratch reinstall.
 
@@ -533,6 +562,17 @@ Fix: open the VM console (`virt-viewer <vm-name>`) and press a key while the
 prompt retries. This only happens on the first boot, while the disk is still
 blank. Once Windows is installed, the disk boots first and the prompt never
 returns.
+
+### The guest boots but the passed-through GPU shows no image (laptop)
+
+Why: a MUXless laptop dGPU (a 3D controller with no display outputs) can hang
+OVMF on its option ROM or stay dark without its own vBIOS. Preflight's `mux`
+check warns when it detects this topology.
+
+Fix: extract the dGPU vBIOS and pass it, so orthogonals installs it and
+renders `<rom file=...>` in the domain: `orthogonals up --gpu-rom <rom.bin>
+...` (or `vm define --gpu-rom`). The ROM is stored under
+`/var/lib/orthogonals/vbios` and kept across converges.
 
 ### apply or vm refuses: "journaled command differs from the current settings"
 

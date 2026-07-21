@@ -35,6 +35,7 @@ type vmOpts struct {
 	guestPassword string
 	locale        string
 	win11ISO      string
+	gpuROM        string
 	stage         string
 	purge         bool
 }
@@ -52,6 +53,7 @@ func addVMFlags(fs *pflag.FlagSet, o *vmOpts) {
 	fs.StringVar(&o.guestPassword, "guest-password", "", "guest admin password (default \""+media.DefaultGuestPassword+"\")")
 	fs.StringVar(&o.locale, "locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
 	fs.StringVar(&o.win11ISO, "win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
+	fs.StringVar(&o.gpuROM, "gpu-rom", "", "path to an extracted GPU vBIOS ROM, installed and rendered as <rom file=>; needed only when a MUXless laptop dGPU gives no guest output")
 }
 
 func newVMCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
@@ -165,6 +167,10 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	romFile, romContent, err := resolveGPUROM(cfg.Root, o.vmName, o.gpuROM, prev.GPURom)
+	if err != nil {
+		return err
+	}
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
 		return err
@@ -187,6 +193,8 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		Win11ISO:      isoPath,
 		VirtioISO:     filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
 		ProvisionISO:  media.ISOPath("", o.vmName),
+		ROMFile:       romFile,
+		ROMContent:    romContent,
 	})
 	if err != nil {
 		return err
@@ -226,6 +234,31 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// resolveGPUROM returns the canonical vBIOS path and bytes: from --gpu-rom, else
+// re-read from a registered ROM, else empty.
+func resolveGPUROM(root, vm, flag, prev string) (romFile string, content []byte, err error) {
+	switch {
+	case flag != "":
+		src, err := filepath.Abs(flag)
+		if err != nil {
+			return "", nil, err
+		}
+		content, err := os.ReadFile(src)
+		if err != nil {
+			return "", nil, fmt.Errorf("read --gpu-rom %s: %w", flag, err)
+		}
+		return domain.ROMPath(vm), content, nil
+	case prev != "":
+		content, err := os.ReadFile(filepath.Join(root, prev))
+		if err != nil {
+			return "", nil, fmt.Errorf("gpu rom %s is registered but unreadable — re-run with --gpu-rom: %w", prev, err)
+		}
+		return prev, content, nil
+	default:
+		return "", nil, nil
+	}
+}
+
 // resolveDisplayName picks the desktop shortcut name.
 func resolveDisplayName(root, name, flag string) string {
 	if flag != "" {
@@ -253,7 +286,8 @@ func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", name, state, name)
 	}
 	ids := []string{hostcfg.DesktopLinkID(name), hostcfg.DesktopEntryID(name),
-		domain.DefineStepID(name)}
+		domain.DefineStepID(name),
+		domain.ROMRestoreconID(name), domain.ROMFcontextID(name), domain.ROMFileID(name)}
 	if o.purge {
 		ids = append(ids, domain.DiskRestoreconID(name), domain.DiskFcontextID(name), domain.DiskImageID(name))
 	}

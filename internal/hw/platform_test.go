@@ -25,6 +25,13 @@ func TestIOMMUAddressWidth(t *testing.T) {
 			t.Errorf("width = %d, want 0 without dmar units", w)
 		}
 	})
+	t.Run("amd ivhd unit assumes 48-bit", func(t *testing.T) {
+		root := t.TempDir()
+		hwtest.WriteFile(t, root, "sys/class/iommu/ivhd0/name", "ivhd0\n")
+		if w := iommuAddressWidth(root); w != 48 {
+			t.Errorf("width = %d, want 48 for an active AMD-Vi unit", w)
+		}
+	})
 	t.Run("garbage cap ignored", func(t *testing.T) {
 		root := t.TempDir()
 		hwtest.WriteFile(t, root, "sys/class/iommu/dmar0/intel-iommu/cap", "not-hex\n")
@@ -32,6 +39,21 @@ func TestIOMMUAddressWidth(t *testing.T) {
 			t.Errorf("width = %d, want 0 for unparseable cap", w)
 		}
 	})
+}
+
+func TestIOMMUTablePresent(t *testing.T) {
+	for _, table := range []string{"DMAR", "IVRS"} {
+		t.Run(table, func(t *testing.T) {
+			root := t.TempDir()
+			hwtest.WriteFile(t, root, "sys/firmware/acpi/tables/"+table, "")
+			if !iommuTablePresent(root) {
+				t.Errorf("iommuTablePresent = false, want true with the %s table", table)
+			}
+		})
+	}
+	if iommuTablePresent(t.TempDir()) {
+		t.Error("iommuTablePresent on empty root = true, want false")
+	}
 }
 
 func TestSELinuxMode(t *testing.T) {
@@ -91,6 +113,30 @@ func TestChassisName(t *testing.T) {
 	for _, tt := range tests {
 		if got := ChassisName(tt.typ); got != tt.want {
 			t.Errorf("ChassisName(%d) = %q, want %q", tt.typ, got, tt.want)
+		}
+	}
+}
+
+func TestChassisType(t *testing.T) {
+	if got := ChassisType(t.TempDir()); got != 0 {
+		t.Errorf("ChassisType with no dmi node = %d, want 0", got)
+	}
+	root := t.TempDir()
+	hwtest.WriteFile(t, root, "sys/class/dmi/id/chassis_type", "10\n")
+	if got := ChassisType(root); got != 10 {
+		t.Errorf("ChassisType = %d, want 10", got)
+	}
+}
+
+func TestIsLaptopChassis(t *testing.T) {
+	for _, typ := range []int{8, 9, 10, 11, 14, 30, 31, 32} {
+		if !IsLaptopChassis(typ) {
+			t.Errorf("IsLaptopChassis(%d) = false, want true", typ)
+		}
+	}
+	for _, typ := range []int{0, 3, 4, 6, 7, 13} {
+		if IsLaptopChassis(typ) {
+			t.Errorf("IsLaptopChassis(%d) = true, want false", typ)
 		}
 	}
 }

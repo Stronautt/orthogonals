@@ -69,7 +69,11 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	overrides, err := hostcfg.IGPUOverrides(cfg.Root)
+	igpuVendor := ""
+	if res.GPUs.IGPU != nil {
+		igpuVendor = res.GPUs.IGPU.Vendor
+	}
+	overrides, err := hostcfg.IGPUOverrides(cfg.Root, igpuVendor)
 	if err != nil {
 		return err
 	}

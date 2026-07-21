@@ -18,9 +18,11 @@ const (
 
 // PCI class-code prefixes.
 const (
-	ClassDisplay  = "0x03"
-	classHDAAudio = "0x0403"
-	ClassBridge   = "0x0604"
+	ClassDisplay = "0x03"
+	// Class3DController is a display device with no outputs (a MUXless dGPU).
+	Class3DController = "0x0302"
+	classHDAAudio     = "0x0403"
+	ClassBridge       = "0x0604"
 )
 
 // PCIDevice is one entry from sys/bus/pci/devices.
@@ -127,6 +129,16 @@ func DeviceDriver(root, addr string) string {
 	return linkBase(filepath.Join(root, "/sys/bus/pci/devices", addr, "driver"))
 }
 
+// RuntimeStatus reads a PCI device's power/runtime_status, "" without runtime PM.
+func RuntimeStatus(root, addr string) string {
+	return readTrim(filepath.Join(root, "/sys/bus/pci/devices", addr, "power/runtime_status"))
+}
+
+// SetPowerControl writes a PCI device's power/control ("on" pins D0, "auto" allows suspend).
+func SetPowerControl(root, addr, val string) error {
+	return writeDeviceAttr(root, addr, "power/control", val)
+}
+
 // UnbindDevice detaches a PCI device from its current driver.
 func UnbindDevice(root, addr string) error {
 	if DeviceDriver(root, addr) == "" {
@@ -158,21 +170,38 @@ func ScanGPUs(root string) (GPUs, error) {
 	return classifyGPUs(devs), nil
 }
 
-// classifyGPUs splits display-class devices into the iGPU and discrete GPUs.
+// classifyGPUs splits display-class devices into the iGPU (selectIGPU) and the
+// discrete GPUs, preserving device order.
 func classifyGPUs(devices []PCIDevice) GPUs {
 	var g GPUs
+	igpuAddr := selectIGPU(devices)
 	for _, d := range devices {
 		if !strings.HasPrefix(d.Class, ClassDisplay) {
 			continue
 		}
 		d := d
-		if d.Vendor == VendorIntel && strings.HasPrefix(d.Address, "0000:00:") {
+		if igpuAddr != "" && d.Address == igpuAddr {
 			g.IGPU = &d
 			continue
 		}
 		g.DGPUs = append(g.DGPUs, DGPU{PCIDevice: d, Audio: audioSibling(devices, d)})
 	}
 	return g
+}
+
+// selectIGPU returns the lowest-addressed non-NVIDIA display device, "" when every
+// display device is NVIDIA.
+func selectIGPU(devices []PCIDevice) string {
+	igpu := ""
+	for _, d := range devices {
+		if !strings.HasPrefix(d.Class, ClassDisplay) || d.Vendor == VendorNVIDIA {
+			continue
+		}
+		if igpu == "" || d.Address < igpu {
+			igpu = d.Address
+		}
+	}
+	return igpu
 }
 
 // audioSibling finds the HDA function on the same PCI slot as the GPU.

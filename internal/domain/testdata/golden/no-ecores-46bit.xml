@@ -127,9 +127,8 @@
       <source>
         <address domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
       </source>
-      <!-- OVMF hangs before console init when it executes the GPU's option
-           ROM; the Windows driver initializes the card without the ROM BAR.
-           If a guest driver ever needs the VBIOS, switch to <rom file=...>. -->
+      <!-- bar='off': OVMF hangs executing the option ROM; the Windows driver
+           needs no ROM BAR. gpu-rom overrides with a vBIOS for MUXless dGPUs. -->
       <rom bar='off'/>
     </hostdev>
     <hostdev mode='subsystem' type='pci' managed='no'>

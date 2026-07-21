@@ -16,21 +16,14 @@ type Dev struct {
 	Reset                               bool
 }
 
-// BuildReferenceRoot writes the PoC reference machine under root.
-func BuildReferenceRoot(root string) error {
-	devs := []Dev{
-		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
-		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
-		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
-	}
-	for _, d := range devs {
-		if err := addPCI(root, d); err != nil {
-			return err
-		}
-	}
+// file is one fixture path and its content.
+type file struct{ rel, content string }
 
-	files := []struct{ rel, content string }{
+// sharedHostFiles are the fixture files identical across every synthetic host.
+func sharedHostFiles(cpuVendorID string) []file {
+	files := []file{
 		{"sys/devices/system/cpu/present", "0-19\n"},
+		{"proc/cpuinfo", "processor\t: 0\nvendor_id\t: " + cpuVendorID + "\nmodel name\t: fixture cpu\n"},
 		{"sys/devices/cpu_core/cpus", "0-11\n"},
 		{"sys/devices/cpu_atom/cpus", "12-19\n"},
 		{"proc/meminfo", "MemTotal:       33554432 kB\nMemFree:        20000000 kB\n"},
@@ -39,17 +32,8 @@ func BuildReferenceRoot(root string) error {
 				"GCC version:  gcc version 15.0.1 20250418 (Red Hat 15.0.1-0) (GCC)\n"},
 		{"sys/module/nvidia_drm/parameters/modeset", "Y\n"},
 		{"sys/module/nvidia_drm/parameters/fbdev", "N\n"},
-		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
-		{"sys/firmware/acpi/tables/DMAR", ""},
 		{"sys/fs/selinux/enforce", "1"},
 		{"sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", "\x06\x00\x00\x00\x01"},
-		{"sys/class/dmi/id/chassis_type", "3\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
-		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
-		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
 		{"boot/loader/entries/fedora-6.15.0.conf",
 			"title Fedora Linux (6.15.0) 44\nversion 6.15.0\nlinux /vmlinuz-6.15.0\ninitrd /initramfs-6.15.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
 		{"boot/loader/entries/fedora-6.14.0.conf",
@@ -57,15 +41,90 @@ func BuildReferenceRoot(root string) error {
 	}
 	coreIDs := []int{0, 0, 4, 4, 8, 8, 12, 12, 16, 16, 20, 20, 24, 25, 26, 27, 28, 29, 30, 31}
 	for cpu, id := range coreIDs {
-		files = append(files, struct{ rel, content string }{
+		files = append(files, file{
 			fmt.Sprintf("sys/devices/system/cpu/cpu%d/topology/core_id", cpu), strconv.Itoa(id) + "\n"})
 	}
-	for _, f := range files {
+	return files
+}
+
+// buildHost writes the PCI devices, shared files, and host-specific files under root.
+func buildHost(root, cpuVendorID string, devs []Dev, specific []file) error {
+	for _, d := range devs {
+		if err := addPCI(root, d); err != nil {
+			return err
+		}
+	}
+	for _, f := range append(sharedHostFiles(cpuVendorID), specific...) {
 		if err := writeFile(root, f.rel, f.content); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// BuildReferenceRoot writes the PoC reference desktop (i5-13600K + RTX 3080) under root.
+func BuildReferenceRoot(root string) error {
+	return buildHost(root, "GenuineIntel", []Dev{
+		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
+		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
+	}, []file{
+		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
+		{"sys/firmware/acpi/tables/DMAR", ""},
+		{"sys/class/dmi/id/chassis_type", "3\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
+	})
+}
+
+// BuildLaptopRoot writes an Intel + NVIDIA notebook: eDP-1 on the iGPU, a MUXless
+// (3D-controller) dGPU runtime-suspended.
+func BuildLaptopRoot(root string) error {
+	return buildHost(root, "GenuineIntel", []Dev{
+		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
+		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030200", Driver: "nvidia", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
+	}, []file{
+		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
+		{"sys/firmware/acpi/tables/DMAR", ""},
+		{"sys/class/dmi/id/chassis_type", "10\n"},
+		{"sys/devices/platform/asus-nb-wmi/gpu_mux_mode", "1\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-eDP-1/status", "connected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/power/control", "auto\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/power/runtime_status", "suspended\n"},
+		{"sys/bus/pci/devices/0000:01:00.1/power/control", "auto\n"},
+		{"sys/bus/pci/devices/0000:01:00.1/power/runtime_status", "suspended\n"},
+	})
+}
+
+// BuildLaptopAMDRoot writes an AMD APU + NVIDIA notebook: AMD-Vi/IVRS IOMMU, an
+// AMD iGPU on a high bus, a MUXed dGPU runtime-suspended.
+func BuildLaptopAMDRoot(root string) error {
+	return buildHost(root, "AuthenticAMD", []Dev{
+		{Addr: "0000:05:00.0", Vendor: "0x1002", Device: "0x1638", Class: "0x030000", Driver: "amdgpu", Group: 0, Reset: true},
+		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
+	}, []file{
+		{"sys/class/iommu/ivhd0/name", "ivhd0\n"},
+		{"sys/firmware/acpi/tables/IVRS", ""},
+		{"sys/class/dmi/id/chassis_type", "10\n"},
+		{"sys/bus/pci/devices/0000:05:00.0/boot_vga", "1\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
+		{"sys/bus/pci/devices/0000:05:00.0/drm/card0/card0-eDP-1/status", "connected\n"},
+		{"sys/bus/pci/devices/0000:05:00.0/drm/renderD128/dev", "226:128\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-HDMI-A-1/status", "disconnected\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/power/control", "auto\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/power/runtime_status", "suspended\n"},
+		{"sys/bus/pci/devices/0000:01:00.1/power/control", "auto\n"},
+		{"sys/bus/pci/devices/0000:01:00.1/power/runtime_status", "suspended\n"},
+	})
 }
 
 // ReferenceRoot is BuildReferenceRoot in a temp dir.

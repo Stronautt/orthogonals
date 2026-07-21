@@ -96,6 +96,72 @@ func TestVMDefineApplies(t *testing.T) {
 	_ = before
 }
 
+func TestVMDefineGPURom(t *testing.T) {
+	fakeVMPath(t)
+	f := fakeVirt(t, &virttest.Fake{UUID: "1c07f749-5d72-4e9e-9be1-178cb6d28cd3"})
+	root := hwtest.ReferenceRoot(t)
+
+	src := filepath.Join(t.TempDir(), "vbios.rom")
+	if err := os.WriteFile(src, []byte{0x55, 0xaa, 0x11, 0x22}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const canonical = "/var/lib/orthogonals/vbios/win11.rom"
+
+	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso",
+		"--gpu-rom", src, "--yes", "define"); code != 0 {
+		t.Fatalf("define exit %d\nstderr: %s", code, stderr)
+	}
+	installed, err := os.ReadFile(filepath.Join(root, canonical))
+	if err != nil {
+		t.Fatalf("vBIOS not installed: %v", err)
+	}
+	if string(installed) != "\x55\xaa\x11\x22" {
+		t.Errorf("installed vBIOS bytes = %q", installed)
+	}
+	xml, err := os.ReadFile(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xml), "<rom file='"+canonical+"'/>") {
+		t.Errorf("domain XML missing the rom file:\n%s", xml)
+	}
+
+	// A later stage re-render without --gpu-rom keeps the registered vBIOS.
+	if code, _, stderr := run(t, "vm", "--root", root, "--stage", "final", "--yes", "define"); code != 0 {
+		t.Fatalf("final-stage redefine exit %d\nstderr: %s", code, stderr)
+	}
+	xml, err = os.ReadFile(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xml), "<rom file='"+canonical+"'/>") {
+		t.Errorf("stage re-render dropped the vBIOS:\n%s", xml)
+	}
+	_ = f
+}
+
+func TestVMDefineGPURomRefusals(t *testing.T) {
+	fakeVMPath(t)
+	fakeVirt(t, &virttest.Fake{})
+	root := hwtest.ReferenceRoot(t)
+
+	code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/i.iso",
+		"--gpu-rom", "/no/such/rom", "--yes", "define")
+	if code == 0 || !strings.Contains(stderr, "read --gpu-rom") {
+		t.Errorf("missing vBIOS: code=%d stderr=%q", code, stderr)
+	}
+
+	bad := filepath.Join(t.TempDir(), "bad.rom")
+	if err := os.WriteFile(bad, []byte("not a rom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = run(t, "vm", "--root", root, "--win11-iso", "/i.iso",
+		"--gpu-rom", bad, "--yes", "define")
+	if code == 0 || !strings.Contains(stderr, "0x55 0xAA") {
+		t.Errorf("bad-signature vBIOS: code=%d stderr=%q", code, stderr)
+	}
+}
+
 // a release rendering different domain XML converges an installed VM.
 func TestVMDefineRedefineConverges(t *testing.T) {
 	fakeVMPath(t)

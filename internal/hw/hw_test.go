@@ -36,8 +36,75 @@ func TestDetectReference(t *testing.T) {
 	if r.Platform.IOMMUAddressWidth != 39 {
 		t.Errorf("IOMMUAddressWidth = %d, want 39", r.Platform.IOMMUAddressWidth)
 	}
-	if !r.Platform.DMARTable {
-		t.Error("DMARTable = false, want true (reference root has the ACPI table)")
+	if !r.Platform.IOMMUTable {
+		t.Error("IOMMUTable = false, want true (reference root has the ACPI DMAR table)")
+	}
+}
+
+func TestDetectLaptopFixture(t *testing.T) {
+	t.Setenv("PATH", hwtest.FakeTools(t, "dracut"))
+	root := t.TempDir()
+	if err := hwtest.BuildLaptopRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Detect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsLaptopChassis(r.Platform.ChassisType) {
+		t.Errorf("ChassisType = %d, want a laptop type", r.Platform.ChassisType)
+	}
+	if r.CPU.Vendor != CPUVendorIntel {
+		t.Errorf("CPU.Vendor = %q, want intel", r.CPU.Vendor)
+	}
+	if r.GPUs.IGPU == nil || r.GPUs.IGPU.Vendor != VendorIntel {
+		t.Errorf("IGPU = %+v, want the Intel iGPU", r.GPUs.IGPU)
+	}
+	nv, err := r.GPUs.SoleNVIDIA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nv.Class != "0x030200" {
+		t.Errorf("dGPU class = %q, want MUXless 3D controller 0x030200", nv.Class)
+	}
+	if got := RuntimeStatus(root, nv.Address); got != "suspended" {
+		t.Errorf("dGPU runtime_status = %q, want suspended", got)
+	}
+	if r.Platform.GPUMux != GPUMuxHybrid {
+		t.Errorf("GPUMux = %q, want hybrid", r.Platform.GPUMux)
+	}
+	if r.Platform.IOMMUAddressWidth != 39 {
+		t.Errorf("IOMMU width = %d, want 39 (DMAR)", r.Platform.IOMMUAddressWidth)
+	}
+}
+
+func TestDetectLaptopAMDFixture(t *testing.T) {
+	t.Setenv("PATH", hwtest.FakeTools(t, "dracut"))
+	root := t.TempDir()
+	if err := hwtest.BuildLaptopAMDRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Detect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsLaptopChassis(r.Platform.ChassisType) {
+		t.Error("chassis not a laptop")
+	}
+	if r.CPU.Vendor != CPUVendorAMD {
+		t.Errorf("CPU.Vendor = %q, want amd", r.CPU.Vendor)
+	}
+	if r.GPUs.IGPU == nil || r.GPUs.IGPU.Vendor != VendorAMD || r.GPUs.IGPU.Address != "0000:05:00.0" {
+		t.Errorf("IGPU = %+v, want the AMD iGPU at 0000:05:00.0", r.GPUs.IGPU)
+	}
+	if _, err := r.GPUs.SoleNVIDIA(); err != nil {
+		t.Errorf("SoleNVIDIA: %v", err)
+	}
+	if !r.Platform.IOMMUTable {
+		t.Error("IOMMUTable false, want true (IVRS)")
+	}
+	if r.Platform.IOMMUAddressWidth != 48 {
+		t.Errorf("IOMMU width = %d, want 48 (AMD-Vi)", r.Platform.IOMMUAddressWidth)
 	}
 }
 

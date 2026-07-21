@@ -20,13 +20,14 @@ import (
 //go:embed templates
 var templateFS embed.FS
 
-// baseKernelArgs enables the IOMMU in passthrough mode.
-const baseKernelArgs = "intel_iommu=on iommu=pt"
-
 // Profile is everything host configuration varies on.
 type Profile struct {
-	User             string
-	Binding          string
+	User    string
+	Binding string
+	// CPUVendor selects the IOMMU kernel args ("intel"/"amd"/"").
+	CPUVendor string
+	// Laptop gates the RTD3 power-management artifacts and units.
+	Laptop           bool
 	VFIOIDs          []string
 	DefaultNetActive bool
 }
@@ -47,7 +48,9 @@ func NewProfile(r *hw.Result, user, binding string, defaultNetActive bool) (Prof
 	if gpu.Audio != nil {
 		ids = append(ids, gpu.Audio.VendorDeviceID())
 	}
-	return Profile{User: user, Binding: binding, VFIOIDs: ids, DefaultNetActive: defaultNetActive}, nil
+	return Profile{User: user, Binding: binding, CPUVendor: r.CPU.Vendor,
+		Laptop:  hw.IsLaptopChassis(r.Platform.ChassisType),
+		VFIOIDs: ids, DefaultNetActive: defaultNetActive}, nil
 }
 
 // BindingDynamic and BindingStatic are the --binding modes.
@@ -67,16 +70,27 @@ const (
 	UnitPersistenced  = "nvidia-persistenced.service"
 	UnitLibvirtGuests = "libvirt-guests.service"
 	UnitSwitcheroo    = "switcheroo-control.service"
+	// UnitPowerd holds the GPU open, blocking dynamic unbinding; disabled on laptops.
+	UnitPowerd = "nvidia-powerd.service"
 
 	SwitcherooStepID = "enable-switcheroo-control"
 )
 
+// iommuKernelArgs is the IOMMU passthrough kernel args for a CPU vendor; unknown keeps the Intel default.
+func iommuKernelArgs(cpuVendor string) string {
+	if cpuVendor == hw.CPUVendorAMD {
+		return "iommu=pt"
+	}
+	return "intel_iommu=on iommu=pt"
+}
+
 // KernelArgs is the exact karg string apply adds.
 func KernelArgs(p Profile) string {
+	args := iommuKernelArgs(p.CPUVendor)
 	if p.Binding == BindingStatic {
-		return baseKernelArgs + " " + VFIOIDsPrefix + strings.Join(p.VFIOIDs, ",")
+		return args + " " + VFIOIDsPrefix + strings.Join(p.VFIOIDs, ",")
 	}
-	return baseKernelArgs
+	return args
 }
 
 // addedKargs is args minus the tokens the host already had.
@@ -131,6 +145,13 @@ var artifactSpecs = []tplSpec{
 	{"50-orthogonals-igpu.conf", "/etc/environment.d/50-orthogonals-igpu.conf", "environment-igpu-pins", 0o644},
 	{"looking-glass.conf", "/etc/tmpfiles.d/looking-glass.conf", "tmpfiles-looking-glass", 0o644},
 	{"libvirt-guests", "/etc/sysconfig/libvirt-guests", "sysconfig-libvirt-guests", 0o644},
+}
+
+// laptopArtifactSpecs are the RTD3 artifacts added on laptop hosts; the modprobe.d
+// conf must precede the dracut-regenerate step to reach the initramfs.
+var laptopArtifactSpecs = []tplSpec{
+	{"nvidia-rtd3.conf", "/etc/modprobe.d/nvidia-rtd3.conf", "nvidia-rtd3", 0o644},
+	{"80-orthogonals-nvidia-pm.rules", "/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules", "udev-nvidia-pm", 0o644},
 }
 
 // renderTemplate executes one embedded template against data.
@@ -224,8 +245,17 @@ var igpuApps = []string{
 	"discord.desktop",
 }
 
-// IGPUOverrides renders Intel-Vulkan-only copies of the installed igpuApps entries.
-func IGPUOverrides(root string) ([]Artifact, error) {
+// vulkanDriverSelect is the VK_LOADER_DRIVERS_SELECT glob for the iGPU's Mesa driver.
+func vulkanDriverSelect(igpuVendor string) string {
+	if igpuVendor == hw.VendorAMD {
+		return "*radeon*"
+	}
+	return "*intel*"
+}
+
+// IGPUOverrides renders iGPU-Vulkan-only copies of the installed igpuApps entries.
+func IGPUOverrides(root, igpuVendor string) ([]Artifact, error) {
+	driver := vulkanDriverSelect(igpuVendor)
 	var out []Artifact
 	for _, name := range igpuApps {
 		b, err := os.ReadFile(filepath.Join(root, "/usr/share/applications", name))
@@ -238,7 +268,7 @@ func IGPUOverrides(root string) ([]Artifact, error) {
 		lines := strings.Split(string(b), "\n")
 		for i, l := range lines {
 			if cmd, ok := strings.CutPrefix(l, "Exec="); ok {
-				lines[i] = "Exec=env VK_LOADER_DRIVERS_SELECT=*intel* " + cmd
+				lines[i] = "Exec=env VK_LOADER_DRIVERS_SELECT=" + driver + " " + cmd
 			}
 		}
 		out = append(out, Artifact{
@@ -253,8 +283,12 @@ func IGPUOverrides(root string) ([]Artifact, error) {
 
 // renderArtifacts renders every host configuration file for the profile.
 func renderArtifacts(p Profile) ([]Artifact, error) {
-	out := make([]Artifact, 0, len(artifactSpecs))
-	for _, spec := range artifactSpecs {
+	specs := artifactSpecs
+	if p.Laptop {
+		specs = append(slices.Clone(artifactSpecs), laptopArtifactSpecs...)
+	}
+	out := make([]Artifact, 0, len(specs))
+	for _, spec := range specs {
 		content, err := renderTemplate(spec.tpl, p)
 		if err != nil {
 			return nil, err
@@ -306,6 +340,9 @@ func Steps(p Profile, preexisting []string) ([]steps.Step, error) {
 		steps.Step{ID: "enable-libvirt-guests", Kind: steps.KindEnableUnit, Unit: UnitLibvirtGuests, Enable: true},
 		steps.Step{ID: SwitcherooStepID, Kind: steps.KindEnableUnit, Unit: UnitSwitcheroo, Enable: true},
 	)
+	if p.Laptop {
+		list = append(list, steps.Step{ID: "disable-nvidia-powerd", Kind: steps.KindEnableUnit, Unit: UnitPowerd, Enable: false})
+	}
 	if !p.DefaultNetActive {
 		list = append(list,
 			steps.Step{ID: "net-default-autostart", Kind: steps.KindOp,

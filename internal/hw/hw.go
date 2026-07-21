@@ -77,8 +77,8 @@ func (r *Result) Summary() string {
 
 	if r.Platform.IOMMUAddressWidth > 0 {
 		fmt.Fprintf(&b, "IOMMU: on, host address width %d\n", r.Platform.IOMMUAddressWidth)
-	} else if r.Platform.DMARTable {
-		b.WriteString("IOMMU: off (firmware exposes VT-d — apply enables it)\n")
+	} else if r.Platform.IOMMUTable {
+		b.WriteString("IOMMU: off (firmware exposes an IOMMU — apply enables it)\n")
 	} else {
 		b.WriteString("IOMMU: off or unsupported\n")
 	}
@@ -89,6 +89,9 @@ func (r *Result) Summary() string {
 	}
 	fmt.Fprintf(&b, "Secure Boot: %s\n", secureBoot)
 	fmt.Fprintf(&b, "Chassis: %s\n", ChassisName(r.Platform.ChassisType))
+	if r.Platform.GPUMux != "" {
+		fmt.Fprintf(&b, "GPU MUX: %s\n", r.Platform.GPUMux)
+	}
 	if n := r.Platform.NVIDIA; n.Loaded {
 		drm := "nvidia_drm not loaded"
 		if n.Modeset != "" {

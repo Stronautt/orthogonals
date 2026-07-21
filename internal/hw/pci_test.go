@@ -158,6 +158,25 @@ func TestSysfsDeviceWriters(t *testing.T) {
 	}
 }
 
+func TestRuntimePMSysfs(t *testing.T) {
+	root := hwtest.ReferenceRoot(t)
+	const addr = "0000:01:00.0"
+
+	if got := RuntimeStatus(root, addr); got != "" {
+		t.Errorf("RuntimeStatus with no power node = %q, want empty", got)
+	}
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+addr+"/power/runtime_status", "suspended\n")
+	if got := RuntimeStatus(root, addr); got != "suspended" {
+		t.Errorf("RuntimeStatus = %q, want suspended", got)
+	}
+
+	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+addr+"/power/control", "auto\n")
+	if err := SetPowerControl(root, addr, "on"); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, root+"/sys/bus/pci/devices/"+addr+"/power/control", "on\n")
+}
+
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -205,6 +224,11 @@ func TestClassifyGPUs(t *testing.T) {
 	amd := PCIDevice{Address: "0000:03:00.0", Vendor: "0x1002", Class: "0x030000"}
 	arc := PCIDevice{Address: "0000:04:00.0", Vendor: "0x8086", Class: "0x030000"}
 	nic := PCIDevice{Address: "0000:05:00.0", Vendor: "0x8086", Class: "0x020000"}
+	// AMD APU iGPU: vendor 0x1002 on a high bus (not 0000:00:), paired with the
+	// sole NVIDIA dGPU — the AMD-laptop target topology.
+	amdIGPU := PCIDevice{Address: "0000:06:00.0", Vendor: "0x1002", Class: "0x030000"}
+	// MUXless NVIDIA dGPU enumerates as a 3D controller (0x0302), no display outputs.
+	nvMuxless := PCIDevice{Address: "0000:01:00.0", Vendor: "0x10de", Class: "0x030200"}
 
 	tests := []struct {
 		name      string
@@ -241,10 +265,24 @@ func TestClassifyGPUs(t *testing.T) {
 			wantAudio: map[string]string{"0000:03:00.0": ""},
 		},
 		{
-			name:      "intel discrete is a dgpu not the igpu",
+			name:      "lone intel display is the host igpu",
 			devs:      []PCIDevice{arc},
-			wantDGPUs: []string{"0000:04:00.0"},
-			wantAudio: map[string]string{"0000:04:00.0": ""},
+			wantIGPU:  "0000:04:00.0",
+			wantDGPUs: nil,
+		},
+		{
+			name:      "amd apu igpu on a high bus with nvidia dgpu",
+			devs:      []PCIDevice{amdIGPU, nv, nvAudio},
+			wantIGPU:  "0000:06:00.0",
+			wantDGPUs: []string{"0000:01:00.0"},
+			wantAudio: map[string]string{"0000:01:00.0": "0000:01:00.1"},
+		},
+		{
+			name:      "muxless nvidia dgpu is a 3d controller",
+			devs:      []PCIDevice{igpu, nvMuxless, nvAudio},
+			wantIGPU:  "0000:00:02.0",
+			wantDGPUs: []string{"0000:01:00.0"},
+			wantAudio: map[string]string{"0000:01:00.0": "0000:01:00.1"},
 		},
 		{
 			name: "no gpus at all",

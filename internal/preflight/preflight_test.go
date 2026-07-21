@@ -24,7 +24,7 @@ func refResult() *hw.Result {
 		CPU: hw.CPU{Threads: 20, Cores: 14, Hybrid: true,
 			PCores: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}},
 		Platform: hw.Platform{
-			IOMMUAddressWidth: 46, DMARTable: true, SELinux: "enforcing", SecureBoot: false,
+			IOMMUAddressWidth: 46, IOMMUTable: true, SELinux: "enforcing", SecureBoot: false,
 			ChassisType: 3, MemTotalBytes: 32 << 30, Tools: tools,
 		},
 	}
@@ -53,6 +53,16 @@ func TestAnalyzeReferencePasses(t *testing.T) {
 	}
 }
 
+func TestAnalyzeLaptopReferencePasses(t *testing.T) {
+	r := refResult()
+	r.Platform.ChassisType = 10                // notebook
+	r.GPUs.IGPU.Connectors = []string{"eDP-1"} // internal panel on the iGPU
+	checks := Analyze(r, goodFacts())
+	if got := Overall(checks); got != Pass {
+		t.Errorf("Overall = %v, want pass on a MUXed laptop; checks: %+v", got, checks)
+	}
+}
+
 func TestAnalyzers(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -65,14 +75,57 @@ func TestAnalyzers(t *testing.T) {
 			name: "iommu off fails",
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.Platform.IOMMUAddressWidth = 0
-				r.Platform.DMARTable = false
+				r.Platform.IOMMUTable = false
 			},
 			check: "iommu", want: Fail, has: []string{"BIOS"},
 		},
 		{
 			name:   "iommu inactive with dmar table warns",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.IOMMUAddressWidth = 0 },
-			check:  "iommu", want: Warn, has: []string{"apply", "reboot"},
+			check:  "iommu", want: Warn, has: []string{"VT-d", "apply", "reboot"},
+		},
+		{
+			name: "amd iommu inactive with ivrs warns",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.CPU.Vendor = hw.CPUVendorAMD
+				r.Platform.IOMMUAddressWidth = 0
+			},
+			check: "iommu", want: Warn, has: []string{"AMD-Vi", "iommu=pt", "reboot"},
+		},
+		{
+			name: "amd iommu off fails with amd-vi bios remedy",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.CPU.Vendor = hw.CPUVendorAMD
+				r.Platform.IOMMUAddressWidth = 0
+				r.Platform.IOMMUTable = false
+			},
+			check: "iommu", want: Fail, has: []string{"AMD-Vi", "BIOS"},
+		},
+		{
+			name: "iommu off names an exposed firmware attribute",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.Platform.IOMMUAddressWidth = 0
+				r.Platform.IOMMUTable = false
+				r.Platform.FirmwareIOMMU = []hw.FirmwareAttr{
+					{Driver: "thinklmi", Name: "VTdFeature", Current: "Disable", PossibleValues: []string{"Disable", "Enable"}},
+				}
+			},
+			check: "iommu", want: Fail, has: []string{"VTdFeature", "firmware-attributes", "Disable/Enable"},
+		},
+		{
+			name:   "gpu-mux hybrid passes",
+			mutate: func(r *hw.Result, _ *Facts) { r.Platform.GPUMux = hw.GPUMuxHybrid },
+			check:  "gpu-mux", want: Pass, has: []string{"hybrid"},
+		},
+		{
+			name:   "gpu-mux discrete fails with the switch remedy",
+			mutate: func(r *hw.Result, _ *Facts) { r.Platform.GPUMux = hw.GPUMuxDiscrete },
+			check:  "gpu-mux", want: Fail, has: []string{"discrete", "gpu_mux_mode", "reboot"},
+		},
+		{
+			name:   "gpu-mux skipped without the knob",
+			mutate: func(_ *hw.Result, _ *Facts) {},
+			check:  "gpu-mux", want: Pass, has: []string{"skipped"},
 		},
 		{
 			name: "single gpu fails",
@@ -159,9 +212,53 @@ func TestAnalyzers(t *testing.T) {
 			check:  "boot-vga", want: Pass, has: []string{"skipped"},
 		},
 		{
-			name:   "laptop chassis fails",
+			name:   "laptop chassis passes with hybrid-graphics info",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.ChassisType = 10 },
-			check:  "chassis", want: Fail, has: []string{"laptop"},
+			check:  "chassis", want: Pass, has: []string{"laptop"},
+		},
+		{
+			name:   "mux skipped on a desktop",
+			mutate: func(_ *hw.Result, _ *Facts) {},
+			check:  "mux", want: Pass, has: []string{"skipped"},
+		},
+		{
+			name:   "muxed laptop passes the mux check",
+			mutate: func(r *hw.Result, _ *Facts) { r.Platform.ChassisType = 10 },
+			check:  "mux", want: Pass, has: []string{"MUXed"},
+		},
+		{
+			name: "muxless laptop warns to pass a vbios",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.Platform.ChassisType = 10
+				r.GPUs.DGPUs[0].Class = "0x030200"
+			},
+			check: "mux", want: Warn, has: []string{"MUXless", "--gpu-rom"},
+		},
+		{
+			name: "laptop external monitor on dgpu warns with panel remedy",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.Platform.ChassisType = 10
+				r.GPUs.DGPUs[0].Connectors = []string{"HDMI-A-1"}
+			},
+			check: "display-topology", want: Warn, has: []string{"internal panel"},
+		},
+		{
+			name: "laptop panel on dgpu fails with hybrid remedy",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.Platform.ChassisType = 10
+				r.GPUs.IGPU.Connectors = nil
+				r.GPUs.DGPUs[0].Connectors = []string{"eDP-1"}
+			},
+			check: "display-topology", want: Fail, has: []string{"hybrid", "eDP-1"},
+		},
+		{
+			name: "laptop dgpu firmware-primary passes",
+			mutate: func(r *hw.Result, _ *Facts) {
+				r.Platform.ChassisType = 10
+				r.GPUs.IGPU.BootVGA = false
+				r.GPUs.DGPUs[0].BootVGA = true
+			},
+			check: "boot-vga", want: Pass, has: []string{"panel"},
 		},
 		{
 			name: "stranger in gpu iommu group fails with acs refusal",

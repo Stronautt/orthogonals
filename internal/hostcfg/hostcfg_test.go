@@ -28,6 +28,25 @@ func referenceProfile(t *testing.T, binding string) Profile {
 	return p
 }
 
+// laptopReferenceProfile is the reference machine reported as a laptop chassis.
+func laptopReferenceProfile(t *testing.T) Profile {
+	t.Helper()
+	root := hwtest.ReferenceRoot(t)
+	hwtest.WriteFile(t, root, "sys/class/dmi/id/chassis_type", "10\n")
+	res, err := hw.Detect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProfile(res, "stronautt", "dynamic", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Laptop {
+		t.Fatal("NewProfile did not mark the notebook chassis as a laptop")
+	}
+	return p
+}
+
 func TestArtifactsGolden(t *testing.T) {
 	arts, err := renderArtifacts(referenceProfile(t, "dynamic"))
 	if err != nil {
@@ -75,6 +94,68 @@ func TestArtifactsGolden(t *testing.T) {
 		t.Errorf("tmpfiles entry not rendered for user: %s", tmpfiles)
 	}
 
+}
+
+func TestLaptopArtifactsGolden(t *testing.T) {
+	arts, err := renderArtifacts(laptopReferenceProfile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Artifact{}
+	for _, a := range arts {
+		byPath[a.Path] = a
+	}
+	for _, path := range []string{
+		"/etc/modprobe.d/nvidia-rtd3.conf",
+		"/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules",
+	} {
+		a, ok := byPath[path]
+		if !ok {
+			t.Fatalf("laptop profile missing artifact %s", path)
+		}
+		golden := filepath.Join("testdata", "golden", filepath.Base(path))
+		if *update {
+			if err := os.WriteFile(golden, a.Content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatalf("%s: %v (run go test -update)", golden, err)
+		}
+		if string(a.Content) != string(want) {
+			t.Errorf("%s: rendered content differs from %s:\n%s", path, golden, a.Content)
+		}
+	}
+}
+
+func TestLaptopStepsAddPowerManagement(t *testing.T) {
+	ids := func(p Profile) map[string]bool {
+		list, err := Steps(p, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, s := range list {
+			out[s.ID] = true
+		}
+		return out
+	}
+
+	laptop := ids(laptopReferenceProfile(t))
+	for _, id := range []string{"nvidia-rtd3", "udev-nvidia-pm", "disable-nvidia-powerd"} {
+		if !laptop[id] {
+			t.Errorf("laptop Steps missing %q", id)
+		}
+	}
+
+	desktop := ids(referenceProfile(t, "dynamic"))
+	for _, id := range []string{"nvidia-rtd3", "udev-nvidia-pm", "disable-nvidia-powerd"} {
+		if desktop[id] {
+			t.Errorf("desktop Steps must not contain %q", id)
+		}
+	}
 }
 
 // TestVMStepsGolden pins the default win11 VM's desktop entry and ~/Desktop link.
@@ -211,12 +292,35 @@ func TestLibvirtAuthenticatesOnTheSocketNotPolkit(t *testing.T) {
 }
 
 func TestKernelArgs(t *testing.T) {
-	if got := KernelArgs(referenceProfile(t, "dynamic")); got != "intel_iommu=on iommu=pt" {
-		t.Errorf("dynamic kargs = %q", got)
+	tests := []struct {
+		name    string
+		profile Profile
+		want    string
+	}{
+		{"intel dynamic", Profile{CPUVendor: hw.CPUVendorIntel, Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
+		{"amd dynamic drops intel_iommu", Profile{CPUVendor: hw.CPUVendorAMD, Binding: BindingDynamic}, "iommu=pt"},
+		{"unknown vendor keeps intel default", Profile{CPUVendor: "", Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
+		{
+			"intel static appends vfio ids",
+			Profile{CPUVendor: hw.CPUVendorIntel, Binding: BindingStatic, VFIOIDs: []string{"10de:2206", "10de:1aef"}},
+			"intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef",
+		},
+		{
+			"amd static appends vfio ids",
+			Profile{CPUVendor: hw.CPUVendorAMD, Binding: BindingStatic, VFIOIDs: []string{"10de:2206", "10de:1aef"}},
+			"iommu=pt vfio-pci.ids=10de:2206,10de:1aef",
+		},
 	}
-	want := "intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef"
-	if got := KernelArgs(referenceProfile(t, "static")); got != want {
-		t.Errorf("static kargs = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := KernelArgs(tt.profile); got != tt.want {
+				t.Errorf("KernelArgs = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	// The reference (Intel) fixture flows through NewProfile to the same result.
+	if got := KernelArgs(referenceProfile(t, "static")); got != "intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef" {
+		t.Errorf("reference static kargs = %q", got)
 	}
 }
 
@@ -406,7 +510,7 @@ Exec=/usr/bin/google-chrome-stable
 		}
 	}
 
-	out, err := IGPUOverrides(root)
+	out, err := IGPUOverrides(root, hw.VendorIntel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,8 +536,30 @@ Exec=/usr/bin/google-chrome-stable
 }
 
 func TestIGPUOverridesEmptyWhenNoneInstalled(t *testing.T) {
-	out, err := IGPUOverrides(t.TempDir())
+	out, err := IGPUOverrides(t.TempDir(), hw.VendorIntel)
 	if err != nil || len(out) != 0 {
 		t.Fatalf("got %v, %v; want empty, nil", out, err)
+	}
+}
+
+func TestIGPUOverridesAMDSelectsRadeon(t *testing.T) {
+	root := t.TempDir()
+	apps := filepath.Join(root, "usr/share/applications")
+	if err := os.MkdirAll(apps, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(apps, "google-chrome.desktop"),
+		[]byte("[Desktop Entry]\nExec=/usr/bin/google-chrome-stable %U\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := IGPUOverrides(root, hw.VendorAMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d overrides, want 1", len(out))
+	}
+	if got := string(out[0].Content); !strings.Contains(got, "VK_LOADER_DRIVERS_SELECT=*radeon* ") {
+		t.Errorf("AMD iGPU override should select *radeon*:\n%s", got)
 	}
 }

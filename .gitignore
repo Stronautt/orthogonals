@@ -1,6 +1,8 @@
 /orthogonals
 /test/integration/orthogonals
 /test/integration/fixture-root/
+/test/integration/fixture-root-laptop/
+/test/integration/fixture-root-laptop-amd/
 /dist/
 # rpmbuild --build-in-place byproducts
 /debug*.list

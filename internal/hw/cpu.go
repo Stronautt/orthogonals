@@ -8,13 +8,21 @@ import (
 	"strings"
 )
 
+// CPU vendor tokens from /proc/cpuinfo vendor_id.
+const (
+	CPUVendorIntel = "intel"
+	CPUVendorAMD   = "amd"
+)
+
 // CPU is the host CPU topology.
 type CPU struct {
-	Threads int   `json:"threads"`
-	Cores   int   `json:"cores"`
-	Hybrid  bool  `json:"hybrid"`
-	PCores  []int `json:"p_cores"`
-	ECores  []int `json:"e_cores,omitempty"`
+	// Vendor is "intel", "amd", or "".
+	Vendor  string `json:"vendor,omitempty"`
+	Threads int    `json:"threads"`
+	Cores   int    `json:"cores"`
+	Hybrid  bool   `json:"hybrid"`
+	PCores  []int  `json:"p_cores"`
+	ECores  []int  `json:"e_cores,omitempty"`
 }
 
 // detectCPU reads root/sys/devices/system/cpu.
@@ -27,7 +35,7 @@ func detectCPU(root string) (CPU, error) {
 	if err != nil {
 		return CPU{}, fmt.Errorf("parse cpu present: %w", err)
 	}
-	c := CPU{Threads: len(cpus)}
+	c := CPU{Threads: len(cpus), Vendor: cpuVendor(root)}
 
 	coreIDs := map[string]bool{}
 	for _, n := range cpus {
@@ -54,6 +62,29 @@ func detectCPU(root string) (CPU, error) {
 	}
 	c.PCores = cpus
 	return c, nil
+}
+
+// cpuVendor maps /proc/cpuinfo vendor_id to a short token, "" when absent or unrecognized.
+func cpuVendor(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "/proc/cpuinfo"))
+	if err != nil {
+		return ""
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		rest, ok := strings.CutPrefix(line, "vendor_id")
+		if !ok {
+			continue
+		}
+		_, val, _ := strings.Cut(rest, ":")
+		switch strings.TrimSpace(val) {
+		case "GenuineIntel":
+			return CPUVendorIntel
+		case "AuthenticAMD":
+			return CPUVendorAMD
+		}
+		return ""
+	}
+	return ""
 }
 
 // parseCPUList parses kernel cpulist syntax.

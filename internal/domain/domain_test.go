@@ -101,6 +101,13 @@ func TestRenderGolden(t *testing.T) {
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, false},
 		{"reference-1080p.xml", reference(t), Options{Width: 1920, Height: 1080}, false},
+		{"reference-romfile.xml", reference(t), Options{
+			Win11ISO:     "/home/user/Win11.iso",
+			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
+			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
+			ROMFile:      "/var/lib/orthogonals/vbios/win11.rom",
+			ROMContent:   []byte{0x55, 0xaa, 0x01, 0x02},
+		}, false},
 		{"no-ecores-46bit.xml", noECores(), Options{}, false},
 		{"provisioned.xml", reference(t), Options{
 			Win11ISO:     "/home/user/Win11.iso",
@@ -255,6 +262,73 @@ func TestQuirkFixes(t *testing.T) {
 	}
 }
 
+func TestGPURomRendersAndPersists(t *testing.T) {
+	const romPath = "/var/lib/orthogonals/vbios/win11.rom"
+	p := mustProfile(t, reference(t), Options{
+		Win11ISO:   "/home/user/Win11.iso",
+		ROMFile:    romPath,
+		ROMContent: []byte{0x55, 0xaa, 0x01},
+	})
+	got := string(mustRender(t, p))
+	for _, want := range []string{
+		"<rom file='" + romPath + "'/>",
+		"<orthogonals:gpu-rom>" + romPath + "</orthogonals:gpu-rom>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("domain missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<rom bar='off'/>") {
+		t.Error("rom bar='off' must not render when a vBIOS file is set")
+	}
+
+	// The metadata line round-trips through ReadGuestConfig.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc/orthogonals/vms"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/orthogonals/vms/win11.xml"), []byte(got), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if g := ReadGuestConfig(root, "win11"); g.GPURom != romPath {
+		t.Errorf("ReadGuestConfig GPURom = %q, want %q", g.GPURom, romPath)
+	}
+}
+
+func TestGPURomSteps(t *testing.T) {
+	const romPath = "/var/lib/orthogonals/vbios/win11.rom"
+	withROM := mustProfile(t, reference(t), Options{Win11ISO: "/i.iso", ROMFile: romPath, ROMContent: []byte{0x55, 0xaa}})
+	list, err := Steps(withROM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]steps.Step{}
+	for _, s := range list {
+		byID[s.ID] = s
+	}
+	rom, ok := byID[ROMFileID("win11")]
+	if !ok || rom.Path != romPath || string(rom.Content) != "\x55\xaa" {
+		t.Errorf("rom write step = %+v", rom)
+	}
+	if _, ok := byID[ROMFcontextID("win11")]; !ok {
+		t.Error("missing rom fcontext step")
+	}
+	if _, ok := byID[ROMRestoreconID("win11")]; !ok {
+		t.Error("missing rom restorecon step")
+	}
+
+	// No ROM → no ROM steps.
+	plain, err := Steps(mustProfile(t, reference(t), Options{Win11ISO: "/i.iso"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range plain {
+		if s.ID == ROMFileID("win11") {
+			t.Error("rom step emitted without a vBIOS")
+		}
+	}
+}
+
 func TestAssignableVCPUs(t *testing.T) {
 	pcores := func(n int) []int {
 		s := make([]int, n)
@@ -343,6 +417,9 @@ func TestNewProfileErrors(t *testing.T) {
 		{"negative disk size", reference(t), Options{DiskSizeGiB: -5}, "disk size"},
 		{"path with XML metachars", reference(t), Options{DiskPath: `/tank/a'b.qcow2`}, "libvirt XML"},
 		{"bad GPU address", badBDF, Options{}, "PCI address"},
+		{"rom without option-ROM signature", reference(t), Options{ROMFile: "/v/win11.rom", ROMContent: []byte{0x00, 0x01}}, "0x55 0xAA"},
+		{"rom path with XML metachars", reference(t), Options{ROMFile: `/v/a'b.rom`, ROMContent: []byte{0x55, 0xaa}}, "libvirt XML"},
+		{"rom content without a path", reference(t), Options{ROMContent: []byte{0x55, 0xaa}}, "without a path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

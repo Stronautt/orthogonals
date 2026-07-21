@@ -255,12 +255,15 @@ func TestApplyBadFlags(t *testing.T) {
 func TestApplyRefusesPreflightFail(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	hwtest.WriteFile(t, root, "sys/class/dmi/id/chassis_type", "10\n")
+	// force a preflight Fail: the dGPU loses its function-level reset file.
+	if err := os.Remove(filepath.Join(root, "sys/bus/pci/devices/0000:01:00.0/reset")); err != nil {
+		t.Fatal(err)
+	}
 	code, out := runApplyCLI(t, root, "--yes")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1\n%s", code, out)
 	}
-	for _, want := range []string{"preflight chassis", "laptop", "refused"} {
+	for _, want := range []string{"preflight gpu-reset", "reset", "refused"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}

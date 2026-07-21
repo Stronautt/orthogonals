@@ -33,9 +33,14 @@ var (
 	DeleteModule = func(name string) error { return unix.DeleteModule(name, unix.O_NONBLOCK) }
 	// deviceDriver reads a PCI device's bound driver.
 	deviceDriver = hw.DeviceDriver
+	// runtimeStatus reads a PCI device's runtime PM state.
+	runtimeStatus = hw.RuntimeStatus
 	// RemoveSettle and RescanSettle are the PCI reset settle windows.
 	RemoveSettle = time.Second
 	RescanSettle = 2 * time.Second
+	// WakeSettle and WakeTimeout bound the D3cold wake poll.
+	WakeSettle  = 50 * time.Millisecond
+	WakeTimeout = 5 * time.Second
 )
 
 // govSaveFile holds the pre-boost CPU governor.
@@ -56,6 +61,7 @@ func Detach(root, user string, sd sysd.Client) error {
 	log("handover start: %s", strings.Join(devs, " "))
 
 	_ = sd.StopUnit(hostcfg.UnitPersistenced)
+	_ = sd.StopUnit(hostcfg.UnitPowerd)
 
 	if holders := nvidiaHolders(root); len(holders) > 0 {
 		apps := holderApps(holders)
@@ -64,6 +70,9 @@ func Detach(root, user string, sd sysd.Client) error {
 		return fmt.Errorf("GPU busy — close these apps first: %s", apps)
 	}
 	log("holder gate passed")
+	if err := wakeDevices(root, devs, log); err != nil {
+		return abort(root, user, log, "%v", err)
+	}
 	notify.Send(vmNote(user, "VM is starting — the GPU is being handed over, first screen in ~20 seconds.", false))
 
 	for _, m := range NVIDIAUnloadOrder {
@@ -124,6 +133,7 @@ func Reattach(root, user string, sd sysd.Client) error {
 		log("reload: %v", err)
 	}
 	if err := HealthCheck(root); err == nil {
+		restoreRuntimePM(root, devs, log)
 		log("GPU back on host, healthy")
 		return nil
 	}
@@ -132,12 +142,58 @@ func Reattach(root, user string, sd sysd.Client) error {
 		log("re-enumerate: %v", err)
 	}
 	if err := HealthCheck(root); err == nil {
+		restoreRuntimePM(root, devs, log)
 		log("GPU back on host after PCI rescan, healthy")
 		return nil
 	}
 	log("nvidia-smi failed after reattach")
 	notify.Send(vmNote(user, "GPU reattach failed — run: sudo orthogonals recover --yes (see "+filepath.Join(root, LogPath)+")", true))
 	return errors.New("GPU reattach failed — run: sudo orthogonals recover --yes")
+}
+
+// wakeDevices resumes any runtime-suspended passthrough device to D0 before its
+// driver is unbound; unbinding a D3cold device fails. Skips devices without
+// runtime PM. Errors if a device stays suspended past WakeTimeout.
+func wakeDevices(root string, devs []string, log logFunc) error {
+	for _, d := range devs {
+		if status := runtimeStatus(root, d); status != "suspended" && status != "suspending" {
+			continue
+		}
+		log("waking %s from runtime suspend", d)
+		if err := hw.SetPowerControl(root, d, "on"); err != nil {
+			return fmt.Errorf("wake %s: %w", d, err)
+		}
+		if err := waitActive(root, d); err != nil {
+			return err
+		}
+		log("%s active", d)
+	}
+	return nil
+}
+
+// waitActive polls runtime_status until active, bounded by WakeTimeout.
+func waitActive(root, d string) error {
+	deadline := time.Now().Add(WakeTimeout)
+	for {
+		if runtimeStatus(root, d) == "active" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not resume from runtime suspend within %s", d, WakeTimeout)
+		}
+		time.Sleep(WakeSettle)
+	}
+}
+
+// restoreRuntimePM re-enables runtime PM (power/control=auto) on laptop hosts only.
+func restoreRuntimePM(root string, devs []string, log logFunc) {
+	if !hw.IsLaptopChassis(hw.ChassisType(root)) {
+		return
+	}
+	for _, d := range devs {
+		_ = hw.SetPowerControl(root, d, "auto")
+	}
+	log("runtime power management restored to auto")
 }
 
 // Reenumerate resets the passthrough GPU via PCI remove + rescan and reloads the driver.

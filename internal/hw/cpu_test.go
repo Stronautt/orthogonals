@@ -35,6 +35,34 @@ func TestDetectCPUHybridReference(t *testing.T) {
 	if !reflect.DeepEqual(c.ECores, seq(12, 19)) {
 		t.Errorf("ECores = %v, want 12-19", c.ECores)
 	}
+	if c.Vendor != CPUVendorIntel {
+		t.Errorf("Vendor = %q, want %q", c.Vendor, CPUVendorIntel)
+	}
+}
+
+func TestCPUVendor(t *testing.T) {
+	tests := []struct {
+		name    string
+		cpuinfo string
+		want    string
+	}{
+		{name: "intel", cpuinfo: "vendor_id\t: GenuineIntel\n", want: CPUVendorIntel},
+		{name: "amd", cpuinfo: "vendor_id\t: AuthenticAMD\n", want: CPUVendorAMD},
+		{name: "unknown vendor", cpuinfo: "vendor_id\t: SomethingElse\n", want: ""},
+		{name: "no vendor_id line", cpuinfo: "processor\t: 0\n", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			hwtest.WriteFile(t, root, "proc/cpuinfo", tt.cpuinfo)
+			if got := cpuVendor(root); got != tt.want {
+				t.Errorf("cpuVendor = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := cpuVendor(t.TempDir()); got != "" {
+		t.Errorf("cpuVendor with no cpuinfo = %q, want empty", got)
+	}
 }
 
 func TestDetectCPUUniformFallback(t *testing.T) {

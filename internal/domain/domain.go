@@ -62,6 +62,10 @@ type Options struct {
 	GuestUser     string
 	GuestPassword string
 	Locale        string
+	// ROMFile is the vBIOS path rendered as <rom file=>; ROMContent is the bytes
+	// installed there. Both empty renders <rom bar='off'/>.
+	ROMFile    string
+	ROMContent []byte
 }
 
 // BDF is a PCI address split into the hostdev XML address fields.
@@ -95,6 +99,8 @@ type Profile struct {
 	Audio           *BDF
 	VideoNone       bool
 	UUID            string
+	ROMFile         string
+	ROMContent      []byte
 }
 
 // NewProfile derives the domain profile from a detect result.
@@ -117,6 +123,10 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		Name: name, DiskPath: o.DiskPath, DiskSizeGiB: o.DiskSizeGiB,
 		Win11ISO: o.Win11ISO, VirtioISO: o.VirtioISO, ProvisionISO: o.ProvisionISO,
 		GuestUser: o.GuestUser, GuestPassword: o.GuestPassword, Locale: o.Locale,
+		ROMFile: o.ROMFile, ROMContent: o.ROMContent,
+	}
+	if err := checkROM(o.ROMFile, o.ROMContent); err != nil {
+		return Profile{}, err
 	}
 	if p.DiskSizeGiB == 0 {
 		p.DiskSizeGiB = DefaultDiskSizeGiB
@@ -245,6 +255,30 @@ func IVSHMEMMiB(w, h int) uint64 {
 	return size / mib
 }
 
+// romMagic is the PCI expansion-ROM signature (bytes 0x55 0xAA).
+var romMagic = [2]byte{0x55, 0xaa}
+
+// checkROM validates a supplied vBIOS: the install path must be XML-safe and the
+// content must carry the PCI option-ROM signature.
+func checkROM(file string, content []byte) error {
+	if file == "" && len(content) == 0 {
+		return nil
+	}
+	if file == "" {
+		return errors.New("gpu rom content supplied without a path")
+	}
+	if strings.ContainsAny(file, `<>&'"`) {
+		return fmt.Errorf("gpu rom path %q contains characters unsupported in libvirt XML", file)
+	}
+	if len(content) < 2 || content[0] != romMagic[0] || content[1] != romMagic[1] {
+		return errors.New("gpu rom is not a PCI option ROM (missing 0x55 0xAA signature) — extract the correct VBIOS")
+	}
+	return nil
+}
+
+// ROMPath is the canonical vBIOS location a supplied --gpu-rom is installed to.
+func ROMPath(name string) string { return steps.StateDirPath + "/vbios/" + name + ".rom" }
+
 // parseBDF splits "0000:01:00.0" into the hostdev address fields.
 func parseBDF(addr string) (BDF, error) {
 	rest, fn, ok := strings.Cut(addr, ".")
@@ -299,6 +333,7 @@ type GuestConfig struct {
 	Locale     string `xml:"metadata>guest>locale"`
 	Resolution string `xml:"metadata>guest>resolution"`
 	Win11ISO   string `xml:"metadata>guest>win11-iso"`
+	GPURom     string `xml:"metadata>guest>gpu-rom"`
 }
 
 // ReadGuestConfig loads the guest config from the VM's registry XML under root.
@@ -317,6 +352,9 @@ func DomainXMLID(vm string) string      { return "vm-domain-xml-" + vm }
 func DiskImageID(vm string) string      { return "vm-disk-image-" + vm }
 func DiskFcontextID(vm string) string   { return "vm-disk-fcontext-" + vm }
 func DiskRestoreconID(vm string) string { return "vm-disk-restorecon-" + vm }
+func ROMFileID(vm string) string        { return "vm-gpu-rom-" + vm }
+func ROMFcontextID(vm string) string    { return "vm-gpu-rom-fcontext-" + vm }
+func ROMRestoreconID(vm string) string  { return "vm-gpu-rom-restorecon-" + vm }
 func DefineStepID(vm string) string     { return "vm-define-" + vm }
 
 // Stage is the domain's position in the install pipeline.
@@ -369,13 +407,14 @@ func JournaledDisk(m *steps.Manifest, vm string) (string, int, bool) {
 	return args["path"], size, true
 }
 
-// Steps assembles the `vm define` step list: domain XML, disk image, SELinux label, define.
+// Steps assembles the `vm define` step list: domain XML, disk image, SELinux
+// label, an optional vBIOS install, then define.
 func Steps(p Profile) ([]steps.Step, error) {
 	xml, err := render(p)
 	if err != nil {
 		return nil, err
 	}
-	return []steps.Step{
+	list := []steps.Step{
 		{
 			ID: DomainXMLID(p.Name), Kind: steps.KindWriteFile,
 			Path: xmlPath(p.Name), Content: xml, Mode: 0o600,
@@ -396,13 +435,30 @@ func Steps(p Profile) ([]steps.Step, error) {
 			ID: DiskRestoreconID(p.Name), Kind: steps.KindRunCmd,
 			Cmd: []string{"restorecon", p.DiskPath},
 		},
-		{
-			ID: DefineStepID(p.Name), Kind: steps.KindOp,
-			Op:       steps.OpDefineDomain,
-			Args:     map[string]string{"name": p.Name, "xml": xmlPath(p.Name)},
-			Input:    xml,
-			UndoOp:   steps.OpUndefineDomain,
-			UndoArgs: map[string]string{"name": p.Name},
-		},
-	}, nil
+	}
+	if p.ROMFile != "" {
+		list = append(list,
+			steps.Step{
+				ID: ROMFileID(p.Name), Kind: steps.KindWriteFile,
+				Path: p.ROMFile, Content: p.ROMContent, Mode: 0o644,
+			},
+			steps.Step{
+				ID: ROMFcontextID(p.Name), Kind: steps.KindRunCmd,
+				Cmd:     []string{"semanage", "fcontext", "-a", "-t", "virt_image_t", p.ROMFile},
+				UndoCmd: []string{"semanage", "fcontext", "-d", p.ROMFile},
+			},
+			steps.Step{
+				ID: ROMRestoreconID(p.Name), Kind: steps.KindRunCmd,
+				Cmd: []string{"restorecon", p.ROMFile},
+			},
+		)
+	}
+	return append(list, steps.Step{
+		ID: DefineStepID(p.Name), Kind: steps.KindOp,
+		Op:       steps.OpDefineDomain,
+		Args:     map[string]string{"name": p.Name, "xml": xmlPath(p.Name)},
+		Input:    xml,
+		UndoOp:   steps.OpUndefineDomain,
+		UndoArgs: map[string]string{"name": p.Name},
+	}), nil
 }

@@ -5,5 +5,7 @@ FROM registry.fedoraproject.org/fedora:44
 RUN dnf -y install diffutils python3 && dnf clean all
 COPY orthogonals /usr/local/bin/orthogonals
 COPY fixture-root /usr/local/share/orthogonals-fixture
+COPY fixture-root-laptop /usr/local/share/orthogonals-fixture-laptop
+COPY fixture-root-laptop-amd /usr/local/share/orthogonals-fixture-laptop-amd
 COPY run-test.sh /usr/local/bin/orthogonals-integration-test
 CMD ["bash", "/usr/local/bin/orthogonals-integration-test"]

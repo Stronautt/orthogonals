@@ -11,11 +11,24 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: go run ./test/fixture <dir>")
+	if len(os.Args) < 2 || len(os.Args) > 3 {
+		fmt.Fprintln(os.Stderr, "usage: go run ./test/fixture <dir> [reference|laptop|laptop-amd]")
 		os.Exit(2)
 	}
-	if err := hwtest.BuildReferenceRoot(os.Args[1]); err != nil {
+	kind := "reference"
+	if len(os.Args) == 3 {
+		kind = os.Args[2]
+	}
+	build := map[string]func(string) error{
+		"reference":  hwtest.BuildReferenceRoot,
+		"laptop":     hwtest.BuildLaptopRoot,
+		"laptop-amd": hwtest.BuildLaptopAMDRoot,
+	}[kind]
+	if build == nil {
+		fmt.Fprintf(os.Stderr, "fixture: unknown kind %q (reference|laptop|laptop-amd)\n", kind)
+		os.Exit(2)
+	}
+	if err := build(os.Args[1]); err != nil {
 		fmt.Fprintln(os.Stderr, "fixture:", err)
 		os.Exit(1)
 	}
