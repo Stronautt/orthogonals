@@ -1,7 +1,7 @@
 Name:           looking-glass-client
 # version comes from the Makefile (artifacts.LookingGlassVersion)
 Version:        %{lgver}
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Looking Glass client — low-latency KVMFR frame-relay viewer
 
 License:        GPL-2.0-or-later
@@ -48,9 +48,12 @@ shared-memory framebuffer (KVMFR) with SPICE input. It must be the same release
 # drop -Werror: Fedora's GCC raises warnings upstream pins as errors
 sed -i '/^  "-Werror"$/d' client/CMakeLists.txt
 # ENABLE_BACKTRACE=OFF: Fedora's static libbfd.a pulls unresolved ZSTD symbols
+# OPTIMIZE_FOR_NATIVE=OFF: default -march=native bakes the COPR builder's ISA
+# (AVX-512) into the binary and SIGILLs on CPUs without it; OFF selects x86-64-v2
 cmake -S client -B client/build \
     -DCMAKE_BUILD_TYPE=Release \
-    -DENABLE_BACKTRACE=OFF
+    -DENABLE_BACKTRACE=OFF \
+    -DOPTIMIZE_FOR_NATIVE=OFF
 make -C client/build %{?_smp_mflags}
 
 %install
@@ -62,5 +65,9 @@ install -Dm0755 client/build/looking-glass-client \
 %{_bindir}/looking-glass-client
 
 %changelog
+* Tue Jul 21 2026 Pavlo Hrytsenko <pashagricenko@gmail.com> - %{lgver}-2
+- Build with OPTIMIZE_FOR_NATIVE=OFF (portable x86-64-v2); -march=native
+  baked AVX-512 from the COPR builder and SIGILL'd on non-AVX-512 CPUs.
+
 * Tue Jul 21 2026 Pavlo Hrytsenko <pashagricenko@gmail.com> - %{lgver}-1
 - Initial packaging.
