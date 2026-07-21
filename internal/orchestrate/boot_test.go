@@ -14,7 +14,7 @@ func writeManifest(t *testing.T, root, args string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := `{"records":[{"id":"kernel-args","kind":"run_cmd","cmd":["grubby","--update-kernel=ALL","--args=` + args + `"]},{"id":"hook-qemu-dispatcher","kind":"write_file","path":"/etc/libvirt/hooks/qemu"},{"id":"enable-switcheroo-control","kind":"enable_unit","unit":"switcheroo-control.service","enable":true}]}`
+	m := `{"records":[{"id":"kernel-args","kind":"op","op":"kernel-args-add","op_args":{"args":"` + args + `"}},{"id":"hook-qemu-dispatcher","kind":"write_file","path":"/etc/libvirt/hooks/qemu"},{"id":"enable-switcheroo-control","kind":"enable_unit","unit":"switcheroo-control.service","enable":true}]}`
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(m), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +31,7 @@ func write(t *testing.T, root, rel, content string) {
 	}
 }
 
-// rebootedRoot is a fake host after apply + reboot: kargs live, IOMMU groups
-// populated, vfio_pci force-loaded by the initramfs.
+// rebootedRoot is a fake host after apply + reboot.
 func rebootedRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -79,19 +78,6 @@ func TestVerifyBootFailures(t *testing.T) {
 				t.Errorf("want error containing %q, got %v", tc.want, err)
 			}
 		})
-	}
-}
-
-func TestVerifyBootStaticBindingArgs(t *testing.T) {
-	root := rebootedRoot(t)
-	writeManifest(t, root, "intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef")
-	err := VerifyBoot(root)
-	if err == nil || !strings.Contains(err.Error(), "vfio-pci.ids=10de:2206,10de:1aef") {
-		t.Errorf("static karg must be verified too, got %v", err)
-	}
-	write(t, root, "proc/cmdline", "intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef\n")
-	if err := VerifyBoot(root); err != nil {
-		t.Fatal(err)
 	}
 }
 

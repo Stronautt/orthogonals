@@ -9,14 +9,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 )
 
 func fastRecover(t *testing.T) {
 	t.Helper()
-	savedRemove, savedRescan := removeSettle, rescanSettle
-	removeSettle, rescanSettle = time.Millisecond, time.Millisecond
-	t.Cleanup(func() { removeSettle, rescanSettle = savedRemove, savedRescan })
+	sr, sx := hooks.RemoveSettle, hooks.RescanSettle
+	hooks.RemoveSettle, hooks.RescanSettle = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { hooks.RemoveSettle, hooks.RescanSettle = sr, sx })
+}
+
+// recordUnloads swaps hooks.DeleteModule for a recorder.
+func recordUnloads(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := hooks.DeleteModule
+	hooks.DeleteModule = func(name string) error {
+		got = append(got, name)
+		return nil
+	}
+	t.Cleanup(func() { hooks.DeleteModule = old })
+	return &got
 }
 
 func readFile(t *testing.T, path string) string {
@@ -30,20 +45,22 @@ func readFile(t *testing.T, path string) string {
 
 func TestRecoverSequence(t *testing.T) {
 	fastRecover(t)
+	unloaded := recordUnloads(t)
 	root := hwtest.ReferenceRoot(t)
 	modprobe := fakeBin(t, "modprobe", "")
-	systemctl := fakeBin(t, "systemctl", "")
+	sd := &sysdtest.Fake{}
 	smi := fakeBin(t, "nvidia-smi", "")
 
 	var out bytes.Buffer
-	if err := Recover(root, true, &out); err != nil {
+	if err := Recover(root, sd, true, &out); err != nil {
 		t.Fatalf("Recover: %v\n%s", err, out.String())
 	}
 
-	// unload/reload orders shared with the hook scripts (hooks.NVIDIA*Order)
-	wantModprobe := "-r nvidia_drm\n-r nvidia_modeset\n-r nvidia_uvm\n-r nvidia\nnvidia\nnvidia_uvm\nnvidia_drm\n"
-	if got := readFile(t, modprobe); got != wantModprobe {
-		t.Errorf("modprobe calls = %q, want %q", got, wantModprobe)
+	if got := strings.Join(*unloaded, " "); got != "nvidia_drm nvidia_modeset nvidia_uvm nvidia" {
+		t.Errorf("unloaded = %q, want the NVIDIAUnloadOrder", got)
+	}
+	if got := readFile(t, modprobe); got != "nvidia\nnvidia_uvm\nnvidia_drm\n" {
+		t.Errorf("modprobe reload = %q", got)
 	}
 	for _, dev := range []string{"0000:01:00.0", "0000:01:00.1"} {
 		base := filepath.Join(root, "sys/bus/pci/devices", dev)
@@ -57,8 +74,8 @@ func TestRecoverSequence(t *testing.T) {
 	if got := readFile(t, filepath.Join(root, "sys/bus/pci/rescan")); got != "1\n" {
 		t.Errorf("rescan = %q, want \"1\\n\"", got)
 	}
-	if got := readFile(t, systemctl); !strings.Contains(got, "try-restart switcheroo-control.service") {
-		t.Errorf("systemctl calls = %q, want try-restart switcheroo-control.service", got)
+	if !sd.Logged("try-restart switcheroo-control.service") {
+		t.Errorf("systemd calls = %v, want try-restart switcheroo-control.service", sd.Calls)
 	}
 	if got := readFile(t, smi); got == "" {
 		t.Error("nvidia-smi health check was never run")
@@ -70,12 +87,12 @@ func TestRecoverSequence(t *testing.T) {
 
 func TestRecoverStillBroken(t *testing.T) {
 	fastRecover(t)
+	recordUnloads(t)
 	root := hwtest.ReferenceRoot(t)
 	fakeBin(t, "modprobe", "")
-	fakeBin(t, "systemctl", "")
 	fakeBin(t, "nvidia-smi", "exit 1")
 
-	err := Recover(root, true, io.Discard)
+	err := Recover(root, &sysdtest.Fake{}, true, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "reboot required") {
 		t.Fatalf("err = %v, want reboot-required failure", err)
 	}
@@ -84,7 +101,7 @@ func TestRecoverStillBroken(t *testing.T) {
 func TestRecoverDryRun(t *testing.T) {
 	root := hwtest.ReferenceRoot(t)
 	var out bytes.Buffer
-	if err := Recover(root, false, &out); err != nil {
+	if err := Recover(root, &sysdtest.Fake{}, false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "would") ||
@@ -102,7 +119,7 @@ func TestRecoverNeedsOneGPU(t *testing.T) {
 		Addr: "0000:02:00.0", Vendor: "0x10de", Device: "0x2206",
 		Class: "0x030000", Driver: "nvidia", Group: 2, Reset: true,
 	})
-	err := Recover(root, true, io.Discard)
+	err := Recover(root, &sysdtest.Fake{}, true, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("err = %v, want exactly-one-GPU refusal", err)
 	}

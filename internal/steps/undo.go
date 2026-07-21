@@ -7,19 +7,17 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// DefaultVMName matches the Defaults table; `vm define --vm-name` overrides
-// it, and the registry records the name actually applied.
+// DefaultVMName is the default VM name.
 const DefaultVMName = "win11"
 
-// CheckVMName rejects names that would break the root-run scripts and XML the
-// name is interpolated into (hook scripts, domain XML, virsh argv).
+// CheckVMName rejects VM names unsafe to interpolate into scripts and XML.
 func CheckVMName(name string) error {
 	if name == "" {
 		return errors.New("a VM name is required")
@@ -35,11 +33,7 @@ func CheckVMName(name string) error {
 	return nil
 }
 
-// CheckUser rejects usernames that would break the root-run scripts the name
-// is interpolated into (the tmpfiles.d owner column, shell-quoted hook
-// variables) or be mistaken for a flag by usermod/virsh. Matches the portable
-// Linux username set (useradd NAME_REGEX): a letter or '_', then letters,
-// digits, '_' or '-'.
+// CheckUser rejects usernames unsafe to interpolate into root-run scripts.
 func CheckUser(user string) error {
 	if user == "" {
 		return errors.New("a desktop user is required (--user, or run via sudo)")
@@ -55,66 +49,35 @@ func CheckUser(user string) error {
 	return nil
 }
 
-// EtcDir is the orthogonals config directory; every host-side config path
-// derives from it.
+// CheckExecPath rejects an executable path unsafe to interpolate into a shell.
+func CheckExecPath(exe string) error {
+	if exe == "" || exe[0] != '/' {
+		return fmt.Errorf("bad executable path %q: must be absolute", exe)
+	}
+	for _, r := range exe {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '-', r == '.', r == '/':
+		default:
+			return fmt.Errorf("bad executable path %q: use letters, digits, '_', '-', '.', '/'", exe)
+		}
+	}
+	return nil
+}
+
+// EtcDir is the orthogonals config directory.
 const EtcDir = "/etc/orthogonals"
 
-// VMsDirPath is the managed-VM registry: one <name>.xml domain definition per
-// managed domain — the file `virsh define` reads doubles as the membership
-// marker. `vm define` journals it; the qemu hook dispatcher gates on
-// membership at runtime, so adding or removing a VM never rewrites the hook.
+// VMsDirPath is the managed-VM registry directory.
 const VMsDirPath = EtcDir + "/vms"
 
-// VMsDir is VMsDirPath under root (the test seam).
+// VMsDir is VMsDirPath under root.
 func VMsDir(root string) string { return filepath.Join(root, VMsDirPath) }
 
-// LibvirtRunDir holds libvirt's live-domain state XML, one file per running
-// domain — the qemu hook dispatcher's one-VM-at-a-time check keys on it (the
-// hook runs inside libvirt, where the default URI is a given; Go code asks
-// virsh via DomainState instead).
+// LibvirtRunDir holds libvirt's live-domain state XML.
 const LibvirtRunDir = "/run/libvirt/qemu"
 
-// DomainState reports a domain's virsh state ("running", "shut off", ...),
-// "" when the domain does not exist or libvirt is unreachable. LC_ALL=C:
-// callers match English tokens and virsh localizes.
-func DomainState(name string) string {
-	cmd := exec.Command("virsh", "domstate", name)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	return line
-}
-
-// DomainUUID reports a defined domain's UUID, "" when the domain does not
-// exist or libvirt is unreachable. A redefine must render it into the XML:
-// virsh define refuses a name that already exists under a different UUID.
-func DomainUUID(name string) string {
-	cmd := exec.Command("virsh", "domuuid", name)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	return line
-}
-
-// DomainLive reports whether a DomainState means the guest still holds its
-// resources (the GPU included) — anything between start and a completed
-// shutdown or destroy.
-func DomainLive(state string) bool {
-	switch state {
-	case "running", "paused", "pmsuspended", "in shutdown":
-		return true
-	}
-	return false
-}
-
-// VMNames lists every managed domain from the registry; empty when no VM is
-// defined.
+// VMNames lists every managed domain from the registry.
 func VMNames(root string) []string {
 	ents, _ := os.ReadDir(VMsDir(root))
 	var names []string
@@ -126,23 +89,21 @@ func VMNames(root string) []string {
 	return names
 }
 
-// undoPreconditions refuses to undo while a guest or the GPU still hold
-// the vfio setup (research §C2): restoring host config under a defined VM or
-// a vfio-bound GPU strands the host half torn down. Domain state comes from
-// virsh, not the filesystem, so non-default libvirt URIs are covered; a host
-// without a reachable libvirt has no domains to hold anything.
-func (e *Engine) undoPreconditions() error {
-	for _, vm := range VMNames(e.Root) {
-		switch state := DomainState(vm); {
-		case DomainLive(state):
-			return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", vm, state, vm)
-		case state != "":
-			// vm undefine also drops the journaled define step, so a later full
-			// undo does not replay virsh undefine against a missing domain
+// undoPreconditions refuses to undo while a VM or the GPU still holds the vfio setup.
+func (e *Engine) undoPreconditions(oc *OpClients) error {
+	if vms := VMNames(e.Root); len(vms) > 0 && !e.skipUnderRoot(oc) {
+		for _, vm := range vms {
+			state, err := oc.Virt().DomainState(vm)
+			if err != nil {
+				continue
+			}
+			if virt.Live(state) {
+				return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", vm, state, vm)
+			}
 			return fmt.Errorf("VM %s is still defined — remove it first: orthogonals vm undefine --vm-name %s --yes (or virsh undefine %s --nvram --tpm)", vm, vm, vm)
 		}
 	}
-	devs, _ := hw.ScanPCI(e.Root) // missing sysfs under root = nothing bound
+	devs, _ := hw.ScanPCI(e.Root)
 	for _, d := range devs {
 		if d.Vendor == hw.VendorNVIDIA && d.Driver == "vfio-pci" {
 			return fmt.Errorf("GPU %s is bound to vfio-pci — reattach it to the host driver first: virsh nodedev-reattach pci_%s (or reboot)",
@@ -152,8 +113,7 @@ func (e *Engine) undoPreconditions() error {
 	return nil
 }
 
-// printDrift reports kernel/driver updates since apply (research §C2) — undo
-// still proceeds; this is context for "undo broke my host" bug reports.
+// printDrift reports kernel/driver updates since apply.
 func (e *Engine) printDrift(m *Manifest) {
 	if cur := hw.KernelVersion(e.Root); m.Kernel != "" && cur != "" && cur != m.Kernel {
 		fmt.Fprintf(e.Out, "note: host kernel has since updated %s → %s\n", m.Kernel, cur)
@@ -171,10 +131,7 @@ func (e *Engine) printDrift(m *Manifest) {
 	}
 }
 
-// Undo replays the manifest in reverse: file and unit restores first, paired
-// undo commands after, so regeneration commands (dracut) see their restored
-// inputs. Data steps (disk image, caches) are kept unless purge, which also
-// removes the state dir and config behind a typed confirmation.
+// Undo replays the manifest in reverse, restoring the host.
 func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 	m, err := Load(e.Root)
 	if err != nil {
@@ -184,7 +141,9 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 		fmt.Fprintln(e.Out, "nothing to undo")
 		return nil
 	}
-	if err := e.undoPreconditions(); err != nil {
+	oc := e.newOpClients()
+	defer oc.close()
+	if err := e.undoPreconditions(oc); err != nil {
 		return err
 	}
 	e.printDrift(m)
@@ -205,14 +164,14 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 				keep = append(keep, r)
 			}
 		}
-		left := *m // keep the apply-time stamps with whatever records remain
+		left := *m
 		left.Records = keep
 		return left.save(e.Root)
 	}
 
 	var restores, cmds []Record
 	for i := len(all) - 1; i >= 0; i-- {
-		if all[i].Kind == KindRunCmd {
+		if all[i].Kind == KindRunCmd || all[i].Kind == KindOp {
 			cmds = append(cmds, all[i])
 		} else {
 			restores = append(restores, all[i])
@@ -226,7 +185,7 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 			kept++
 			continue
 		}
-		ok, err := e.undoRecord(rec, force)
+		ok, err := e.undoRecord(rec, force, oc)
 		if err != nil {
 			return fmt.Errorf("undo %s: %w", rec.ID, err)
 		}
@@ -259,13 +218,9 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 	if needReboot {
 		fmt.Fprintln(e.Out, "reboot required: boot configuration was restored")
 	}
-	// the up pipeline position is stale once anything was undone; a leftover
-	// "verified" state would make a later `up --yes` claim setup is complete
 	_ = os.Remove(StatePath(e.Root))
 	if purge {
 		if kept > 0 {
-			// purging now would delete the backups of the very files that
-			// were just skipped for drift — unrecoverable
 			return fmt.Errorf("%d step(s) were skipped (changed since apply) — their backups are kept; re-run `undo --force --purge` to restore them and purge", kept)
 		}
 		if err := os.RemoveAll(StateDir(e.Root)); err != nil {
@@ -290,9 +245,7 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 	return nil
 }
 
-// UndoID reverses one journaled record and drops it from the manifest —
-// `orthogonals vm undefine` uses it to remove the domain while the rest of
-// the host setup stays applied. found reports whether the record existed.
+// UndoID reverses one journaled record and drops it from the manifest.
 func (e *Engine) UndoID(id string, force bool) (found bool, err error) {
 	m, err := Load(e.Root)
 	if err != nil {
@@ -302,7 +255,9 @@ func (e *Engine) UndoID(id string, force bool) (found bool, err error) {
 	if rec == nil {
 		return false, nil
 	}
-	ok, err := e.undoRecord(*rec, force)
+	oc := e.newOpClients()
+	defer oc.close()
+	ok, err := e.undoRecord(*rec, force, oc)
 	if err != nil {
 		return true, fmt.Errorf("undo %s: %w", id, err)
 	}
@@ -319,15 +274,17 @@ func (e *Engine) UndoID(id string, force bool) (found bool, err error) {
 	return true, m.save(e.Root)
 }
 
-// undoRecord reverses one record; ok reports whether it can leave the manifest.
-func (e *Engine) undoRecord(rec Record, force bool) (bool, error) {
+// undoRecord reverses one record.
+func (e *Engine) undoRecord(rec Record, force bool, oc *OpClients) (bool, error) {
 	switch rec.Kind {
 	case KindWriteFile:
 		return e.undoWriteFile(rec, force)
 	case KindRunCmd:
-		return e.undoRunCmd(rec)
+		return e.undoRunCmd(rec, oc)
 	case KindEnableUnit:
-		return e.undoEnableUnit(rec)
+		return e.undoEnableUnit(rec, oc)
+	case KindOp:
+		return e.undoOp(rec, oc)
 	}
 	return false, fmt.Errorf("unknown record kind %q", rec.Kind)
 }
@@ -377,7 +334,10 @@ func (e *Engine) undoWriteFile(rec Record, force bool) (bool, error) {
 	return true, nil
 }
 
-func (e *Engine) undoRunCmd(rec Record) (bool, error) {
+func (e *Engine) undoRunCmd(rec Record, oc *OpClients) (bool, error) {
+	if rec.UndoOp != "" {
+		return e.runUndoOp(rec.ID, rec.UndoOp, rec.UndoArgs, oc)
+	}
 	if len(rec.UndoCmd) == 0 {
 		fmt.Fprintf(e.Out, "%s: no undo command\n", rec.ID)
 		return true, nil
@@ -386,28 +346,69 @@ func (e *Engine) undoRunCmd(rec Record) (bool, error) {
 		fmt.Fprintf(e.Out, "would run: %s\n", strings.Join(rec.UndoCmd, " "))
 		return true, nil
 	}
-	if err := RunCmd(e.Out, rec.UndoCmd...); err != nil {
+	if err := runCmd(e.Out, rec.UndoCmd...); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (e *Engine) undoEnableUnit(rec Record) (bool, error) {
-	var verb string
+func (e *Engine) undoOp(rec Record, oc *OpClients) (bool, error) {
+	if rec.UndoOp == "" {
+		fmt.Fprintf(e.Out, "%s: no undo op\n", rec.ID)
+		return true, nil
+	}
+	return e.runUndoOp(rec.ID, rec.UndoOp, rec.UndoArgs, oc)
+}
+
+// runUndoOp executes a journaled inverse op.
+func (e *Engine) runUndoOp(id, undoOp string, args map[string]string, oc *OpClients) (bool, error) {
+	entry, ok := ops[undoOp]
+	if !ok {
+		return false, fmt.Errorf("unknown undo op %q", undoOp)
+	}
+	if !e.Yes {
+		fmt.Fprintf(e.Out, "would: %s\n", opLine(undoOp, args))
+		return true, nil
+	}
+	if entry.dials && e.skipUnderRoot(oc) {
+		fmt.Fprintf(e.Out, "%s: undo skipped under --root (needs live libvirt/systemd — covered by test-vm)\n", id)
+		return true, nil
+	}
+	if err := entry.fn(oc, e.Root, e.Out, args); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (e *Engine) undoEnableUnit(rec Record, oc *OpClients) (bool, error) {
+	enable := false
 	switch rec.PriorState {
 	case "enabled":
-		verb = "enable"
+		enable = true
 	case "disabled":
-		verb = "disable"
 	default:
 		fmt.Fprintf(e.Out, "%s: prior state %q not restorable, leaving unit as-is\n", rec.Unit, rec.PriorState)
 		return true, nil
 	}
+	verb := "disable"
+	if enable {
+		verb = "enable"
+	}
 	if !e.Yes {
-		fmt.Fprintf(e.Out, "would run: systemctl %s %s\n", verb, rec.Unit)
+		fmt.Fprintf(e.Out, "would: %s unit %s\n", verb, rec.Unit)
 		return true, nil
 	}
-	if err := RunCmd(e.Out, "systemctl", verb, rec.Unit); err != nil {
+	if e.skipUnderRoot(oc) {
+		fmt.Fprintf(e.Out, "%s: undo skipped under --root (needs live systemd — covered by test-vm)\n", rec.ID)
+		return true, nil
+	}
+	var err error
+	if enable {
+		err = oc.Sysd().EnableUnit(rec.Unit)
+	} else {
+		err = oc.Sysd().DisableUnit(rec.Unit)
+	}
+	if err != nil {
 		return false, err
 	}
 	return true, nil
@@ -415,6 +416,6 @@ func (e *Engine) undoEnableUnit(rec Record) (bool, error) {
 
 func removeDirs(root string, dirs []string) {
 	for _, d := range dirs {
-		_ = os.Remove(filepath.Join(root, d)) // deepest first; harmlessly fails when non-empty
+		_ = os.Remove(filepath.Join(root, d))
 	}
 }

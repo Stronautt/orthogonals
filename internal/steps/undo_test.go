@@ -8,6 +8,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/virt"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
 func TestUndoDryRunTouchesNothing(t *testing.T) {
@@ -15,8 +20,9 @@ func TestUndoDryRunTouchesNothing(t *testing.T) {
 	write(t, root, "etc/foo.conf", "old\n", 0o644)
 	dir := fakePath(t)
 	grubbyLog := fakeBin(t, dir, "grubby", "")
-	sysLog := fakeBin(t, dir, "systemctl", "if [ \"$1\" = \"is-enabled\" ]; then echo disabled; fi")
+	sd := &sysdtest.Fake{States: map[string]string{"svc.service": "disabled"}}
 	e, _, _ := eng(root, true)
+	e.Sysd = func() sysd.Client { return sd }
 	list := []Step{
 		{ID: "foo", Kind: KindWriteFile, Path: "/etc/foo.conf", Content: []byte("new\n"), Mode: 0o600},
 		{ID: "args", Kind: KindRunCmd, Cmd: []string{"grubby", "--args=x"}, UndoCmd: []string{"grubby", "--remove-args=x"}},
@@ -25,9 +31,10 @@ func TestUndoDryRunTouchesNothing(t *testing.T) {
 	if err := e.Apply(list); err != nil {
 		t.Fatal(err)
 	}
-	applied := len(logLines(t, grubbyLog)) + len(logLines(t, sysLog))
+	applied := len(logLines(t, grubbyLog)) + len(sd.Calls)
 
 	dry, out, _ := eng(root, false)
+	dry.Sysd = func() sysd.Client { return sd }
 	if err := dry.Undo(false, false, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
@@ -35,13 +42,13 @@ func TestUndoDryRunTouchesNothing(t *testing.T) {
 	if m := mustLoad(t, root); len(m.Records) != len(list) {
 		t.Fatalf("dry-run undo must not touch the manifest, got %d records", len(m.Records))
 	}
-	if now := len(logLines(t, grubbyLog)) + len(logLines(t, sysLog)); now != applied {
+	if now := len(logLines(t, grubbyLog)) + len(sd.Calls); now != applied {
 		t.Fatal("dry-run undo executed a command")
 	}
 	for _, want := range []string{
 		"would restore /etc/foo.conf",
 		"would run: grubby --remove-args=x",
-		"would run: systemctl disable svc.service",
+		"would: disable unit svc.service",
 		"dry run",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -123,7 +130,6 @@ func TestPurgeRemovesDataAndState(t *testing.T) {
 	if err := e.Apply(list); err != nil {
 		t.Fatal(err)
 	}
-	// simulate state written by later stages
 	write(t, root, "var/lib/orthogonals/state.json", "{}\n", 0o600)
 	write(t, root, "var/lib/orthogonals/cache/virtio-win.iso", "iso\n", 0o644)
 	write(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>\n", 0o600)
@@ -167,7 +173,6 @@ func TestUndoRunsCommandsAfterFileRestores(t *testing.T) {
 	dir := fakePath(t)
 	conf := filepath.Join(root, "etc/dracut.conf.d/vfio.conf")
 	seen := filepath.Join(dir, "seen.log")
-	// dracut records what the conf file contains at each invocation
 	fakeBin(t, dir, "dracut",
 		"cat \""+conf+"\" >> \""+seen+"\" 2>/dev/null\necho --- >> \""+seen+"\"")
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
@@ -185,8 +190,6 @@ func TestUndoRunsCommandsAfterFileRestores(t *testing.T) {
 	if err := e.Undo(false, false, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
-	// apply: dracut sees the written conf; undo: conf restored (removed) BEFORE
-	// dracut re-runs, so the regeneration works from restored inputs.
 	b, err := os.ReadFile(seen)
 	if err != nil {
 		t.Fatal(err)
@@ -199,8 +202,8 @@ func TestUndoRunsCommandsAfterFileRestores(t *testing.T) {
 func TestUndoAbortsWhenPairedCommandFails(t *testing.T) {
 	root := t.TempDir()
 	dir := fakePath(t)
-	fakeBin(t, dir, "okcmd", "")         // forward command succeeds at apply
-	fakeBin(t, dir, "failcmd", "exit 1") // paired undo command fails
+	fakeBin(t, dir, "okcmd", "")
+	fakeBin(t, dir, "failcmd", "exit 1")
 	e, _, _ := eng(root, true)
 
 	step := Step{ID: "regen", Kind: KindRunCmd, Cmd: []string{"okcmd"}, UndoCmd: []string{"failcmd"}}
@@ -211,8 +214,6 @@ func TestUndoAbortsWhenPairedCommandFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "undo regen:") {
 		t.Fatalf("err = %v, want a wrapped undo error naming the step", err)
 	}
-	// a failed undo must not clear the manifest — the host is half-restored and
-	// the record has to survive so the operator can retry the rollback
 	if !mustLoad(t, root).Has("regen") {
 		t.Error("failed undo dropped the record; nothing left to retry")
 	}
@@ -248,9 +249,7 @@ func TestUndoRefusesWhileVMPresent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, e := appliedRoot(t)
 			write(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>", 0o600)
-			fakeBin(t, fakePath(t), "virsh",
-				`[ "$1 $2" = "domstate win11" ] && { echo "`+tc.state+`"; exit 0; }
-exit 1`)
+			e.Virt = func() virt.Client { return &virttest.Fake{State: tc.state} }
 			err := e.Undo(false, false, strings.NewReader(""))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("undo error = %v, want mention of %q", err, tc.want)
@@ -283,22 +282,16 @@ func TestUndoRefusesWhileSecondVMPresent(t *testing.T) {
 	root, e := appliedRoot(t)
 	write(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>", 0o644)
 	write(t, root, "etc/orthogonals/vms/gaming.xml", "<domain/>", 0o644)
-	// win11 is gone from libvirt, gaming is live
-	fakeBin(t, fakePath(t), "virsh",
-		`[ "$1 $2" = "domstate gaming" ] && { echo running; exit 0; }
-exit 1`)
+	e.Virt = func() virt.Client { return &virttest.Fake{State: "running"} }
 	err := e.Undo(false, false, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "gaming") {
 		t.Fatalf("undo error = %v, want refusal naming the second VM", err)
 	}
 }
 
-// a registered VM whose domain is already gone from libvirt (virsh errors)
-// must not block undo — same for a host where virsh is absent entirely.
 func TestUndoIgnoresGoneDomains(t *testing.T) {
 	root, e := appliedRoot(t)
 	write(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>", 0o600)
-	fakeBin(t, fakePath(t), "virsh", "exit 1")
 	if err := e.Undo(false, false, strings.NewReader("")); err != nil {
 		t.Fatalf("gone domain must not block undo: %v", err)
 	}
@@ -410,7 +403,6 @@ func TestUndoPrintsVersionDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// host updates kernel and driver between apply and undo
 	write(t, root, "proc/sys/kernel/osrelease", "6.15.3-100.fc43.x86_64\n", 0o644)
 	write(t, root, "proc/driver/nvidia/version", nvrm575, 0o644)
 
@@ -497,9 +489,6 @@ func snapshot(t *testing.T, root string) map[string]string {
 	return m
 }
 
-// Byte-identical scope (research §C2): the files WE wrote under root — not
-// system state (kernel, driver), which is stamped at apply and drift-reported
-// by undo instead.
 func TestApplyUndoRoundTripByteIdentical(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "etc/environment", "LANG=C\n", 0o644)
@@ -511,7 +500,6 @@ func TestApplyUndoRoundTripByteIdentical(t *testing.T) {
 	fakeBin(t, dir, "grubby", "")
 	fakeBin(t, dir, "dracut", "")
 	fakeBin(t, dir, "restorecon", "")
-	fakeBin(t, dir, "systemctl", "if [ \"$1\" = \"is-enabled\" ]; then echo disabled; fi")
 
 	before := snapshot(t, root)
 
@@ -625,14 +613,13 @@ func TestUndoPurgeRefusedWhileDriftKept(t *testing.T) {
 	if err := e.Apply([]Step{{ID: "foo", Kind: KindWriteFile, Path: "/etc/foo.conf", Content: []byte("new\n"), Mode: 0o644}}); err != nil {
 		t.Fatal(err)
 	}
-	write(t, root, "etc/foo.conf", "hand-edited\n", 0o644) // drift
+	write(t, root, "etc/foo.conf", "hand-edited\n", 0o644)
 
 	u, _, _ := eng(root, true)
 	err := u.Undo(false, true, strings.NewReader("purge\n"))
 	if err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("purge over drift-kept records must refuse and point at --force, got %v", err)
 	}
-	// backups and manifest must survive so undo --force can still restore
 	if _, err := os.Stat(filepath.Join(root, "var/lib/orthogonals/manifest.json")); err != nil {
 		t.Error("manifest destroyed by refused purge")
 	}
@@ -697,8 +684,6 @@ func TestUndoTwiceReportsAlreadyRemoved(t *testing.T) {
 	if err := u1.Undo(false, false, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
-	// resurrect the manifest record by hand: simulates a second undo racing a
-	// partially removed state dir
 	m := &Manifest{Records: []Record{{ID: "made", Kind: KindWriteFile, Path: "/etc/sub/made.conf", MadeDirs: []string{"/etc/sub"}}}}
 	if err := m.save(root); err != nil {
 		t.Fatal(err)

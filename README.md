@@ -209,8 +209,9 @@ The full list is printed by the dry run before anything happens.
 - systemd units: `nvidia-persistenced` disabled (it holds `/dev/nvidia0`
   open, which would block every handover), `libvirt-guests` enabled (host
   shutdown shuts the guest down cleanly), `switcheroo-control` enabled.
-- The Looking Glass client, built from the SHA256-pinned B7 source tarball,
-  plus a launcher, desktop entry, and `~/Desktop` shortcut link per VM.
+- The Looking Glass client, installed from the pinned `looking-glass-client`
+  RPM (B7, matching the guest host), plus a desktop entry and `~/Desktop`
+  shortcut link per VM.
 - Your desktop user joins the `libvirt` group, so the one-click launcher can
   start the VM without a password prompt.
 
@@ -331,9 +332,8 @@ orthogonals preflight && echo "good to go"
 ### `orthogonals apply`
 
 Runs the host-setup stage alone: kernel arguments, vfio initramfs, SELinux
-and tmpfiles rules, libvirt hooks, systemd units, the Looking Glass client.
-Every change is journaled, and the first real run ends by asking for a
-reboot.
+and tmpfiles rules, libvirt hooks, and systemd units. Every change is
+journaled, and the first real run ends by asking for a reboot.
 
 ```sh
 sudo orthogonals apply                  # dry run: the full change list
@@ -533,21 +533,6 @@ Fix: open the VM console (`virt-viewer <vm-name>`) and press a key while the
 prompt retries. This only happens on the first boot, while the disk is still
 blank. Once Windows is installed, the disk boots first and the prompt never
 returns.
-
-### The Looking Glass client is missing libXss.so.1 or libXpresent.so.1
-
-Why: these are runtime dependencies of the built client that arrived with
-development packages; a package cleanup removed them.
-
-Fix: `sudo dnf install libXScrnSaver libXpresent`. After any cleanup near
-the client, check `ldd $(command -v looking-glass-client) | grep "not found"`.
-
-### Building Looking Glass by hand fails with undefined ZSTD_* references
-
-Why: Fedora's static libbfd needs zstd symbols that the Looking Glass
-backtrace feature links against.
-
-Fix: build with `-DENABLE_BACKTRACE=OFF`. orthogonals builds it that way.
 
 ### apply or vm refuses: "journaled command differs from the current settings"
 

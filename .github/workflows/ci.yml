@@ -42,14 +42,17 @@ jobs:
         run: dnf install -y git golang rpm-build copr-cli gh
 
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Verify tag matches VERSION
         run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
 
-      - name: Build SRPM
+      - name: Build SRPMs
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory '*'
           make srpm
+          make srpm-lg
 
       - name: Build in COPR
         shell: bash
@@ -58,6 +61,8 @@ jobs:
         run: |
           mkdir -p ~/.config
           echo "$COPR_API_CONFIG" > ~/.config/copr
+          # non-blocking: it only needs to land in the repo for the runtime dep
+          copr-cli build --nowait orthogonals dist/looking-glass-client-*.src.rpm
           copr-cli build orthogonals dist/orthogonals-*.src.rpm \
             | tee copr-build.log
           BUILD_ID=$(grep -oP 'Created builds:\s*\K\d+' copr-build.log)

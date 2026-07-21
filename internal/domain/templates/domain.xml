@@ -12,6 +12,7 @@
       <orthogonals:password>{{xml .GuestPassword}}</orthogonals:password>
       <orthogonals:locale>{{xml .Locale}}</orthogonals:locale>
       <orthogonals:resolution>{{.Width}}x{{.Height}}</orthogonals:resolution>
+      <orthogonals:win11-iso>{{xml .Win11ISO}}</orthogonals:win11-iso>
     </orthogonals:guest>
   </metadata>
   <memory unit='MiB'>{{.RAMMiB}}</memory>

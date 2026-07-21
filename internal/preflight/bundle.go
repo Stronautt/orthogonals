@@ -19,15 +19,13 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// configDirs are installed orthogonals artifacts worth bundling when present;
-// the last carries the libvirt hook stage log.
+// configDirs are installed orthogonals artifacts worth bundling.
 var configDirs = []string{steps.EtcDir, "/etc/libvirt/hooks", "/etc/dracut.conf.d", filepath.Dir(hooks.LogPath)}
 
 var (
 	macRE  = regexp.MustCompile(`\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b`)
 	uuidRE = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
-	// guest credentials in a domain XML's <metadata> block (see the domain
-	// template); XMLEscape guarantees element text carries no '<'
+	// guestMetaRE matches guest credentials in a domain XML's <metadata> block.
 	guestMetaRE = regexp.MustCompile(`<orthogonals:(user|password)>[^<]*</orthogonals:(?:user|password)>`)
 )
 
@@ -36,10 +34,7 @@ type bundleEntry struct {
 	data []byte
 }
 
-// WriteBundle writes a redacted diagnostics tar.gz: detect JSON, lspci -nnk,
-// vfio/nvidia journal lines, and installed orthogonals configs. Hostname,
-// DMI serials, machine-id, MACs, and UUIDs are redacted everywhere; guest
-// credentials are stripped from the domain XMLs' <metadata> blocks.
+// WriteBundle writes a redacted diagnostics tar.gz.
 func WriteBundle(w io.Writer, root string, detect *hw.Result) error {
 	detectJSON, err := json.MarshalIndent(detect, "", "  ")
 	if err != nil {
@@ -54,7 +49,7 @@ func WriteBundle(w io.Writer, root string, detect *hw.Result) error {
 		base := filepath.Join(root, dir)
 		_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
-				return nil // absent dirs and unreadable files are not diagnostics failures
+				return nil
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -91,8 +86,7 @@ func WriteBundle(w io.Writer, root string, detect *hw.Result) error {
 	return nil
 }
 
-// cmdOutput never fails the bundle: a missing tool becomes a note in place
-// of its output.
+// cmdOutput never fails: a missing tool becomes a note in its output.
 func cmdOutput(name string, args ...string) []byte {
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
@@ -103,8 +97,7 @@ func cmdOutput(name string, args ...string) []byte {
 
 type redactor struct{ rep *strings.Replacer }
 
-// newRedactor collects host-identifying literals (hostname, DMI serials,
-// machine-id); MACs and UUIDs are caught by pattern instead.
+// newRedactor collects host-identifying literals to redact.
 func newRedactor(root string) *redactor {
 	var pairs []string
 	if hn, err := os.Hostname(); err == nil && len(hn) >= 2 {
@@ -122,8 +115,6 @@ func newRedactor(root string) *redactor {
 			continue
 		}
 		v := strings.TrimSpace(string(b))
-		// Real serials contain digits; skip placeholders like "To Be Filled
-		// By O.E.M." so common words are not mangled across the bundle.
 		if len(v) >= 4 && strings.ContainsAny(v, "0123456789") {
 			pairs = append(pairs, v, "REDACTED")
 		}

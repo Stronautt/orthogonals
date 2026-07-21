@@ -13,10 +13,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// VerifyBoot checks that the applied boot configuration is live on the
-// running kernel (research §C5): the exact kernel args apply journaled, an
-// active IOMMU, and the vfio-pci module the regenerated initramfs
-// force-loads. Until all three hold, apply-then-reboot is half a transaction.
+// VerifyBoot checks that the applied boot configuration is live on the running kernel.
 func VerifyBoot(root string) error {
 	want, err := manifestKernelArgs(root)
 	if err != nil {
@@ -31,20 +28,14 @@ func VerifyBoot(root string) error {
 	return vfioModuleLoaded(root)
 }
 
-// manifestKernelArgs recovers the exact kargs apply added from the journaled
-// kernel-args step, so verification never re-derives them from a profile.
+// manifestKernelArgs recovers the kargs apply added from the journaled step.
 func manifestKernelArgs(root string) (string, error) {
 	m, err := steps.Load(root)
 	if err != nil {
 		return "", err
 	}
-	for _, r := range m.Records {
-		if r.ID != hostcfg.KernelArgsStepID {
-			continue
-		}
-		if s, ok := hostcfg.GrubbyArgs(r.Cmd); ok {
-			return s, nil
-		}
+	if args := m.OpArgs(hostcfg.KernelArgsStepID); args["args"] != "" {
+		return args["args"], nil
 	}
 	return "", errors.New("no journaled kernel-args step — run `orthogonals apply --yes` first")
 }

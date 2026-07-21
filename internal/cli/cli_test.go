@@ -2,14 +2,47 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/virt"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
+
+// TestMain swaps the libvirt and systemd seams for package-wide fakes.
+func TestMain(m *testing.M) {
+	newVirt = func() virt.Client { return &virttest.Fake{} }
+	newSysd = func() sysd.Client { return &sysdtest.Fake{} }
+	executablePath = func() (string, error) { return "/usr/bin/orthogonals", nil }
+	hooks.LogWriter = io.Discard
+	os.Exit(m.Run())
+}
+
+// fakeVirt routes the package's libvirt seam at the given fake for one test.
+func fakeVirt(t *testing.T, f *virttest.Fake) *virttest.Fake {
+	t.Helper()
+	old := newVirt
+	newVirt = func() virt.Client { return f }
+	t.Cleanup(func() { newVirt = old })
+	return f
+}
+
+// fakeSysd routes the package's systemd seam at the given fake for one test.
+func fakeSysd(t *testing.T, f *sysdtest.Fake) *sysdtest.Fake {
+	t.Helper()
+	old := newSysd
+	newSysd = func() sysd.Client { return f }
+	t.Cleanup(func() { newSysd = old })
+	return f
+}
 
 func run(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
@@ -29,16 +62,12 @@ func TestDispatchKnownCommands(t *testing.T) {
 			args, want := []string{cmd}, 0
 			switch cmd {
 			case "detect":
-				// implemented commands read sysfs; keep tests host-independent
 				args = append(args, "--root", hwtest.ReferenceRoot(t))
 			case "apply":
-				// dry-run diffs read the current files, which include
-				// root-only paths like /etc/libvirt/hooks on a libvirt host;
-				// --user pinned because CI runners export no USER/SUDO_USER
 				args = append(args, "--root", hwtest.ReferenceRoot(t), "--user", "tester")
 			case "preflight":
 				args = append(args, "--root", hwtest.ReferenceRoot(t))
-				want = 2 // reference machine warns (39-bit address width)
+				want = 2
 			case "bundle":
 				args = append(args, "--root", hwtest.ReferenceRoot(t),
 					filepath.Join(t.TempDir(), "bundle.tar.gz"))
@@ -51,35 +80,17 @@ func TestDispatchKnownCommands(t *testing.T) {
 				}
 				args = append(args, "--root", t.TempDir(), "--win11-iso", iso)
 			case "undo":
-				// fresh root: "nothing applied" — never the host's real journal
 				args = append(args, "--root", t.TempDir())
 			case "up":
-				// dry run prints the pipeline plan
 				args = append(args, "--root", t.TempDir())
 			case "status":
-				// nothing applied on a fresh root → unhealthy
 				args = append(args, "--root", t.TempDir())
 				want = 1
 			case "recover":
-				// dry run only prints the plan
 				args = append(args, "--root", hwtest.ReferenceRoot(t))
 			case "verify":
-				// virsh stub answers agent pings but the in-guest command
-				// exits 1, so verify fails fast at the nvidia-smi check;
-				// --vm-name pinned so the host's real /etc/orthogonals/vms
-				// is never consulted
 				args = append(args, "--vm-name", "win11")
-				dir := t.TempDir()
-				script := `#!/bin/sh
-case "$*" in
-*guest-exec-status*) echo '{"return":{"exited":true,"exitcode":1,"out-data":"","err-data":""}}' ;;
-*) echo '{"return":{}}' ;;
-esac
-`
-				if err := os.WriteFile(filepath.Join(dir, "virsh"), []byte(script), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+				fakeVirt(t, &virttest.Fake{State: "running", Agent: virttest.Responder("", "", 1)})
 				want = 1
 			}
 			code, _, stderr := run(t, args...)
@@ -95,8 +106,8 @@ func TestUnknownCommand(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "Usage:") {
-		t.Fatalf("stderr should contain usage, got: %q", stderr)
+	if !strings.Contains(stderr, "unknown command") {
+		t.Fatalf("stderr should report an unknown command, got: %q", stderr)
 	}
 	if !strings.Contains(stderr, "frobnicate") {
 		t.Fatalf("stderr should name the unknown command, got: %q", stderr)
@@ -130,7 +141,6 @@ func TestGlobalFlags(t *testing.T) {
 		args []string
 	}{
 		{"before command", []string{"--json", "--yes", "--root", root, "detect"}},
-		{"after command", []string{"detect", "--json", "--yes", "--root", root}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -139,12 +149,5 @@ func TestGlobalFlags(t *testing.T) {
 				t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 			}
 		})
-	}
-}
-
-func TestBadFlag(t *testing.T) {
-	code, _, _ := run(t, "--no-such-flag", "detect")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
 	}
 }

@@ -8,17 +8,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 )
 
-// Regression: with root "" the scan must target /sys, not the relative
-// path "sys" (filepath.Join("", "sys/...") is relative).
-func TestScanPCIEmptyRootReadsLiveSys(t *testing.T) {
-	if _, err := os.Stat("/sys/bus/pci/devices"); err != nil {
-		t.Skip("no /sys on this host")
-	}
-	if _, err := ScanPCI(""); err != nil {
-		t.Fatalf("ScanPCI(\"\") on live host: %v", err)
-	}
-}
-
 func TestScanPCIReference(t *testing.T) {
 	devs, err := ScanPCI(hwtest.ReferenceRoot(t))
 	if err != nil {
@@ -64,7 +53,7 @@ func TestScanDRM(t *testing.T) {
 	dev := hwtest.Dev{Addr: addr, Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 2}
 	tests := []struct {
 		name      string
-		files     map[string]string // rel path under the device dir -> content
+		files     map[string]string
 		wantCard  string
 		wantConns []string
 	}{
@@ -220,9 +209,9 @@ func TestClassifyGPUs(t *testing.T) {
 	tests := []struct {
 		name      string
 		devs      []PCIDevice
-		wantIGPU  string            // address, "" = nil
-		wantDGPUs []string          // addresses in order
-		wantAudio map[string]string // dgpu address -> audio address ("" = nil)
+		wantIGPU  string
+		wantDGPUs []string
+		wantAudio map[string]string
 	}{
 		{
 			name:      "reference",

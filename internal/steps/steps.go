@@ -1,7 +1,4 @@
-// Package steps is the apply engine: every host mutation is a journaled Step,
-// recorded in a manifest with the original bytes backed up, so undo can
-// restore the host byte-identically. All root-privilege changes anywhere in
-// orthogonals route through this package.
+// Package steps is the apply engine: every host mutation is a journaled Step.
 package steps
 
 import (
@@ -10,11 +7,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/virt"
 )
 
 // Kind selects the step behavior.
@@ -24,36 +25,39 @@ const (
 	KindWriteFile  Kind = "write_file"
 	KindRunCmd     Kind = "run_cmd"
 	KindEnableUnit Kind = "enable_unit"
+	KindOp         Kind = "op"
 )
 
-// Step is one journaled mutation. Only the fields for its Kind are set.
+// Step is one journaled mutation.
 type Step struct {
 	ID     string
 	Kind   Kind
-	Data   bool // undoing destroys user data (disk image, cache); plain undo keeps these
-	Reboot bool // touches boot config (kargs, initramfs); apply and undo report "reboot required"
+	Data   bool
+	Reboot bool
 
 	// KindWriteFile
-	Path       string // absolute path, un-rooted (--root is prepended)
+	Path       string
 	Content    []byte
 	Mode       fs.FileMode
 	Restorecon bool
 
 	// KindRunCmd
 	Cmd     []string
-	UndoCmd []string // paired inverse or regeneration command; empty = nothing to undo
-	// CreatesPath is the command's product (un-rooted, like Cmd). When set, a
-	// journaled step whose product was externally deleted re-runs instead of
-	// skipping — the command must be idempotent. Empty keeps skip-on-record.
+	UndoCmd []string
+	// CreatesPath is the command's product; when gone, a journaled step re-runs.
 	CreatesPath string
-	// Input is the content the command consumes (e.g. the XML virsh define
-	// reads). When set, a journaled input-hash mismatch re-runs the command
-	// instead of skipping — the command must be idempotent.
+	// Input is the content the command or op consumes; a hash mismatch re-runs the step.
 	Input []byte
 
 	// KindEnableUnit
 	Unit   string
-	Enable bool // false disables the unit
+	Enable bool
+
+	// KindOp
+	Op       string
+	Args     map[string]string
+	UndoOp   string
+	UndoArgs map[string]string
 }
 
 // Engine applies and undoes steps under Root. Dry-run unless Yes.
@@ -62,10 +66,27 @@ type Engine struct {
 	Yes  bool
 	Out  io.Writer
 	Err  io.Writer
+	// Virt supplies the libvirt client; nil dials the local hypervisor.
+	Virt func() virt.Client
+	// Sysd supplies the systemd client; nil dials the local manager.
+	Sysd func() sysd.Client
 }
 
-// Apply runs steps in order. Each step is journaled into the manifest before
-// its mutation lands, so a partial failure is always undoable.
+func (e *Engine) newOpClients() *OpClients {
+	oc := &OpClients{virt: e.Virt, sysd: e.Sysd, injected: e.Virt != nil || e.Sysd != nil}
+	if oc.virt == nil {
+		oc.virt = virt.New
+	}
+	if oc.sysd == nil {
+		oc.sysd = sysd.New
+	}
+	return oc
+}
+
+// skipUnderRoot reports a dialing step under --root with no injected clients.
+func (e *Engine) skipUnderRoot(oc *OpClients) bool { return e.Root != "" && !oc.injected }
+
+// Apply runs steps in order, journaling each before its mutation lands.
 func (e *Engine) Apply(list []Step) error {
 	seen := make(map[string]bool, len(list))
 	backups := make(map[string]string, len(list))
@@ -84,19 +105,19 @@ func (e *Engine) Apply(list []Step) error {
 		return err
 	}
 	if e.Yes {
-		// persisted by the first step that saves; a no-op re-run keeps the
-		// stamps from when the mutations actually landed
 		m.stamp(e.Root)
 	}
+	oc := e.newOpClients()
+	defer oc.close()
 	for _, s := range list {
-		if err := e.applyOne(m, s); err != nil {
+		if err := e.applyOne(m, s, oc); err != nil {
 			return fmt.Errorf("step %s: %w", s.ID, err)
 		}
 	}
 	return nil
 }
 
-func (e *Engine) applyOne(m *Manifest, s Step) error {
+func (e *Engine) applyOne(m *Manifest, s Step, oc *OpClients) error {
 	if s.ID == "" {
 		return errors.New("step has no id")
 	}
@@ -118,9 +139,59 @@ func (e *Engine) applyOne(m *Manifest, s Step) error {
 		if s.Unit == "" {
 			return errors.New("enable_unit needs a unit name")
 		}
-		return e.applyEnableUnit(m, s)
+		return e.applyEnableUnit(m, s, oc)
+	case KindOp:
+		if s.Op == "" {
+			return errors.New("op step needs an op name")
+		}
+		return e.applyOp(m, s, oc)
 	}
 	return fmt.Errorf("unknown step kind %q", s.Kind)
+}
+
+func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
+	entry, ok := ops[s.Op]
+	if !ok {
+		return fmt.Errorf("unknown op %q", s.Op)
+	}
+	if s.UndoOp != "" {
+		if _, ok := ops[s.UndoOp]; !ok {
+			return fmt.Errorf("unknown undo op %q", s.UndoOp)
+		}
+	}
+	inputDrift := false
+	if rec := m.find(s.ID); rec != nil {
+		if rec.Op != s.Op || !maps.Equal(rec.OpArgs, s.Args) {
+			return fmt.Errorf("journaled op differs from the current settings — undo first (orthogonals undo, or vm undefine for VM steps)\nwas: %s\nnow: %s",
+				opLine(rec.Op, rec.OpArgs), opLine(s.Op, s.Args))
+		}
+		if len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input) {
+			inputDrift = true
+		} else {
+			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+			return nil
+		}
+	}
+	if !e.Yes {
+		if inputDrift {
+			fmt.Fprintf(e.Out, "would: %s (journaled input changed)\n", opLine(s.Op, s.Args))
+		} else {
+			fmt.Fprintf(e.Out, "would: %s\n", opLine(s.Op, s.Args))
+		}
+		return nil
+	}
+	if entry.dials && e.skipUnderRoot(oc) {
+		fmt.Fprintf(e.Out, "%s: skipped under --root (needs live libvirt/systemd — covered by test-vm)\n", s.ID)
+	} else if err := entry.fn(oc, e.Root, e.Out, s.Args); err != nil {
+		return err
+	}
+	r := Record{ID: s.ID, Kind: KindOp, Data: s.Data, Reboot: s.Reboot,
+		Op: s.Op, OpArgs: s.Args, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
+	if len(s.Input) > 0 {
+		r.InputSHA256 = sha256hex(s.Input)
+	}
+	m.put(r)
+	return m.save(e.Root)
 }
 
 func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
@@ -140,14 +211,10 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	}
 	rec := m.find(s.ID)
 	if rec != nil && rec.Path != s.Path {
-		// the journaled backup belongs to the old path; silently rebinding the
-		// record would corrupt undo (restore old bytes over the new path)
 		return fmt.Errorf("journaled at %s but now targets %s — settings changed since apply; undo first (orthogonals undo, or vm undefine for VM steps)",
 			rec.Path, s.Path)
 	}
 	same := exists && bytes.Equal(cur, s.Content) && curMode == s.Mode.Perm()
-	// "unchanged" only when the journal matches too: a file hand-edited to the
-	// new content leaves NewSHA256 stale, and undo would refuse to restore it
 	if same && rec != nil && rec.NewSHA256 == sha256hex(s.Content) {
 		fmt.Fprintf(e.Out, "%s: unchanged\n", s.Path)
 		return nil
@@ -171,10 +238,6 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 		}
 		if exists {
 			r.Backup = backupName(s.ID)
-			// two step IDs can sanitize to the same backup filename;
-			// overwriting would destroy the journaled step's original bytes
-			// and corrupt its undo. A crashed pre-save attempt of this same
-			// step left no record, so its orphaned file is safe to overwrite.
 			for i := range m.Records {
 				if m.Records[i].Backup == r.Backup {
 					return fmt.Errorf("step %s would overwrite the backup of journaled step %s (both map to backup/%s) — undo %s first",
@@ -191,7 +254,6 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	}
 	rec.Mode = uint32(s.Mode.Perm())
 	rec.NewSHA256 = sha256hex(s.Content)
-	// journal before the write lands so the original is never lost
 	if err := m.save(e.Root); err != nil {
 		return err
 	}
@@ -202,8 +264,7 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	return nil
 }
 
-// writeFile lands content at full, creating parent dirs. os.WriteFile only
-// sets the mode on create, so Chmod re-asserts it on existing files.
+// writeFile lands content at full, creating parent dirs.
 func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restorecon bool) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
@@ -215,7 +276,7 @@ func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restor
 		return err
 	}
 	if restorecon {
-		return RunCmd(e.Out, "restorecon", full)
+		return runCmd(e.Out, "restorecon", full)
 	}
 	return nil
 }
@@ -224,18 +285,13 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 	inputDrift := false
 	if rec := m.find(s.ID); rec != nil {
 		if !slices.Equal(rec.Cmd, s.Cmd) {
-			// e.g. --binding or --disk changed since apply: skipping would
-			// silently keep the old setup, re-running would stack onto it
 			return fmt.Errorf("journaled command differs from the current settings — undo first (orthogonals undo, or vm undefine for VM steps)\nwas: %s\nnow: %s",
 				strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
 		}
 		switch {
 		case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
-			// a pre-Input record (empty hash) also lands here: one extra
-			// idempotent re-run converges it
 			inputDrift = true
 		case s.CreatesPath != "":
-			// Stat, not Lstat: a dangling symlink product counts as gone too
 			if _, err := os.Stat(s.CreatesPath); err == nil {
 				fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
 				return nil
@@ -254,10 +310,11 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 		}
 		return nil
 	}
-	if err := RunCmd(e.Out, s.Cmd...); err != nil {
+	if err := runCmd(e.Out, s.Cmd...); err != nil {
 		return err
 	}
-	r := Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot, Cmd: s.Cmd, UndoCmd: s.UndoCmd}
+	r := Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot,
+		Cmd: s.Cmd, UndoCmd: s.UndoCmd, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
 	if len(s.Input) > 0 {
 		r.InputSHA256 = sha256hex(s.Input)
 	}
@@ -265,56 +322,56 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 	return m.save(e.Root)
 }
 
-func (e *Engine) applyEnableUnit(m *Manifest, s Step) error {
+func (e *Engine) applyEnableUnit(m *Manifest, s Step, oc *OpClients) error {
 	verb := "enable"
 	if !s.Enable {
 		verb = "disable"
 	}
+	setUnit := func() error {
+		if e.skipUnderRoot(oc) {
+			fmt.Fprintf(e.Out, "%s: skipped under --root (needs live systemd — covered by test-vm)\n", s.ID)
+			return nil
+		}
+		if s.Enable {
+			return oc.Sysd().EnableUnit(s.Unit)
+		}
+		return oc.Sysd().DisableUnit(s.Unit)
+	}
 	if rec := m.find(s.ID); rec != nil {
 		if rec.Unit != s.Unit || rec.Enable != s.Enable {
-			// same invariant as write_file/run_cmd: a journaled step diverging
-			// from current settings is refused (undo first), never silently
-			// skipped — otherwise undo would restore the wrong unit's prior state
 			return fmt.Errorf("journaled unit/state differs from the current settings — undo first (orthogonals undo)\nwas: %s enable=%v\nnow: %s enable=%v",
 				rec.Unit, rec.Enable, s.Unit, s.Enable)
 		}
-		// a journaled unit can drift: NVIDIA driver updates preset-enable
-		// nvidia-persistenced behind our back. Re-assert the desired state;
-		// the journal keeps the original PriorState so undo still restores
-		// what the host had before orthogonals touched it.
-		cur := unitState(s.Unit)
+		cur := e.unitState(oc, s.Unit)
 		drifted := (s.Enable && cur == "disabled") || (!s.Enable && cur == "enabled")
 		if !drifted {
 			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
 			return nil
 		}
 		if !e.Yes {
-			fmt.Fprintf(e.Out, "would run: systemctl %s %s (unit drifted to %s)\n", verb, s.Unit, cur)
+			fmt.Fprintf(e.Out, "would: %s unit %s (unit drifted to %s)\n", verb, s.Unit, cur)
 			return nil
 		}
-		return RunCmd(e.Out, "systemctl", verb, s.Unit)
+		return setUnit()
 	}
 	if !e.Yes {
-		fmt.Fprintf(e.Out, "would run: systemctl %s %s\n", verb, s.Unit)
+		fmt.Fprintf(e.Out, "would: %s unit %s\n", verb, s.Unit)
 		return nil
 	}
-	prior := unitState(s.Unit)
-	// disabling a unit the host never installed (e.g. nvidia-persistenced
-	// without xorg-x11-drv-nvidia-power) is a no-op, not a failure
+	prior := e.unitState(oc, s.Unit)
 	if !s.Enable && prior == "unknown" {
 		fmt.Fprintf(e.Out, "%s: unit not installed, nothing to disable\n", s.Unit)
 		return nil
 	}
-	if err := RunCmd(e.Out, "systemctl", verb, s.Unit); err != nil {
+	if err := setUnit(); err != nil {
 		return err
 	}
 	m.put(Record{ID: s.ID, Kind: KindEnableUnit, Data: s.Data, Reboot: s.Reboot, Unit: s.Unit, Enable: s.Enable, PriorState: prior})
 	return m.save(e.Root)
 }
 
-// RunCmd echoes argv to out and runs it, folding combined output into the
-// error — the one command-running idiom every package shares.
-func RunCmd(out io.Writer, argv ...string) error {
+// runCmd echoes argv to out and runs it.
+func runCmd(out io.Writer, argv ...string) error {
 	fmt.Fprintf(out, "run: %s\n", strings.Join(argv, " "))
 	b, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
 	if err != nil {
@@ -323,34 +380,32 @@ func RunCmd(out io.Writer, argv ...string) error {
 	return nil
 }
 
-// UnitEnabled is the read-only unit-enablement fact: wants-symlinks under
-// root, falling back to systemctl on the live host (vendor-preset symlinks
-// live under /usr/lib, not /etc). Distinct from unitState, which needs the
-// tri-state is-enabled answer at mutation time.
+// UnitEnabled reports whether unit is enabled under root.
 func UnitEnabled(root, unit string) bool {
 	wants, _ := filepath.Glob(filepath.Join(root, "/etc/systemd/system/*.wants/", unit))
 	if len(wants) > 0 {
 		return true
 	}
 	if root == "" {
-		return exec.Command("systemctl", "is-enabled", "--quiet", unit).Run() == nil
+		c := sysd.New()
+		defer func() { _ = c.Close() }()
+		return c.UnitFileState(unit) == "enabled"
 	}
 	return false
 }
 
-// unitState asks systemctl for the unit's enablement. The exit status is
-// ignored on purpose: is-enabled reports "disabled" with a nonzero exit.
-func unitState(unit string) string {
-	out, _ := exec.Command("systemctl", "is-enabled", unit).Output()
-	state, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if state == "" {
-		return "unknown"
+// unitState reports the unit's enablement tri-state.
+func (e *Engine) unitState(oc *OpClients, unit string) string {
+	if e.skipUnderRoot(oc) {
+		if UnitEnabled(e.Root, unit) {
+			return "enabled"
+		}
+		return "disabled"
 	}
-	return state
+	return oc.Sysd().UnitFileState(unit)
 }
 
-// missingDirs lists the not-yet-existing ancestors of dir, deepest first and
-// un-rooted, so undo can remove directories that apply created.
+// missingDirs lists the not-yet-existing ancestors of dir, deepest first.
 func missingDirs(root, dir string) []string {
 	var made []string
 	for d := dir; d != root && d != "/" && d != "."; d = filepath.Dir(d) {

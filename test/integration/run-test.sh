@@ -30,20 +30,26 @@ cp -a "$FIXTURE/." "$ROOT/"
 # base dirs every real host has (undo only removes dirs apply itself created)
 mkdir -p "$ROOT/etc" "$ROOT/var/lib" "$ROOT/usr/local/bin" "$ROOT/usr/share/applications"
 
+# BLS entries: apply edits these directly for the IOMMU kernel args (the
+# native replacement for grubby). Two entries prove the op touches all.
+mkdir -p "$ROOT/boot/loader/entries"
+for v in 6.15.0 6.14.0; do
+	printf 'title Fedora Linux (%s)\nlinux /vmlinuz-%s\noptions root=UUID=aaaa ro rhgb quiet\n' \
+		"$v" "$v" >"$ROOT/boot/loader/entries/fedora-$v.conf"
+done
+
 # --- fake system binaries (argv-logging stubs, like the Go test seam) -------
 
 FAKEBIN=$WORK/fakebin
 mkdir -p "$FAKEBIN"
-# rm is faked too: undo's paired commands (rm -f /usr/local/bin/...) target
-# real host paths by design — the PATH seam keeps them off this machine.
-for name in dnf grubby dracut semanage restorecon systemctl virsh bash \
-	qemu-img xorriso lsof nvidia-smi wiminfo usermod rm; do
+# libvirt/systemd are not faked: the binary speaks their APIs, and under
+# --root those steps journal and skip ("skipped under --root") — test-vm
+# covers them live. Only the exec'd vendor tools need stubs here.
+for name in dracut semanage restorecon bash \
+	nvidia-smi usermod; do
 	printf '#!/bin/sh\necho "$*" >> "%s/%s.log"\nexit 0\n' "$FAKEBIN" "$name" >"$FAKEBIN/$name"
 	chmod 0755 "$FAKEBIN/$name"
 done
-# is-enabled must answer, or the engine treats every unit as not installed
-printf '#!/bin/sh\necho "$*" >> "%s/systemctl.log"\nif [ "$1" = "is-enabled" ]; then echo enabled; fi\nexit 0\n' \
-	"$FAKEBIN" >"$FAKEBIN/systemctl"
 
 binlog() { cat "$FAKEBIN/$1.log" 2>/dev/null || true; }
 
@@ -82,7 +88,6 @@ tree_state "$ROOT" >"$WORK/pre.state"
 run 0 apply --root "$ROOT" --user testuser
 grep -q 'dry run' "$WORK/out" || fail "apply without --yes must announce the dry run"
 diff -r --no-dereference "$WORK/pre" "$ROOT" >/dev/null || fail "dry-run apply modified the tree"
-[ -z "$(binlog grubby)" ] || fail "dry-run apply executed grubby"
 pass "apply dry-run"
 
 # --- apply --yes -------------------------------------------------------------
@@ -94,14 +99,19 @@ for path in \
 	/etc/environment.d/50-orthogonals-igpu.conf \
 	/etc/tmpfiles.d/looking-glass.conf \
 	/etc/libvirt/hooks/qemu \
-	/etc/libvirt/hooks/orthogonals-gpu-detach.sh \
-	/etc/libvirt/hooks/orthogonals-gpu-reattach.sh \
 	/var/lib/orthogonals/manifest.json; do
 	[ -e "$ROOT$path" ] || fail "missing $path after apply --yes"
 done
 [ "$(stat -c '%a' "$ROOT/etc/libvirt/hooks/qemu")" = 755 ] || fail "qemu hook is not executable"
-binlog grubby | grep -q -- '--update-kernel=ALL --args=intel_iommu=on iommu=pt' ||
-	fail "grubby was not invoked with the vfio kernel args"
+# the hook is a shim that execs the binary; the GPU logic is Go now
+grep -q 'hook --user testuser qemu' "$ROOT/etc/libvirt/hooks/qemu" ||
+	fail "qemu hook is not the orthogonals shim"
+for gone in orthogonals-gpu-detach.sh orthogonals-gpu-reattach.sh; do
+	[ -e "$ROOT/etc/libvirt/hooks/$gone" ] && fail "apply still installs $gone"
+done
+for e in "$ROOT"/boot/loader/entries/*.conf; do
+	grep -q 'intel_iommu=on iommu=pt' "$e" || fail "BLS entry $e missing the vfio kernel args"
+done
 binlog dracut | grep -q -- '-f --regenerate-all' || fail "dracut regenerate was not invoked"
 grep -qi 'reboot required' "$WORK/out" || fail "apply --yes missing the reboot notice"
 
@@ -114,8 +124,17 @@ ids = [r["id"] for r in recs]
 assert len(ids) == len(set(ids)), "duplicate record ids in manifest"
 assert any(r.get("reboot") for r in recs), "no reboot-flagged (boot config) record"
 kinds = {r["kind"] for r in recs}
-assert {"write_file", "run_cmd"} <= kinds, f"missing step kinds, got {kinds}"
+assert {"write_file", "run_cmd", "op", "enable_unit"} <= kinds, f"missing step kinds, got {kinds}"
+ops = {r["op"] for r in recs if r["kind"] == "op"}
+assert "libvirt-socket-reload" in ops and "net-autostart" in ops, f"missing op records, got {ops}"
+ka = next(r for r in recs if r["id"] == "kernel-args")
+assert ka["kind"] == "op" and ka["op"] == "kernel-args-add" and ka.get("reboot"), f"kernel-args not an op: {ka}"
 EOF
+grep -q 'skipped under --root' "$WORK/out" ||
+	fail "daemon-touching steps must report the --root skip"
+# unmanaged-domain pass-through: the hook exits 0 and never dials a daemon
+# (kept after the $WORK/out asserts above — `run` overwrites that capture)
+run 0 hook --root "$ROOT" --user testuser qemu ghost prepare begin -
 RECORDS=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["records"]))' \
 	"$ROOT/var/lib/orthogonals/manifest.json")
 pass "apply --yes ($RECORDS manifest records)"
@@ -146,7 +165,7 @@ diff -r --no-dereference "$WORK/pre" "$ROOT" ||
 tree_state "$ROOT" >"$WORK/post.state"
 diff -u "$WORK/pre.state" "$WORK/post.state" ||
 	fail "file modes/types differ from pre-apply snapshot after undo"
-binlog grubby | grep -q -- '--remove-args' || fail "undo did not run the paired grubby --remove-args"
+grep -rq intel_iommu=on "$ROOT/boot/loader/entries" && fail "undo left IOMMU kargs in the BLS entries"
 pass "undo --yes (byte-identical restore)"
 
 echo "integration test: all checks passed"

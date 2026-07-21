@@ -19,8 +19,7 @@ func allTools(t *testing.T) string {
 	return hwtest.FakeTools(t, hw.RequiredTools...)
 }
 
-// The reference machine passes every gate but warns (39-bit address width,
-// Secure Boot, inactive default network) -> exit 2.
+// preflight warns on the reference machine (exit 2).
 func TestPreflightReferenceWarns(t *testing.T) {
 	t.Setenv("PATH", allTools(t))
 	code, stdout, stderr := run(t, "preflight", "--root", hwtest.ReferenceRoot(t))
@@ -37,8 +36,6 @@ func TestPreflightReferenceWarns(t *testing.T) {
 func TestPreflightFailJSON(t *testing.T) {
 	t.Setenv("PATH", allTools(t))
 	root := hwtest.ReferenceRoot(t)
-	// no active IOMMU AND no ACPI DMAR table = VT-d off in firmware, the
-	// hard-fail case (inactive-but-capable is only a Warn: apply fixes it)
 	if err := os.RemoveAll(filepath.Join(root, "sys/class/iommu")); err != nil {
 		t.Fatal(err)
 	}

@@ -4,23 +4,24 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// applyFakeBins are every binary the apply step list shells out to, plus all
-// hw.RequiredTools so preflight's LookPath gate never depends on the real host.
-// bash: the lg-client-build step runs the rendered lg-build.sh.
+// applyFakeBins lists every binary apply shells out to, plus hw.RequiredTools.
 var applyFakeBins = append([]string{
-	"dnf", "systemctl", "bash", "usermod",
+	"systemctl", "usermod",
 }, hw.RequiredTools...)
 
-// fakeBinDir installs argv-logging stubs for the named binaries and prepends
-// the dir to PATH. Returns the log dir (one <name>.log per binary).
+// fakeBinDir installs argv-logging stubs on PATH and returns the log dir.
 func fakeBinDir(t *testing.T, names []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -37,7 +38,6 @@ func fakeBinDir(t *testing.T, names []string) string {
 func fakeApplyPath(t *testing.T) string {
 	t.Helper()
 	dir := fakeBinDir(t, applyFakeBins)
-	// systemctl is-enabled must answer, or the engine treats units as absent
 	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "systemctl.log") +
 		"\"\nif [ \"$1\" = \"is-enabled\" ]; then echo enabled; fi\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
@@ -58,7 +58,7 @@ func binLog(t *testing.T, dir, name string) string {
 	return string(b)
 }
 
-func runApply(t *testing.T, root string, extra ...string) (int, string) {
+func runApplyCLI(t *testing.T, root string, extra ...string) (int, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	args := append([]string{"--root", root, "--user", "testuser"}, extra...)
@@ -67,14 +67,14 @@ func runApply(t *testing.T, root string, extra ...string) (int, string) {
 }
 
 func TestApplyDryRunTouchesNothing(t *testing.T) {
-	dir := fakeApplyPath(t)
+	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	code, out := runApply(t, root)
+	code, out := runApplyCLI(t, root)
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	for _, want := range []string{
-		"would run: grubby --update-kernel=ALL --args=intel_iommu=on iommu=pt",
+		"would: kernel-args-add args=intel_iommu=on iommu=pt",
 		"a reboot will be required",
 		"recovery: ",
 		"dry run — re-run with --yes to apply",
@@ -89,15 +89,21 @@ func TestApplyDryRunTouchesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("dry run wrote a manifest")
 	}
-	if got := binLog(t, dir, "grubby"); got != "" {
-		t.Errorf("dry run executed grubby: %s", got)
+	if toks, _ := bls.Tokens(root); slices.Contains(toks, "intel_iommu=on") {
+		t.Errorf("dry run edited the BLS entries: %v", toks)
 	}
 }
 
 func TestApplyYesWritesEverything(t *testing.T) {
 	dir := fakeApplyPath(t)
+	fv := fakeVirt(t, &virttest.Fake{})
+	fs := fakeSysd(t, &sysdtest.Fake{States: map[string]string{
+		"nvidia-persistenced.service": "enabled",
+		"libvirt-guests.service":      "disabled",
+		"switcheroo-control.service":  "disabled",
+	}})
 	root := hwtest.ReferenceRoot(t)
-	code, out := runApply(t, root, "--yes")
+	code, out := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
@@ -108,11 +114,8 @@ func TestApplyYesWritesEverything(t *testing.T) {
 		"/etc/environment.d/50-orthogonals-igpu.conf",
 		"/etc/tmpfiles.d/looking-glass.conf",
 		"/etc/sysconfig/libvirt-guests",
-		"/var/lib/orthogonals/lg-build.sh",
 		"/var/lib/orthogonals/manifest.json",
 		"/etc/libvirt/hooks/qemu",
-		"/etc/libvirt/hooks/orthogonals-gpu-detach.sh",
-		"/etc/libvirt/hooks/orthogonals-gpu-reattach.sh",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
 			t.Errorf("missing %s after apply --yes", path)
@@ -121,27 +124,17 @@ func TestApplyYesWritesEverything(t *testing.T) {
 	if st, err := os.Stat(filepath.Join(root, "/etc/libvirt/hooks/qemu")); err != nil || st.Mode().Perm() != 0o755 {
 		t.Errorf("qemu hook must be executable, mode = %v", st.Mode().Perm())
 	}
-	// per-VM launcher and desktop entry are owned by `vm define` now
-	if _, err := os.Stat(filepath.Join(root, "/usr/local/bin/_ort-run-win11-lg")); err == nil {
-		t.Error("apply must not write the per-VM launcher")
-	}
-	// the recovery escape hatch is `orthogonals recover`, not an installed script
-	if _, err := os.Stat(filepath.Join(root, "/usr/local/bin/gpu-recover.sh")); err == nil {
-		t.Error("apply must not install gpu-recover.sh")
-	}
-	if b, err := os.ReadFile(filepath.Join(root, "/etc/libvirt/hooks/qemu")); err != nil || !strings.Contains(string(b), `VMS_DIR="/etc/orthogonals/vms"`) {
-		t.Errorf("dispatcher must gate on the VM registry: %s", b)
+	if b, err := os.ReadFile(filepath.Join(root, "/etc/libvirt/hooks/qemu")); err != nil ||
+		!strings.Contains(string(b), "hook --user testuser qemu") {
+		t.Errorf("hook shim must exec the binary: %s", b)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "/etc/tmpfiles.d/looking-glass.conf"))
 	if err != nil || !strings.Contains(string(b), "0660 testuser qemu") {
 		t.Errorf("tmpfiles entry not rendered for --user: %s", b)
 	}
 
-	if got := binLog(t, dir, "grubby"); !strings.Contains(got, "--update-kernel=ALL --args=intel_iommu=on iommu=pt") {
-		t.Errorf("grubby invocation = %q", got)
-	}
-	if got := binLog(t, dir, "bash"); !strings.Contains(got, "/var/lib/orthogonals/lg-build.sh") {
-		t.Errorf("lg-build.sh not executed: bash log = %q", got)
+	if toks, _ := bls.Tokens(root); !slices.Contains(toks, "intel_iommu=on") || !slices.Contains(toks, "iommu=pt") {
+		t.Errorf("BLS entries missing IOMMU kargs after apply: %v", toks)
 	}
 	if got := binLog(t, dir, "dracut"); !strings.Contains(got, "-f --regenerate-all") {
 		t.Errorf("dracut invocation = %q", got)
@@ -149,14 +142,16 @@ func TestApplyYesWritesEverything(t *testing.T) {
 	if got := binLog(t, dir, "semanage"); !strings.Contains(got, "fcontext -a -t svirt_tmpfs_t /dev/shm/looking-glass") {
 		t.Errorf("semanage invocation = %q", got)
 	}
-	if got := binLog(t, dir, "virsh"); !strings.Contains(got, "net-autostart default") || !strings.Contains(got, "net-start default") {
-		t.Errorf("virsh invocations = %q", got)
+	if !fv.Logged("net-autostart default") || !fv.Logged("net-active default") {
+		t.Errorf("network ops never reached libvirt: %v", fv.Calls)
 	}
-	sysctl := binLog(t, dir, "systemctl")
 	for _, want := range []string{"disable nvidia-persistenced.service", "enable libvirt-guests.service", "enable switcheroo-control.service"} {
-		if !strings.Contains(sysctl, want) {
-			t.Errorf("systemctl log missing %q:\n%s", want, sysctl)
+		if !fs.Logged(want) {
+			t.Errorf("systemd calls missing %q: %v", want, fs.Calls)
 		}
+	}
+	if !fs.Logged("restart virtqemud.socket") || !fs.Logged("restart virtnetworkd.socket") {
+		t.Errorf("socket reload op incomplete: %v", fs.Calls)
 	}
 	if !strings.Contains(out, "REBOOT REQUIRED — kernel arguments and initramfs changed") {
 		t.Errorf("missing reboot banner:\n%s", out)
@@ -165,8 +160,7 @@ func TestApplyYesWritesEverything(t *testing.T) {
 		t.Errorf("missing escape hatch:\n%s", out)
 	}
 
-	// before the reboot lands, a re-apply must keep demanding it
-	code, outPending := runApply(t, root, "--yes")
+	code, outPending := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("pre-reboot re-apply exit %d\n%s", code, outPending)
 	}
@@ -174,7 +168,6 @@ func TestApplyYesWritesEverything(t *testing.T) {
 		t.Errorf("re-apply before the reboot must still demand it:\n%s", outPending)
 	}
 
-	// simulate the reboot: journaled args now live on the kernel cmdline
 	if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -183,12 +176,11 @@ func TestApplyYesWritesEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// re-apply is a no-op: no reboot banner, no duplicate records
 	m1, err := steps.Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, out2 := runApply(t, root, "--yes")
+	code, out2 := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("re-apply exit %d\n%s", code, out2)
 	}
@@ -205,35 +197,29 @@ func TestApplyYesWritesEverything(t *testing.T) {
 }
 
 func TestApplyStaticBinding(t *testing.T) {
-	dir := fakeApplyPath(t)
+	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	code, out := runApply(t, root, "--yes", "--binding", "static")
+	code, out := runApplyCLI(t, root, "--yes", "--binding", "static")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if got := binLog(t, dir, "grubby"); !strings.Contains(got, "vfio-pci.ids=10de:2206,10de:1aef") {
-		t.Errorf("static binding grubby invocation = %q", got)
+	if toks, _ := bls.Tokens(root); !slices.Contains(toks, "vfio-pci.ids=10de:2206,10de:1aef") {
+		t.Errorf("static binding must add vfio-pci.ids to BLS entries: %v", toks)
 	}
 	if !strings.Contains(out, "vfio-pci.ids=10de:2206,10de:1aef") {
 		t.Errorf("escape hatch must list the static kargs:\n%s", out)
 	}
-	// static binding leaves the GPU on vfio-pci permanently — a reattach hook
-	// would fight it, so no hooks are installed
 	if _, err := os.Stat(filepath.Join(root, "/etc/libvirt/hooks/qemu")); err == nil {
 		t.Error("static binding must not install libvirt hooks")
 	}
 }
 
 func TestApplyUndoKeepsPreexistingKargs(t *testing.T) {
-	dir := fakeApplyPath(t)
-	// grubby reports intel_iommu=on already configured before apply
-	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "grubby.log") + "\"\n" +
-		"if [ \"$1\" = \"--info=ALL\" ]; then echo 'args=\"ro rhgb quiet intel_iommu=on\"'; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "grubby"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	code, out := runApply(t, root, "--yes")
+	hwtest.WriteFile(t, root, "boot/loader/entries/fedora-6.15.0.conf",
+		"title Fedora Linux (6.15.0) 44\noptions root=UUID=aaaa ro rhgb quiet intel_iommu=on\n")
+	code, out := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
@@ -245,9 +231,8 @@ func TestApplyUndoKeepsPreexistingKargs(t *testing.T) {
 		if r.ID != "kernel-args" {
 			continue
 		}
-		want := "grubby --update-kernel=ALL --remove-args=iommu=pt"
-		if got := strings.Join(r.UndoCmd, " "); got != want {
-			t.Errorf("undo = %q, want %q — undo must not remove the user's own intel_iommu=on", got, want)
+		if r.UndoOp != steps.OpKernelArgsRem || r.UndoArgs["args"] != "iommu=pt" {
+			t.Errorf("undo = %s %v, want remove iommu=pt only — the user's intel_iommu=on must survive", r.UndoOp, r.UndoArgs)
 		}
 		return
 	}
@@ -257,7 +242,7 @@ func TestApplyUndoKeepsPreexistingKargs(t *testing.T) {
 func TestApplyBadFlags(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	if code, _ := runApply(t, root, "--binding", "sideways"); code != 1 {
+	if code, _ := runApplyCLI(t, root, "--binding", "sideways"); code != 1 {
 		t.Errorf("bad binding: exit %d, want 1", code)
 	}
 	var out, errOut bytes.Buffer
@@ -266,14 +251,12 @@ func TestApplyBadFlags(t *testing.T) {
 	}
 }
 
-// apply must refuse a host preflight fails — the Overview contract is that
-// unsupported hardware is never mutated.
+// apply refuses a host that fails preflight.
 func TestApplyRefusesPreflightFail(t *testing.T) {
-	dir := fakeApplyPath(t)
+	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
-	// laptop chassis is a hard preflight refusal
 	hwtest.WriteFile(t, root, "sys/class/dmi/id/chassis_type", "10\n")
-	code, out := runApply(t, root, "--yes")
+	code, out := runApplyCLI(t, root, "--yes")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1\n%s", code, out)
 	}
@@ -282,17 +265,15 @@ func TestApplyRefusesPreflightFail(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
-	if got := binLog(t, dir, "grubby"); got != "" {
-		t.Errorf("refused apply still executed grubby: %s", got)
+	if toks, _ := bls.Tokens(root); slices.Contains(toks, "intel_iommu=on") {
+		t.Errorf("refused apply still edited the BLS entries: %v", toks)
 	}
 	if _, err := os.Stat(filepath.Join(root, "var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("refused apply journaled steps")
 	}
 }
 
-// hosts applied before the `recover` subcommand carry an installed
-// /usr/local/bin/gpu-recover.sh and its journal record; re-apply must remove
-// both.
+// re-apply removes a stale gpu-recover.sh and its journal record.
 func TestApplyRemovesStaleRecoverScript(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -305,7 +286,7 @@ func TestApplyRemovesStaleRecoverScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runApply(t, root, "--yes")
+	code, out := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}

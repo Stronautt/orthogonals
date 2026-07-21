@@ -1,40 +1,47 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/preflight"
 )
 
-func cmdPreflight(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	if _, ok := parseFlags(cfg, args, stderr); !ok {
-		return 2
+func newPreflightCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "preflight",
+		Short: "check whether the host meets the requirements",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return runPreflight(cfg, stdout, stderr)
+		},
 	}
+}
+
+func runPreflight(cfg *Config, stdout, stderr io.Writer) error {
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
 		fmt.Fprintf(stderr, "orthogonals preflight: %v\n", err)
-		return 1
+		return exitCode(1)
 	}
 	checks := preflight.Analyze(res, preflight.GatherFacts(cfg.Root))
 	overall := preflight.Overall(checks)
 
 	if cfg.JSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
 		report := struct {
 			Status preflight.Status  `json:"status"`
 			Checks []preflight.Check `json:"checks"`
 		}{overall, checks}
-		if err := enc.Encode(report); err != nil {
+		if err := writeJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "orthogonals preflight: encode: %v\n", err)
-			return 1
+			return exitCode(1)
 		}
-		return overall.ExitCode()
+		return codeErr(overall.ExitCode())
 	}
 
 	for _, c := range checks {
@@ -44,39 +51,42 @@ func cmdPreflight(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stdout, "\npreflight: %s\n", strings.ToUpper(string(overall)))
-	return overall.ExitCode()
+	return codeErr(overall.ExitCode())
 }
 
-func cmdBundle(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	rest, ok := parseFlags(cfg, args, stderr)
-	if !ok {
-		return 2
+func newBundleCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "bundle [output.tar.gz]",
+		Short: "write a redacted diagnostics bundle",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			out := "orthogonals-bundle.tar.gz"
+			if len(args) > 0 {
+				out = args[0]
+			}
+			return finish(stderr, "bundle", runBundle(cfg, out, stdout))
+		},
 	}
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "orthogonals bundle: %v\n", err)
-		return 1
-	}
-	out := "orthogonals-bundle.tar.gz"
-	if len(rest) > 0 {
-		out = rest[0]
-	}
+}
+
+func runBundle(cfg *Config, out string, stdout io.Writer) error {
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	f, err := os.Create(out)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	if err := preflight.WriteBundle(f, cfg.Root, res); err != nil {
 		_ = f.Close()
-		_ = os.Remove(out) // no truncated bundle left behind to be attached to a bug report
-		return fail(err)
+		_ = os.Remove(out)
+		return err
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(out)
-		return fail(err)
+		return err
 	}
 	fmt.Fprintf(stdout, "wrote %s (hostname, serials, MACs, UUIDs, and guest credentials redacted)\n", out)
-	return 0
+	return nil
 }

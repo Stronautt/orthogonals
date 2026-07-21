@@ -1,6 +1,4 @@
-// Package preflight analyzes detect results and gates apply: hard fails for
-// hosts orthogonals cannot support in v1, warns for issues apply fixes
-// automatically or the user must be aware of.
+// Package preflight analyzes detect results and gates apply.
 package preflight
 
 import (
@@ -11,7 +9,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
-// Status is a check outcome; Overall reduces a check list to the worst one.
+// Status is a check outcome.
 type Status string
 
 const (
@@ -40,17 +38,15 @@ type Check struct {
 	Remedy  string `json:"remedy,omitempty"`
 }
 
-// cacheBytes is the ISO cache + provision payloads headroom on top of the
-// default disk image; the sizing gates themselves live in internal/domain.
+// cacheBytes is the ISO cache and provision headroom above the default disk image.
 const cacheBytes = 15 << 30
 
 // hardTools missing => fail (apply cannot run); other RequiredTools warn.
 var hardTools = map[string]bool{
-	"dracut": true, "grubby": true, "virsh": true, "qemu-img": true, "xorriso": true,
+	"dracut": true,
 }
 
-// laptopChassis are SMBIOS chassis types refused in v1 (MUX/power handling
-// differs per model).
+// laptopChassis are SMBIOS chassis types refused in v1.
 var laptopChassis = map[int]bool{
 	8: true, 9: true, 10: true, 11: true, 14: true, 30: true, 31: true, 32: true,
 }
@@ -74,9 +70,32 @@ func Analyze(r *hw.Result, f Facts) []Check {
 		checkSecureBoot(r),
 		checkPersistenced(f),
 		checkSwitcheroo(f),
+		checkLibvirt(f),
 		checkDefaultNet(f),
 		checkDiskSpace(f),
+		checkBLS(f),
 	}
+}
+
+// checkBLS gates on readable Boot Loader Spec entries.
+func checkBLS(f Facts) Check {
+	const name = "boot entries"
+	if f.BLSError != "" {
+		return Check{name, Fail, f.BLSError,
+			"convert to Boot Loader Spec (grub2-switch-to-blscfg) so kernel args can be managed per entry"}
+	}
+	return Check{name, Pass, "boot loader entries are readable", ""}
+}
+
+// checkLibvirt gates on a reachable local libvirt daemon.
+func checkLibvirt(f Facts) Check {
+	const name = "libvirt"
+	if !f.LibvirtReachable {
+		return Check{name, Warn,
+			"libvirt is not reachable on its local socket — the domain and network steps will fail",
+			"systemctl start virtqemud.socket (or reboot after installing the orthogonals RPM)"}
+	}
+	return Check{name, Pass, "libvirt answers on its local socket", ""}
 }
 
 // Overall reduces checks to the worst status.
@@ -98,9 +117,6 @@ func checkIOMMU(r *hw.Result) Check {
 	case r.Platform.IOMMUAddressWidth > 0:
 		return Check{"iommu", Pass, fmt.Sprintf("IOMMU active, host address width %d bits", r.Platform.IOMMUAddressWidth), ""}
 	case r.Platform.DMARTable:
-		// virgin host: VT-d exposed by the firmware, kernel args not yet
-		// installed. Must not FAIL — apply's kernel-args step is the fix,
-		// and a FAIL here would block apply from ever running.
 		return Check{"iommu", Warn, "IOMMU is not active, but the firmware exposes VT-d (ACPI DMAR table present)",
 			"no action needed — apply adds intel_iommu=on iommu=pt (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group"}
 	default:
@@ -150,12 +166,7 @@ func vendorName(vendor string) string {
 	return vendor
 }
 
-// checkDisplayTopology verifies the one physical requirement software cannot
-// remove: every monitor must be cabled to the iGPU, because a vfio-bound
-// dGPU cannot scan out the host desktop. A GPU without a DRM card reports
-// nothing about its connectors (vfio-bound or driverless), so absence of
-// evidence never Fails — only a display positively seen on a dGPU while the
-// iGPU has none does.
+// checkDisplayTopology verifies every monitor is cabled to the iGPU.
 func checkDisplayTopology(r *hw.Result) Check {
 	const name = "display-topology"
 	if r.GPUs.IGPU == nil {
@@ -189,11 +200,7 @@ func checkDisplayTopology(r *hw.Result) Check {
 	}
 }
 
-// checkBootVGA reports which GPU the firmware lit as primary. A dGPU that is
-// boot_vga still works — the udev mutter-ignore rule keeps the session on
-// the iGPU — but GRUB and early boot render on the dGPU's outputs, which is
-// invisible once the monitors are on the motherboard. That matters for the
-// GRUB escape-hatch recovery flow, so it warns instead of passing silently.
+// checkBootVGA reports which GPU the firmware lit as primary.
 func checkBootVGA(r *hw.Result) Check {
 	const name = "boot-vga"
 	if r.GPUs.IGPU != nil && r.GPUs.IGPU.BootVGA {
@@ -208,9 +215,7 @@ func checkBootVGA(r *hw.Result) Check {
 	return Check{name, Pass, "skipped (no boot_vga marker in sysfs)", ""}
 }
 
-// checkIOMMUGroup enforces the whole-group rule: everything in the dGPU's
-// IOMMU group must go to the guest, so only the GPU, its audio function, and
-// PCIe bridges/root ports (class 0x0604, never bound to vfio) may share it.
+// checkIOMMUGroup enforces the whole-group rule for the dGPU's IOMMU group.
 func checkIOMMUGroup(r *hw.Result) Check {
 	const name = "iommu-group"
 	nvidia := r.GPUs.NVIDIA()
@@ -241,9 +246,7 @@ func checkIOMMUGroup(r *hw.Result) Check {
 			"Instead: move the GPU to a CPU-attached PCIe slot, look for a BIOS update, or try a newer kernel with better ACS support"}
 }
 
-// checkDuplicateGPUIDs refuses identical NVIDIA GPUs: static binding matches
-// by vendor:device (`vfio-pci.ids=`), so twins cannot be told apart and both
-// would be grabbed (research §D5; address-based binding is post-v1).
+// checkDuplicateGPUIDs refuses identical NVIDIA GPUs.
 func checkDuplicateGPUIDs(r *hw.Result) Check {
 	const name = "duplicate-gpu-ids"
 	byID := map[string][]string{}
@@ -264,10 +267,7 @@ func checkDuplicateGPUIDs(r *hw.Result) Check {
 	return Check{name, Pass, "no duplicate NVIDIA vendor:device IDs", ""}
 }
 
-// checkForeignVFIO refuses vfio configuration orthogonals did not write —
-// mixing foreign modprobe/dracut/karg binding with orthogonals' own leads to
-// unpredictable driver binding. A present manifest means orthogonals owns
-// (has adopted) the config, so re-runs over an applied host stay clean.
+// checkForeignVFIO refuses vfio configuration orthogonals did not write.
 func checkForeignVFIO(f Facts) Check {
 	const name = "foreign-vfio"
 	switch {
@@ -324,7 +324,7 @@ func checkTools(r *hw.Result) Check {
 	switch {
 	case len(missingHard) > 0:
 		return Check{name, Fail, "required binaries missing: " + strings.Join(append(missingHard, missingSoft...), ", "),
-			"install them (dnf install libvirt qemu-kvm xorriso grubby dracut) and re-run preflight"}
+			"install the orthogonals RPM (its dependencies pull them in) and re-run preflight"}
 	case len(missingSoft) > 0:
 		return Check{name, Warn, "binaries missing (needed by later stages): " + strings.Join(missingSoft, ", "),
 			"install them before running apply/up"}
@@ -333,8 +333,7 @@ func checkTools(r *hw.Result) Check {
 	}
 }
 
-// checkCPU gates on the vCPU count domain's pinning will actually assign, so
-// a host that passes here can never hard-fail later at `vm define`.
+// checkCPU gates on the vCPU count domain's pinning will assign.
 func checkCPU(r *hw.Result) Check {
 	const name = "cpu"
 	assignable := domain.AssignableVCPUs(r.CPU)
@@ -393,16 +392,14 @@ func checkPersistenced(f Facts) Check {
 	return Check{name, Pass, "nvidia-persistenced not enabled", ""}
 }
 
-// checkSwitcheroo guards the primary dGPU-launch UX (research §A): GNOME's
-// "Launch using Discrete Graphics Card" menu needs switcheroo-control running
-// and listing the NVIDIA GPU with its offload environment.
+// checkSwitcheroo guards the discrete-graphics launch UX.
 func checkSwitcheroo(f Facts) Check {
 	const name = "switcheroo"
 	switch {
 	case !f.SwitcherooEnabled:
 		return Check{name, Warn,
 			"switcheroo-control.service is not enabled — GNOME's \"Launch using Discrete Graphics Card\" menu needs it",
-			"dnf install switcheroo-control && systemctl enable --now switcheroo-control (apply does this too)"}
+			"systemctl enable --now switcheroo-control (apply does this too)"}
 	case !f.SwitcherooNVIDIA:
 		return Check{name, Warn,
 			"switcherooctl does not list the NVIDIA GPU with an offload environment — the daemon enumerates GPUs only at startup",
@@ -425,7 +422,6 @@ func checkDiskSpace(f Facts) Check {
 	const name = "disk-space"
 	const need = uint64(domain.DefaultDiskSizeGiB<<30 + cacheBytes)
 	if f.FreeDiskBytes == 0 {
-		// freeDisk returns 0 only when every statfs probe failed
 		return Check{name, Warn, "could not determine free disk space where the guest disk lives",
 			fmt.Sprintf("ensure ~%.0f GiB is free for the disk image and ISO cache", gib(need))}
 	}

@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// fakeMachine wires a Machine whose stages record their call order; failAt
-// makes the named stage fail.
+// fakeMachine wires a Machine whose stages record their call order.
 func fakeMachine(t *testing.T, root string, failAt string) (*Machine, *[]string, *bytes.Buffer) {
 	t.Helper()
 	var calls []string
@@ -106,8 +105,7 @@ func TestRunResumeFailedBootVerificationIsAnError(t *testing.T) {
 	}
 }
 
-// Every stage failure names the stage and points at the diagnostics bundle,
-// and the persisted state resumes at the failed stage.
+// Every stage failure names the stage and points at the diagnostics bundle.
 func TestRunStageFailuresAreActionable(t *testing.T) {
 	cases := []struct {
 		failAt, wantStage string
@@ -135,7 +133,6 @@ func TestRunStageFailuresAreActionable(t *testing.T) {
 			if st, _ := LoadState(root); st != tc.wantState {
 				t.Errorf("state = %s, want %s", st, tc.wantState)
 			}
-			// resume retries the failed stage, not the whole pipeline
 			m2, calls, _ := fakeMachine(t, root, "")
 			if err := m2.Run(); err != nil {
 				t.Fatal(err)
@@ -182,15 +179,12 @@ func TestLoadStateUnknown(t *testing.T) {
 	}
 }
 
-// TestSavedVMNameSurvivesStateWrites is the reboot-resume guarantee: the name
-// up records at first run must survive the SaveState calls the machine makes
-// as it advances, so a resume that omits --vm-name recovers it.
+// TestSavedVMNameSurvivesStateWrites is the reboot-resume guarantee.
 func TestSavedVMNameSurvivesStateWrites(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveVMName(root, "myvm"); err != nil {
 		t.Fatal(err)
 	}
-	// a name-only record (written before the first stage) reads as fresh
 	if st, _ := LoadState(root); st != StateFresh {
 		t.Errorf("state = %q, want fresh before any stage", st)
 	}

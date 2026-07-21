@@ -1,31 +1,36 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/spf13/cobra"
 
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
-func cmdDetect(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	if _, ok := parseFlags(cfg, args, stderr); !ok {
-		return 2
+func newDetectCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "detect",
+		Short: "detect the host GPUs and platform",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return finish(stderr, "detect", runDetect(cfg, stdout))
+		},
 	}
+}
+
+func runDetect(cfg *Config, stdout io.Writer) error {
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
-		fmt.Fprintf(stderr, "orthogonals detect: %v\n", err)
-		return 1
+		return err
 	}
 	if cfg.JSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
-			fmt.Fprintf(stderr, "orthogonals detect: encode: %v\n", err)
-			return 1
+		if err := writeJSON(stdout, res); err != nil {
+			return fmt.Errorf("encode: %w", err)
 		}
-		return 0
+		return nil
 	}
 	fmt.Fprint(stdout, res.Summary())
-	return 0
+	return nil
 }

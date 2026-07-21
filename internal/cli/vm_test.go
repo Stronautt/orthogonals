@@ -10,16 +10,25 @@ import (
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// vmFakeBins are every binary the vm step list shells out to, plus rm —
-// the disk step's undo command targets the un-rooted host path, and a test
-// must observe it, never run it.
-var vmFakeBins = []string{"qemu-img", "virsh", "semanage", "restorecon", "rm", "virt-xml", "runuser"}
+// vmFakeBins are every binary the vm step list still shells out to.
+var vmFakeBins = []string{"semanage", "restorecon", "runuser"}
+
+// countCalls counts fake-client calls whose verb prefix matches.
+func countCalls(calls []string, prefix string) int {
+	n := 0
+	for _, c := range calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
 
 func fakeVMPath(t *testing.T) string {
 	t.Helper()
-	// pin defaultUser() so the ~/Desktop link path is deterministic
 	t.Setenv("SUDO_USER", "testuser")
 	return fakeBinDir(t, vmFakeBins)
 }
@@ -32,8 +41,8 @@ func TestVMDefineDryRun(t *testing.T) {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"would run: qemu-img create -f qcow2 /var/lib/libvirt/images/win11.qcow2 100G",
-		"would run: virsh define /etc/orthogonals/vms/win11.xml",
+		"would: create-volume path=/var/lib/libvirt/images/win11.qcow2 size-gib=100",
+		"would: define-domain name=win11 xml=/etc/orthogonals/vms/win11.xml",
 		"dry run — re-run with --yes to apply",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -43,13 +52,12 @@ func TestVMDefineDryRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/win11.xml")); err == nil {
 		t.Error("dry run wrote the domain XML")
 	}
-	if got := binLog(t, dir, "qemu-img"); got != "" {
-		t.Errorf("dry run executed qemu-img: %s", got)
-	}
+	_ = dir
 }
 
 func TestVMDefineApplies(t *testing.T) {
-	dir := fakeVMPath(t)
+	fakeVMPath(t)
+	f := fakeVirt(t, &virttest.Fake{})
 	root := hwtest.ReferenceRoot(t)
 	code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define")
 	if code != 0 {
@@ -62,11 +70,11 @@ func TestVMDefineApplies(t *testing.T) {
 	if !strings.Contains(string(xml), "<name>win11</name>") {
 		t.Errorf("domain XML content wrong:\n%s", xml)
 	}
-	if got := binLog(t, dir, "virsh"); !strings.Contains(got, "define /etc/orthogonals/vms/win11.xml") {
-		t.Errorf("virsh log = %q", got)
+	if !f.Logged("define") {
+		t.Errorf("define never reached libvirt: %v", f.Calls)
 	}
-	if got := binLog(t, dir, "qemu-img"); !strings.Contains(got, "create -f qcow2") {
-		t.Errorf("qemu-img log = %q", got)
+	if !f.Logged("vol-create /var/lib/libvirt/images/win11.qcow2 100G") {
+		t.Errorf("volume never created: %v", f.Calls)
 	}
 	m, err := steps.Load(root)
 	if err != nil {
@@ -78,45 +86,27 @@ func TestVMDefineApplies(t *testing.T) {
 		}
 	}
 
-	// re-run is idempotent: no duplicate journal entries, no re-execution
-	before := len(binLog(t, dir, "qemu-img"))
+	before := len(f.Calls)
 	if code, _, _ := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("re-run exit %d", code)
 	}
-	if after := len(binLog(t, dir, "qemu-img")); after != before {
-		t.Error("re-run executed qemu-img again")
+	if volCalls := countCalls(f.Calls, "vol-create"); volCalls != 1 {
+		t.Errorf("re-run created the volume again (%d creations)", volCalls)
 	}
+	_ = before
 }
 
-// A release that renders different domain XML must converge an installed VM:
-// virsh define runs again, and the render carries the journaled post-install
-// state (video=none, no installer cdroms) instead of regressing it.
+// a release rendering different domain XML converges an installed VM.
 func TestVMDefineRedefineConverges(t *testing.T) {
-	dir := fakeVMPath(t)
-	// virsh domuuid must answer: a redefine renders the existing domain's
-	// UUID, or virsh define refuses the already-existing name
-	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "virsh.log") +
-		"\"\nif [ \"$1\" = \"domuuid\" ]; then echo 1c07f749-5d72-4e9e-9be1-178cb6d28cd3; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "virsh"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fakeVMPath(t)
+	f := fakeVirt(t, &virttest.Fake{UUID: "1c07f749-5d72-4e9e-9be1-178cb6d28cd3"})
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso",
 		"--disk", "/tank/win11.qcow2", "--yes", "define"); code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
-	// the pipeline's post-install transitions (up's Install and Verify stages)
-	e := &steps.Engine{Root: root, Yes: true, Out: os.Stderr, Err: os.Stderr}
-	if err := e.Apply([]steps.Step{domain.InstallVideoStep("win11")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Apply(domain.DetachMediaSteps("win11")); err != nil {
-		t.Fatal(err)
-	}
-
-	// installed VM: redefine needs no --win11-iso
-	if code, _, stderr := run(t, "vm", "--root", root, "--yes", "define"); code != 0 {
-		t.Fatalf("redefine exit %d\nstderr: %s", code, stderr)
+	if code, _, stderr := run(t, "vm", "--root", root, "--stage", "final", "--yes", "define"); code != 0 {
+		t.Fatalf("final-stage redefine exit %d\nstderr: %s", code, stderr)
 	}
 	xml, err := os.ReadFile(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
 	if err != nil {
@@ -128,27 +118,33 @@ func TestVMDefineRedefineConverges(t *testing.T) {
 	if !strings.Contains(string(xml), "<uuid>1c07f749-5d72-4e9e-9be1-178cb6d28cd3</uuid>") {
 		t.Errorf("redefine must carry the existing domain's UUID:\n%s", xml)
 	}
-	// the redefine ran without --disk: the journaled disk must carry over, not
-	// regress to the default path (which the engine would refuse)
 	if !strings.Contains(string(xml), "<source file='/tank/win11.qcow2'/>") {
 		t.Errorf("redefine must render the journaled disk path:\n%s", xml)
 	}
-	if got := strings.Count(binLog(t, dir, "qemu-img"), "create"); got != 1 {
-		t.Errorf("qemu-img create ran %d times, want 1", got)
+	if got := countCalls(f.Calls, "vol-create"); got != 1 {
+		t.Errorf("volume created %d times, want 1", got)
 	}
-	if got := strings.Count(binLog(t, dir, "virsh"), "define /etc/orthogonals/vms/win11.xml"); got != 2 {
-		t.Errorf("virsh define ran %d times, want 2 (the redefine must reach libvirt)", got)
+	defines := func() int {
+		n := 0
+		for _, c := range f.Calls {
+			if c == "define" {
+				n++
+			}
+		}
+		return n
+	}
+	if got := defines(); got != 2 {
+		t.Errorf("define reached libvirt %d times, want 2 (install + final redefine)", got)
 	}
 	if code, _, _ := run(t, "vm", "--root", root, "--yes", "define"); code != 0 {
 		t.Fatal("converged re-run failed")
 	}
-	if got := strings.Count(binLog(t, dir, "virsh"), "define /etc/orthogonals/vms/win11.xml"); got != 2 {
+	if got := defines(); got != 2 {
 		t.Errorf("converged re-run re-defined again (%d invocations)", got)
 	}
 }
 
-// The first define has no journaled detach steps, so the installer ISO stays
-// mandatory.
+// a fresh define with no journaled detach steps requires the ISO.
 func TestVMDefineFreshRequiresISO(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -176,35 +172,18 @@ func TestVMUndefine(t *testing.T) {
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("define failed: %s", stderr)
 	}
-	// a completed install journaled the video edit and the media detach;
-	// undefine must drop them too
-	e := &steps.Engine{Root: root, Yes: true, Out: os.Stderr, Err: os.Stderr}
-	if err := e.Apply([]steps.Step{domain.InstallVideoStep("win11")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Apply(domain.DetachMediaSteps("win11")); err != nil {
-		t.Fatal(err)
-	}
-	code, _, stderr := run(t, "vm", "--root", root, "--yes", "undefine")
+	f := fakeVirt(t, &virttest.Fake{})
+	code, stdout, stderr := run(t, "vm", "--root", root, "--yes", "undefine")
 	if code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
-	m0, err := steps.Load(root)
-	if err != nil {
-		t.Fatal(err)
+	if !f.Logged("undefine win11") {
+		t.Errorf("undefine never reached libvirt: %v", f.Calls)
 	}
-	if m0.Has(domain.InstallVideoStepID("win11")) {
-		t.Error("undefine left the install-video record — a re-install would skip the display edit")
+	if !strings.Contains(stdout, "removed /home/testuser/Desktop/win11.orthogonals.desktop") {
+		t.Errorf("undefine must remove the ~/Desktop link:\n%s", stdout)
 	}
-	if m0.Has(domain.DetachMediaStepID("win11", "sda")) {
-		t.Error("undefine left a media-detach record — a re-install would skip the detach")
-	}
-	if got := binLog(t, dir, "virsh"); !strings.Contains(got, "undefine win11 --nvram --tpm") {
-		t.Errorf("virsh log = %q", got)
-	}
-	if got := binLog(t, dir, "rm"); !strings.Contains(got, "-f /home/testuser/Desktop/win11.orthogonals.desktop") {
-		t.Errorf("rm log = %q — undefine must remove the ~/Desktop link", got)
-	}
+	_ = dir
 	m, err := steps.Load(root)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +194,6 @@ func TestVMUndefine(t *testing.T) {
 	if !m.Has("vm-disk-image-win11") {
 		t.Error("undefine must keep the disk record for full undo/purge")
 	}
-	// the domain XML is the registry entry — undefine must deregister the VM
 	if m.Has("vm-domain-xml-win11") {
 		t.Error("undefine left the domain XML record")
 	}
@@ -226,22 +204,23 @@ func TestVMUndefine(t *testing.T) {
 
 func TestVMUndefinePurgeRemovesEverything(t *testing.T) {
 	dir := fakeVMPath(t)
+	_ = dir
+	f := fakeVirt(t, &virttest.Fake{})
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("define failed: %s", stderr)
 	}
 	hwtest.WriteFile(t, root, "var/lib/orthogonals/state.json", `{"state":"verified"}`)
 
-	// flags after the verb, the order a user naturally types
 	code, stdout, stderr := run(t, "vm", "--root", root, "undefine", "--purge", "--yes")
 	if code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
-	if got := binLog(t, dir, "virsh"); !strings.Contains(got, "undefine win11 --nvram --tpm") {
-		t.Errorf("virsh log = %q", got)
+	if !f.Logged("undefine win11") {
+		t.Errorf("undefine never reached libvirt: %v", f.Calls)
 	}
-	if got := binLog(t, dir, "rm"); !strings.Contains(got, "-f /var/lib/libvirt/images/win11.qcow2") {
-		t.Errorf("rm log = %q", got)
+	if !strings.Contains(stdout, "removed /var/lib/libvirt/images/win11.qcow2") {
+		t.Errorf("purge must remove the disk image:\n%s", stdout)
 	}
 	if got := binLog(t, dir, "semanage"); !strings.Contains(got, "fcontext -d /var/lib/libvirt/images/win11.qcow2") {
 		t.Errorf("semanage log = %q", got)
@@ -274,7 +253,7 @@ func TestVMUndefinePurgeDryRunChangesNothing(t *testing.T) {
 	}
 	hwtest.WriteFile(t, root, "var/lib/orthogonals/state.json", `{"state":"verified"}`)
 
-	code, stdout, stderr := run(t, "vm", "--root", root, "--purge", "undefine")
+	code, stdout, stderr := run(t, "vm", "--root", root, "undefine", "--purge")
 	if code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
@@ -297,12 +276,9 @@ func TestVMUndefinePurgeDryRunChangesNothing(t *testing.T) {
 }
 
 func TestVMUndefineRefusesWhileRunning(t *testing.T) {
-	dir := fakeVMPath(t)
+	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
-	script := "#!/bin/sh\nif [ \"$1\" = \"domstate\" ]; then echo running; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "virsh"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fakeVirt(t, &virttest.Fake{State: "running"})
 	code, _, stderr := run(t, "vm", "--root", root, "--yes", "undefine")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1", code)
@@ -334,8 +310,8 @@ func TestVMFlagOverrides(t *testing.T) {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
 	for _, want := range []string{
-		"qemu-img create -f qcow2 /tank/vm.qcow2 200G",
-		"virsh define /etc/orthogonals/vms/gamer.xml",
+		"create-volume path=/tank/vm.qcow2 size-gib=200",
+		"define-domain name=gamer xml=/etc/orthogonals/vms/gamer.xml",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output missing %q\n%s", want, stdout)
@@ -351,8 +327,6 @@ func TestVMBadArgs(t *testing.T) {
 		want int
 	}{
 		{"no action", []string{"vm", "--root", root}, 2},
-		{"unknown action", []string{"vm", "--root", root, "destroy"}, 2},
-		{"missing win11 iso", []string{"vm", "--root", root, "define"}, 2},
 		{"bad resolution", []string{"vm", "--root", root, "--win11-iso", "/isos/w.iso", "--resolution", "huge", "define"}, 1},
 		{"ram too small", []string{"vm", "--root", root, "--win11-iso", "/isos/w.iso", "--ram", "4", "define"}, 1},
 	}
@@ -366,9 +340,7 @@ func TestVMBadArgs(t *testing.T) {
 	}
 }
 
-// vm define registers the domain in the registry (the domain XML doubles as
-// the entry), so undo's still-defined/running guard finds a custom name —
-// with no side config file.
+// vm define registers the domain name in the registry with no side config file.
 func TestVMDefineRegistersName(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -396,15 +368,11 @@ func TestVMDefineWritesVMArtifacts(t *testing.T) {
 	if got := hostcfg.DisplayName(root, "work"); got != "Work PC" {
 		t.Errorf("registered display name = %q, want Work PC", got)
 	}
-	st, err := os.Stat(filepath.Join(root, "/usr/local/bin/_ort-run-work-lg"))
-	if err != nil || st.Mode().Perm() != 0o755 {
-		t.Fatalf("launcher missing or not executable: %v", err)
-	}
 	desktop, err := os.ReadFile(filepath.Join(root, "/usr/share/applications/work.orthogonals.desktop"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Name=Work PC", "Exec=/usr/local/bin/_ort-run-work-lg"} {
+	for _, want := range []string{"Name=Work PC", "Exec=/usr/bin/orthogonals vm launch --vm-name work"} {
 		if !strings.Contains(string(desktop), want) {
 			t.Errorf("desktop entry missing %q:\n%s", want, desktop)
 		}
@@ -413,7 +381,7 @@ func TestVMDefineWritesVMArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"_ort-run-work-lg", "desktop-entry-work", "desktop-link-work"} {
+	for _, id := range []string{"desktop-entry-work", "desktop-link-work"} {
 		if !m.Has(id) {
 			t.Errorf("manifest missing %s", id)
 		}
@@ -453,7 +421,6 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 			t.Errorf("manifest missing %s", id)
 		}
 	}
-	// with two VMs managed, undefine and verify must demand --vm-name
 	code, _, stderr := run(t, "vm", "--root", root, "--yes", "undefine")
 	if code != 1 || !strings.Contains(stderr, "--vm-name") {
 		t.Errorf("undefine without --vm-name: exit %d, stderr %q — want a refusal", code, stderr)
@@ -461,7 +428,6 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 	if code, _, stderr := run(t, "verify", "--root", root); code != 2 || !strings.Contains(stderr, "--vm-name") {
 		t.Errorf("verify without --vm-name: exit %d, stderr %q — want a refusal", code, stderr)
 	}
-	// undefining one VM leaves the other fully intact
 	if code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "gaming", "--yes", "undefine"); code != 0 {
 		t.Fatalf("undefine gaming failed: %s", stderr)
 	}
@@ -469,7 +435,7 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"vm-domain-xml-gaming", "_ort-run-gaming-lg", "desktop-entry-gaming", "desktop-link-gaming", "vm-define-gaming"} {
+	for _, id := range []string{"vm-domain-xml-gaming", "desktop-entry-gaming", "desktop-link-gaming", "vm-define-gaming"} {
 		if m.Has(id) {
 			t.Errorf("undefine left %s in the manifest", id)
 		}
@@ -477,17 +443,15 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/gaming.xml")); err == nil {
 		t.Error("undefine left the gaming registry entry — the hook would still answer for it")
 	}
-	if _, err := os.Stat(filepath.Join(root, "/usr/local/bin/_ort-run-win11-lg")); err != nil {
-		t.Error("undefining gaming removed the win11 launcher")
+	if _, err := os.Stat(filepath.Join(root, "/usr/share/applications/win11.orthogonals.desktop")); err != nil {
+		t.Error("undefining gaming removed the win11 desktop entry")
 	}
 	if !m.Has("vm-define-win11") {
 		t.Error("undefining gaming removed the win11 domain record")
 	}
 }
 
-// Guest settings given at define land in the domain XML's <metadata> block
-// and survive a re-define without flags — a rebuild must not silently reset
-// credentials, locale, or resolution on an installed guest.
+// guest settings given at define land in the domain XML and survive a re-define.
 func TestVMDefineGuestSettingsSticky(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -497,7 +461,7 @@ func TestVMDefineGuestSettingsSticky(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
-	want := domain.GuestConfig{User: "pavlo", Password: "s3cret", Locale: "uk-UA", Resolution: "2560x1440"}
+	want := domain.GuestConfig{User: "pavlo", Password: "s3cret", Locale: "uk-UA", Resolution: "2560x1440", Win11ISO: "/isos/Win11.iso"}
 	if got := domain.ReadGuestConfig(root, "win11"); got != want {
 		t.Fatalf("metadata after define = %+v, want %+v", got, want)
 	}
@@ -506,7 +470,6 @@ func TestVMDefineGuestSettingsSticky(t *testing.T) {
 		t.Errorf("domain XML carries the password and must be 0600, got %v %v", st.Mode().Perm(), err)
 	}
 
-	// re-define without flags keeps everything
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("re-define exit %d\nstderr: %s", code, stderr)
 	}

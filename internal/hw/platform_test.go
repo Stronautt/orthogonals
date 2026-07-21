@@ -14,8 +14,8 @@ func TestIOMMUAddressWidth(t *testing.T) {
 	})
 	t.Run("min across units wins", func(t *testing.T) {
 		root := t.TempDir()
-		hwtest.WriteFile(t, root, "sys/class/iommu/dmar0/intel-iommu/cap", "2d0462\n") // MGAW 45 -> 46-bit
-		hwtest.WriteFile(t, root, "sys/class/iommu/dmar1/intel-iommu/cap", "260462\n") // MGAW 38 -> 39-bit
+		hwtest.WriteFile(t, root, "sys/class/iommu/dmar0/intel-iommu/cap", "2d0462\n")
+		hwtest.WriteFile(t, root, "sys/class/iommu/dmar1/intel-iommu/cap", "260462\n")
 		if w := iommuAddressWidth(root); w != 39 {
 			t.Errorf("width = %d, want 39 (min of 46 and 39)", w)
 		}
@@ -186,7 +186,7 @@ func TestDetectNVIDIA(t *testing.T) {
 }
 
 func TestDetectPlatformReference(t *testing.T) {
-	t.Setenv("PATH", hwtest.FakeTools(t, "dracut", "grubby"))
+	t.Setenv("PATH", hwtest.FakeTools(t, "dracut"))
 
 	p := detectPlatform(hwtest.ReferenceRoot(t))
 	if p.IOMMUAddressWidth != 39 {
@@ -201,11 +201,8 @@ func TestDetectPlatformReference(t *testing.T) {
 	if p.ChassisType != 3 {
 		t.Errorf("ChassisType = %d, want 3", p.ChassisType)
 	}
-	if !p.Tools["dracut"] || !p.Tools["grubby"] {
-		t.Errorf("Tools = %v, want dracut and grubby present", p.Tools)
-	}
-	if p.Tools["virsh"] {
-		t.Errorf("Tools = %v, want virsh missing", p.Tools)
+	if !p.Tools["dracut"] {
+		t.Errorf("Tools = %v, want dracut present", p.Tools)
 	}
 	if p.MemTotalBytes != 32<<30 {
 		t.Errorf("MemTotalBytes = %d, want 32 GiB", p.MemTotalBytes)

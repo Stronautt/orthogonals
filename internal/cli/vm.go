@@ -5,8 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/domain"
@@ -15,98 +19,159 @@ import (
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/orchestrate"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet(cfg, stderr)
-	vmName := fs.String("vm-name", "", "libvirt domain name (default: win11 for define, the sole managed VM for undefine)")
-	displayName := fs.String("display-name", "", "desktop shortcut name (default: the registered name, \"Windows 11\" for the default VM, else the VM name)")
-	user := fs.String("user", defaultUser(), "desktop user whose ~/Desktop gets the VM shortcut link")
-	ram := fs.Int("ram", 0, "guest RAM in GiB (default min(half of host RAM, 16))")
-	disk := fs.String("disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
-	diskSize := fs.Int("disk-size", 0, "disk image size in GiB (default 100)")
-	resolution := fs.String("resolution", "", "maximum guest resolution WxH, sizes the Looking Glass shared memory; the actual mode is picked in Windows display settings (default 3840x2160)")
-	guestUser := fs.String("guest-user", "", "guest admin account name (default \""+media.DefaultGuestUser+"\")")
-	guestPassword := fs.String("guest-password", "", "guest admin password (default \""+media.DefaultGuestPassword+"\")")
-	locale := fs.String("locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
-	win11ISO := fs.String("win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
-	purge := fs.Bool("purge", false, "with undefine: also delete the disk image and reset the up pipeline, for a from-scratch reinstall")
-	if err := fs.Parse(args); err != nil {
-		return 2
+// vmOpts carries the flags of vm define, shared with up.
+type vmOpts struct {
+	vmName        string
+	displayName   string
+	user          string
+	ram           int
+	disk          string
+	diskSize      int
+	resolution    string
+	guestUser     string
+	guestPassword string
+	locale        string
+	win11ISO      string
+	stage         string
+	purge         bool
+}
+
+// addVMFlags registers the define flags shared by vm define and up.
+func addVMFlags(fs *pflag.FlagSet, o *vmOpts) {
+	fs.StringVar(&o.vmName, "vm-name", "", "libvirt domain name (default: win11)")
+	fs.StringVar(&o.displayName, "display-name", "", "desktop shortcut name (default: the registered name, \"Windows 11\" for the default VM, else the VM name)")
+	fs.StringVar(&o.user, "user", defaultUser(), "desktop user whose ~/Desktop gets the VM shortcut link")
+	fs.IntVar(&o.ram, "ram", 0, "guest RAM in GiB (default min(half of host RAM, 16))")
+	fs.StringVar(&o.disk, "disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
+	fs.IntVar(&o.diskSize, "disk-size", 0, "disk image size in GiB (default 100)")
+	fs.StringVar(&o.resolution, "resolution", "", "maximum guest resolution WxH, sizes the Looking Glass shared memory; the actual mode is picked in Windows display settings (default 3840x2160)")
+	fs.StringVar(&o.guestUser, "guest-user", "", "guest admin account name (default \""+media.DefaultGuestUser+"\")")
+	fs.StringVar(&o.guestPassword, "guest-password", "", "guest admin password (default \""+media.DefaultGuestPassword+"\")")
+	fs.StringVar(&o.locale, "locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
+	fs.StringVar(&o.win11ISO, "win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
+}
+
+func newVMCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	vm := &cobra.Command{
+		Use:   "vm",
+		Short: "define, undefine, or launch a managed VM",
+		RunE: func(*cobra.Command, []string) error {
+			fmt.Fprintln(stderr, "usage: orthogonals vm [flags] define|undefine|launch [flags]")
+			return exitCode(2)
+		},
 	}
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "orthogonals vm: %v\n", err)
-		return 1
+	vm.AddCommand(
+		newVMDefineCmd(cfg, stdout, stderr),
+		newVMUndefineCmd(cfg, stdout, stderr),
+		newVMLaunchCmd(cfg, stdout, stderr),
+	)
+	return vm
+}
+
+func newVMDefineCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	var o vmOpts
+	cmd := &cobra.Command{
+		Use:   "define",
+		Short: "define a VM or converge an existing one to this binary's settings",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return finish(stderr, "vm", runVMDefine(cfg, o, stdout, stderr))
+		},
 	}
-	usage := func() int {
-		fmt.Fprintln(stderr, "usage: orthogonals vm [flags] define|undefine [flags]")
-		return 2
+	addVMFlags(cmd.Flags(), &o)
+	cmd.Flags().StringVar(&o.stage, "stage", "", "pipeline stage to render: install|novideo|final (default: the domain's current stage; the up pipeline advances it)")
+	return cmd
+}
+
+func newVMUndefineCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	var o vmOpts
+	cmd := &cobra.Command{
+		Use:   "undefine",
+		Short: "remove a VM definition, and with --purge its disk image",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return finish(stderr, "vm", runVMUndefine(cfg, o, stdout, stderr))
+		},
 	}
-	rest := fs.Args()
-	if len(rest) == 0 || (rest[0] != "define" && rest[0] != "undefine") {
-		return usage()
-	}
-	verb := rest[0]
-	// stdlib flag stops at the first non-flag argument, so flags placed
-	// after the verb (vm undefine --purge --yes) need a second parse
-	if err := fs.Parse(rest[1:]); err != nil {
-		return 2
-	}
-	if len(fs.Args()) != 0 {
-		return usage()
-	}
-	e := &steps.Engine{Root: cfg.Root, Yes: cfg.Yes, Out: stdout, Err: stderr}
-	if verb == "undefine" {
-		name := *vmName
-		if name == "" {
-			var err error
-			if name, err = soleVMName(cfg.Root); err != nil {
-				return fail(err)
+	cmd.Flags().StringVar(&o.vmName, "vm-name", "", "libvirt domain name (default: the sole managed VM)")
+	cmd.Flags().BoolVar(&o.purge, "purge", false, "also delete the disk image and reset the up pipeline, for a from-scratch reinstall")
+	return cmd
+}
+
+func newVMLaunchCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	var vmName string
+	cmd := &cobra.Command{
+		Use:   "launch",
+		Short: "start the VM and hand off to looking-glass-client",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			name, err := vmNameOrSole(cfg.Root, vmName)
+			if err != nil {
+				fmt.Fprintf(stderr, "orthogonals vm: %v\n", err)
+				return exitCode(1)
 			}
-		}
-		return vmUndefine(cfg, e, name, *purge, stdout, stderr)
+			c := virtClient()
+			defer func() { _ = c.Close() }()
+			if code := vmLaunch(cfg, c, name, stdout, stderr); code != 0 {
+				return exitCode(code)
+			}
+			return nil
+		},
 	}
-	if *vmName == "" {
-		*vmName = steps.DefaultVMName
+	cmd.Flags().StringVar(&vmName, "vm-name", "", "libvirt domain name (default: the sole managed VM)")
+	return cmd
+}
+
+func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
+	if o.vmName == "" {
+		o.vmName = steps.DefaultVMName
 	}
+	c := virtClient()
+	defer func() { _ = c.Close() }()
+	e := newEngine(cfg, stdout, stderr)
 
 	m, err := steps.Load(cfg.Root)
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	// the install ISO is load-bearing only until the pipeline detached the
-	// installer media; a converging redefine of an installed VM needs no ISO
-	if *win11ISO == "" && !domain.InstallMediaDetached(m, *vmName) {
-		fmt.Fprintln(stderr, "usage: orthogonals vm --win11-iso <path> [flags] define")
-		return 2
-	}
-	isoPath := ""
-	if *win11ISO != "" {
-		if isoPath, err = filepath.Abs(*win11ISO); err != nil {
-			return fail(err)
+	stage := domain.CurrentStage(cfg.Root, o.vmName)
+	if o.stage != "" {
+		stage = domain.Stage(o.stage)
+		if !slices.Contains(domain.Stages, stage) {
+			return fmt.Errorf("unknown --stage %q (install|novideo|final)", o.stage)
 		}
 	}
-	// re-defines keep the guest settings the VM's <metadata> block already
-	// carries unless a flag overrides them — a rebuild must not silently
-	// reset credentials or locale on an installed guest
-	prev := domain.ReadGuestConfig(cfg.Root, *vmName)
+	prev := domain.ReadGuestConfig(cfg.Root, o.vmName)
 	keep := func(flag, prev string) string {
 		if flag != "" {
 			return flag
 		}
 		return prev
 	}
-	w, h, err := parseResolution(keep(*resolution, prev.Resolution))
+	isoPath := prev.Win11ISO
+	if o.win11ISO != "" {
+		if isoPath, err = filepath.Abs(o.win11ISO); err != nil {
+			return err
+		}
+	}
+	if isoPath == "" && stage != domain.StageFinal {
+		fmt.Fprintln(stderr, "usage: orthogonals vm --win11-iso <path> [flags] define")
+		return exitCode(2)
+	}
+	w, h, err := parseResolution(keep(o.resolution, prev.Resolution))
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	diskPath, diskSizeGiB := *disk, *diskSize
+	diskPath, diskSizeGiB := o.disk, o.diskSize
 	if diskPath == "" {
-		if jp, jsize, ok := domain.JournaledDisk(m, *vmName); ok {
+		if jp, jsize, ok := domain.JournaledDisk(m, o.vmName); ok {
 			diskPath = jp
 			if diskSizeGiB == 0 {
 				diskSizeGiB = jsize
@@ -114,58 +179,54 @@ func cmdVM(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	p, err := domain.NewProfile(res, domain.Options{
-		VMName: *vmName, RAMGiB: *ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
+		VMName: o.vmName, RAMGiB: o.ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
 		Width: w, Height: h,
-		GuestUser:     keep(*guestUser, prev.User),
-		GuestPassword: keep(*guestPassword, prev.Password),
-		Locale:        keep(*locale, prev.Locale),
-		// un-rooted host paths: the XML is read by libvirt on the real host.
-		// startupPolicy=optional keeps the VM bootable after these are deleted.
-		Win11ISO:     isoPath,
-		VirtioISO:    filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
-		ProvisionISO: media.ISOPath("", *vmName),
+		GuestUser:     keep(o.guestUser, prev.User),
+		GuestPassword: keep(o.guestPassword, prev.Password),
+		Locale:        keep(o.locale, prev.Locale),
+		Win11ISO:      isoPath,
+		VirtioISO:     filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
+		ProvisionISO:  media.ISOPath("", o.vmName),
 	})
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	domain.Converge(&p, m)
-	// a redefine must carry the live domain's UUID: virsh define refuses a
-	// name that already exists under a different one
+	p.ApplyStage(stage)
 	if m.Has(domain.DefineStepID(p.Name)) {
-		p.UUID = steps.DomainUUID(p.Name)
+		if uuid, err := c.DomainUUID(p.Name); err == nil {
+			p.UUID = uuid
+		}
 	}
-	// qemu-img create truncates: refuse to run it over a disk image we did
-	// not create (a journaled step means the image is ours and is skipped on
-	// re-runs anyway)
 	if !m.Has(domain.DiskImageID(p.Name)) {
 		if _, err := os.Stat(filepath.Join(cfg.Root, p.DiskPath)); err == nil {
-			return fail(fmt.Errorf("disk image %s already exists and is not orthogonals-managed — move it or pass --disk", p.DiskPath))
+			return fmt.Errorf("disk image %s already exists and is not orthogonals-managed — move it or pass --disk", p.DiskPath)
 		}
 	}
 	list, err := domain.Steps(p)
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	vmSteps, err := hostcfg.VMSteps(p.Name, resolveDisplayName(cfg.Root, p.Name, *displayName), *user)
+	exe, err := executablePath()
 	if err != nil {
-		return fail(err)
+		return err
+	}
+	vmSteps, err := hostcfg.VMSteps(p.Name, resolveDisplayName(cfg.Root, p.Name, o.displayName), o.user, exe)
+	if err != nil {
+		return err
 	}
 	list = append(list, vmSteps...)
 	if err := e.Apply(list); err != nil {
-		return fail(err)
+		return err
 	}
 	if !cfg.Yes {
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to apply")
-	} else if state := steps.DomainState(p.Name); steps.DomainLive(state) {
-		// virsh define only replaces the persistent config of a live domain
+	} else if state, err := c.DomainState(p.Name); err == nil && virt.Live(state) {
 		fmt.Fprintf(stdout, "VM %s is %s — the updated definition takes effect on its next boot\n", p.Name, state)
 	}
-	return 0
+	return nil
 }
 
-// resolveDisplayName picks the desktop shortcut name: the flag, the existing
-// registration (so re-defines keep it), "Windows 11" for the default VM,
-// else the domain name.
+// resolveDisplayName picks the desktop shortcut name.
 func resolveDisplayName(root, name, flag string) string {
 	if flag != "" {
 		return flag
@@ -179,68 +240,60 @@ func resolveDisplayName(root, name, flag string) string {
 	return name
 }
 
-// vmUndefine removes the domain via the journaled define step's paired undo
-// command, so a later full `orthogonals undo` never replays virsh undefine
-// against a domain that is already gone — plus the VM's XML, launcher, and
-// desktop entry. With purge it also undoes the disk records (the disk image
-// is the Windows install) and, for the VM the up pipeline built, resets the
-// pipeline state so a following `up --yes` reinstalls from scratch.
-func vmUndefine(cfg *Config, e *steps.Engine, name string, purge bool, stdout, stderr io.Writer) int {
-	if state := steps.DomainState(name); steps.DomainLive(state) {
-		fmt.Fprintf(stderr, "orthogonals vm: VM %s is %s — shut it down first: virsh shutdown %s\n", name, state, name)
-		return 1
+// runVMUndefine removes the domain and its host artifacts, purging the disk with --purge.
+func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
+	c := virtClient()
+	defer func() { _ = c.Close() }()
+	e := newEngine(cfg, stdout, stderr)
+	name, err := vmNameOrSole(cfg.Root, o.vmName)
+	if err != nil {
+		return err
 	}
-	// reverse apply order; the media-detach and install-video edits rode on
-	// the defined domain
-	ids := append(domain.DetachMediaStepIDs(name),
-		domain.InstallVideoStepID(name), hostcfg.DesktopLinkID(name), hostcfg.DesktopEntryID(name),
-		hostcfg.LauncherName(name), domain.DefineStepID(name))
-	if purge {
-		// the disk records go only after the domain
+	if state, err := c.DomainState(name); err == nil && virt.Live(state) {
+		return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", name, state, name)
+	}
+	ids := []string{hostcfg.DesktopLinkID(name), hostcfg.DesktopEntryID(name),
+		domain.DefineStepID(name)}
+	if o.purge {
 		ids = append(ids, domain.DiskRestoreconID(name), domain.DiskFcontextID(name), domain.DiskImageID(name))
 	}
-	// the domain XML is the registry entry: it goes last, so undo's guards and
-	// the hook dispatcher keep covering the domain until it is gone
 	ids = append(ids, domain.DomainXMLID(name))
 	any := false
 	for _, id := range ids {
 		found, err := e.UndoID(id, false)
 		if err != nil {
-			fmt.Fprintf(stderr, "orthogonals vm: %v\n", err)
-			return 1
+			return err
 		}
 		any = any || found
 	}
 	if !any {
 		fmt.Fprintf(stdout, "VM %s is not orthogonals-defined, nothing to do\n", name)
-		return 0
+		return nil
 	}
 	if !cfg.Yes {
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to undefine")
-		return 0
+		return nil
 	}
-	if purge {
-		// the VM's provision ISO carries its guest password; a purged VM
-		// never needs it again
+	if o.purge {
 		removeProvisionISO(cfg.Root, name, stdout)
-		// a stale "verified" state would make the next `up --yes` claim setup
-		// is already complete instead of rebuilding. Scoped to the VM the
-		// pipeline built (a nameless state file predates multi-VM and can only
-		// mean the sole pipeline VM) — purging a secondary VM must not reset it.
 		saved, err := orchestrate.SavedVMName(cfg.Root)
 		if err != nil || saved == name || saved == "" {
-			// an unreadable state.json is stale pipeline garbage — purge
-			// resets it rather than leaving the next `up` to choke on it
 			_ = os.Remove(steps.StatePath(cfg.Root))
 		}
 		fmt.Fprintf(stdout, "VM and disk image removed — reinstall with: orthogonals up --yes --vm-name %s --win11-iso <iso>\n", name)
 	}
-	return 0
+	return nil
 }
 
-// soleVMName resolves an omitted --vm-name to the single managed VM; with
-// more than one registered the flag is required, with none the default
-// stands in.
+// vmNameOrSole returns flag when set, else the single managed VM name.
+func vmNameOrSole(root, flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	return soleVMName(root)
+}
+
+// soleVMName resolves an omitted --vm-name to the single managed VM.
 func soleVMName(root string) (string, error) {
 	vms := steps.VMNames(root)
 	switch len(vms) {

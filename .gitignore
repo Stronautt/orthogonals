@@ -7,3 +7,15 @@
 /elfbins.list
 *.test
 coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+
+# local agent settings
+/.claude/settings.local.json

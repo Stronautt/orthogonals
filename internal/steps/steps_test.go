@@ -8,11 +8,20 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/virt"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
+// eng builds a test engine whose client factories yield empty fakes.
 func eng(root string, yes bool) (*Engine, *bytes.Buffer, *bytes.Buffer) {
 	var out, errBuf bytes.Buffer
-	return &Engine{Root: root, Yes: yes, Out: &out, Err: &errBuf}, &out, &errBuf
+	e := &Engine{Root: root, Yes: yes, Out: &out, Err: &errBuf,
+		Virt: func() virt.Client { return &virttest.Fake{} },
+		Sysd: func() sysd.Client { return &sysdtest.Fake{} }}
+	return e, &out, &errBuf
 }
 
 func write(t *testing.T, root, rel, content string, mode fs.FileMode) {
@@ -48,8 +57,7 @@ func assertFile(t *testing.T, root, rel, want string, mode fs.FileMode) {
 	}
 }
 
-// fakePath creates a dir for fake binaries and prepends it to PATH — the
-// exec test seam: no mocking library, tiny scripts recording argv to files.
+// fakePath creates a dir for fake binaries and prepends it to PATH.
 func fakePath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -57,8 +65,7 @@ func fakePath(t *testing.T) string {
 	return dir
 }
 
-// fakeBin installs an executable stub that appends its argv to a log file,
-// then runs extra shell (canned output, exit codes). Returns the log path.
+// fakeBin installs an executable stub that logs its argv, returning the log path.
 func fakeBin(t *testing.T, dir, name, extra string) string {
 	t.Helper()
 	log := filepath.Join(dir, name+".log")
@@ -172,7 +179,6 @@ func TestReapplyIdempotent(t *testing.T) {
 		t.Fatalf("re-apply duplicated manifest entries: %d records", len(m.Records))
 	}
 
-	// external drift: re-apply resyncs but keeps the ORIGINAL backup
 	write(t, root, "etc/foo.conf", "drifted\n", 0o644)
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
@@ -196,7 +202,7 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	write(t, root, "etc/foo.conf", "old\n", 0o644)
 	dir := fakePath(t)
 	grubbyLog := fakeBin(t, dir, "grubby", "")
-	e, out, _ := eng(root, false) // dry-run: the default
+	e, out, _ := eng(root, false)
 
 	list := []Step{
 		{ID: "foo", Kind: KindWriteFile, Path: "/etc/foo.conf", Content: []byte("new\n"), Mode: 0o600},
@@ -213,7 +219,7 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	if lines := logLines(t, grubbyLog); lines != nil {
 		t.Fatalf("dry-run executed a command: %v", lines)
 	}
-	for _, want := range []string{"-old", "+new", "would run: grubby --args=x", "would run: systemctl enable libvirt-guests.service"} {
+	for _, want := range []string{"-old", "+new", "would run: grubby --args=x", "would: enable unit libvirt-guests.service"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("dry-run output missing %q:\n%s", want, out.String())
 		}
@@ -289,7 +295,6 @@ func TestRunCmdAppliesAndUndoes(t *testing.T) {
 		t.Fatalf("both commands must be journaled, got %+v", m.Records)
 	}
 
-	// re-apply: already journaled, must not run again
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +311,6 @@ func TestRunCmdAppliesAndUndoes(t *testing.T) {
 	}
 }
 
-// A journaled run_cmd whose product was deleted by hand (e.g. the ~/Desktop
-// link) must re-run, not report "already applied" against reality.
 func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	root := t.TempDir()
 	dir := fakePath(t)
@@ -323,14 +326,12 @@ func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
-	// product still missing (the fake creates nothing): re-apply must re-run
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
 	if lines := logLines(t, linkerLog); len(lines) != 2 {
 		t.Fatalf("re-apply with the product gone must re-run, got %d invocations", len(lines))
 	}
-	// product present: re-apply skips like any journaled step
 	if err := os.WriteFile(product, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -345,8 +346,6 @@ func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	}
 }
 
-// A run_cmd that declares Input re-runs when that content drifts (a new
-// release rendering different domain XML) instead of "already applied".
 func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 	root := t.TempDir()
 	dir := fakePath(t)
@@ -368,7 +367,6 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 		t.Fatalf("record must carry the input hash, got %+v", m.Records)
 	}
 
-	// same input: skip
 	if err := e.Apply([]Step{step("xml-v1")}); err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +374,6 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 		t.Fatalf("unchanged input re-ran the command: %v", lines)
 	}
 
-	// drifted input, dry-run: announce, do not execute
 	dry, out, _ := eng(root, false)
 	if err := dry.Apply([]Step{step("xml-v2")}); err != nil {
 		t.Fatal(err)
@@ -388,7 +385,6 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 		t.Fatalf("dry-run executed the command: %v", lines)
 	}
 
-	// drifted input: re-run, refresh the hash, no duplicate record
 	if err := e.Apply([]Step{step("xml-v2")}); err != nil {
 		t.Fatal(err)
 	}
@@ -401,8 +397,6 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 	}
 }
 
-// A record journaled before Input existed (empty hash) re-runs once when the
-// step starts declaring Input, then converges.
 func TestRunCmdInputMissingHashRerunsOnce(t *testing.T) {
 	root := t.TempDir()
 	dir := fakePath(t)
@@ -468,10 +462,9 @@ func TestEnableUnitRestoresPriorState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			dir := fakePath(t)
-			sysLog := fakeBin(t, dir, "systemctl",
-				"if [ \"$1\" = \"is-enabled\" ]; then echo "+tt.prior+"; fi")
+			sd := &sysdtest.Fake{States: map[string]string{"svc.service": tt.prior}}
 			e, out, _ := eng(root, true)
+			e.Sysd = func() sysd.Client { return sd }
 
 			step := Step{ID: "unit", Kind: KindEnableUnit, Unit: "svc.service", Enable: tt.enable}
 			if err := e.Apply([]Step{step}); err != nil {
@@ -481,9 +474,8 @@ func TestEnableUnitRestoresPriorState(t *testing.T) {
 			if !tt.enable {
 				verb = "disable"
 			}
-			lines := logLines(t, sysLog)
-			if len(lines) != 2 || lines[0] != "is-enabled svc.service" || lines[1] != verb+" svc.service" {
-				t.Fatalf("apply invocations = %v", lines)
+			if len(sd.Calls) != 2 || sd.Calls[0] != "state svc.service" || sd.Calls[1] != verb+" svc.service" {
+				t.Fatalf("apply invocations = %v", sd.Calls)
 			}
 			if m := mustLoad(t, root); m.Records[0].PriorState != tt.prior {
 				t.Fatalf("prior state = %q, want %q", m.Records[0].PriorState, tt.prior)
@@ -492,16 +484,15 @@ func TestEnableUnitRestoresPriorState(t *testing.T) {
 			if err := e.Undo(false, false, strings.NewReader("")); err != nil {
 				t.Fatal(err)
 			}
-			lines = logLines(t, sysLog)
 			if tt.undoVerb == "" {
-				if len(lines) != 2 {
-					t.Fatalf("undo must not toggle a non-restorable unit: %v", lines)
+				if len(sd.Calls) != 2 {
+					t.Fatalf("undo must not toggle a non-restorable unit: %v", sd.Calls)
 				}
 				if !strings.Contains(out.String(), "static") {
 					t.Fatalf("undo should explain why it left the unit alone:\n%s", out.String())
 				}
-			} else if len(lines) != 3 || lines[2] != tt.undoVerb+" svc.service" {
-				t.Fatalf("undo invocations = %v, want final %q", lines, tt.undoVerb+" svc.service")
+			} else if len(sd.Calls) != 3 || sd.Calls[2] != tt.undoVerb+" svc.service" {
+				t.Fatalf("undo invocations = %v, want final %q", sd.Calls, tt.undoVerb+" svc.service")
 			}
 		})
 	}
@@ -509,47 +500,38 @@ func TestEnableUnitRestoresPriorState(t *testing.T) {
 
 func TestEnableUnitReassertsDrift(t *testing.T) {
 	root := t.TempDir()
-	dir := fakePath(t)
-	// fake is-enabled reads its answer from a state file so the test can
-	// simulate a driver update re-enabling the unit between apply runs
-	state := filepath.Join(dir, "state")
-	write(t, dir, "state", "enabled\n", 0o644)
-	sysLog := fakeBin(t, dir, "systemctl",
-		"if [ \"$1\" = \"is-enabled\" ]; then cat \""+state+"\"; fi")
+	sd := &sysdtest.Fake{States: map[string]string{"nvidia-persistenced.service": "enabled"}}
 	e, out, _ := eng(root, true)
+	e.Sysd = func() sysd.Client { return sd }
 
 	step := Step{ID: "unit", Kind: KindEnableUnit, Unit: "nvidia-persistenced.service", Enable: false}
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
 
-	// unit drifted back to enabled (e.g. driver update preset): re-apply
-	// must disable it again, without touching the journaled prior state
+	sd.States["nvidia-persistenced.service"] = "enabled"
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
-	lines := logLines(t, sysLog)
 	want := []string{
-		"is-enabled nvidia-persistenced.service",
+		"state nvidia-persistenced.service",
 		"disable nvidia-persistenced.service",
-		"is-enabled nvidia-persistenced.service",
+		"state nvidia-persistenced.service",
 		"disable nvidia-persistenced.service",
 	}
-	if !slices.Equal(lines, want) {
-		t.Fatalf("invocations = %v, want %v", lines, want)
+	if !slices.Equal(sd.Calls, want) {
+		t.Fatalf("invocations = %v, want %v", sd.Calls, want)
 	}
 	m := mustLoad(t, root)
 	if len(m.Records) != 1 || m.Records[0].PriorState != "enabled" {
 		t.Fatalf("re-assert must keep the original journal record, got %+v", m.Records)
 	}
 
-	// unit still disabled: re-apply is a no-op past the state query
-	write(t, dir, "state", "disabled\n", 0o644)
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
-	if lines := logLines(t, sysLog); len(lines) != 5 {
-		t.Fatalf("no-op re-apply must only query state, got %v", lines)
+	if len(sd.Calls) != 5 {
+		t.Fatalf("no-op re-apply must only query state, got %v", sd.Calls)
 	}
 	if !strings.Contains(out.String(), "already applied") {
 		t.Fatalf("no-op re-apply should say already applied:\n%s", out.String())
@@ -590,7 +572,6 @@ func TestReapplyChangedContentKeepsOriginalBackup(t *testing.T) {
 	if err := e.Apply([]Step{step}); err != nil {
 		t.Fatal(err)
 	}
-	// new template version: re-apply with different content
 	step.Content = []byte("v2\n")
 	e2, _, _ := eng(root, true)
 	if err := e2.Apply([]Step{step}); err != nil {
@@ -601,7 +582,6 @@ func TestReapplyChangedContentKeepsOriginalBackup(t *testing.T) {
 		t.Fatalf("re-apply must update the record in place, got %d records", len(m.Records))
 	}
 	assertFile(t, root, "etc/foo.conf", "v2\n", 0o644)
-	// undo must restore the pre-FIRST-apply bytes, not v1
 	u, _, _ := eng(root, true)
 	if err := u.Undo(false, false, strings.NewReader("")); err != nil {
 		t.Fatal(err)
@@ -617,7 +597,6 @@ func TestApplyRefusesDivergedRunCmd(t *testing.T) {
 	if err := e.Apply([]Step{{ID: "args", Kind: KindRunCmd, Cmd: []string{"grubby", "--args=a"}}}); err != nil {
 		t.Fatal(err)
 	}
-	// e.g. apply --binding=static after a dynamic apply
 	e2, _, _ := eng(root, true)
 	err := e2.Apply([]Step{{ID: "args", Kind: KindRunCmd, Cmd: []string{"grubby", "--args=a vfio-pci.ids=x"}}})
 	if err == nil || !strings.Contains(err.Error(), "undo first") {
@@ -626,7 +605,6 @@ func TestApplyRefusesDivergedRunCmd(t *testing.T) {
 	if !strings.Contains(err.Error(), "--args=a vfio-pci.ids=x") || !strings.Contains(err.Error(), "--args=a") {
 		t.Errorf("error should show both commands: %v", err)
 	}
-	// refusal outranks the Input re-run path
 	err = e2.Apply([]Step{{ID: "args", Kind: KindRunCmd, Cmd: []string{"grubby", "--args=b"}, Input: []byte("drifted")}})
 	if err == nil || !strings.Contains(err.Error(), "undo first") {
 		t.Fatalf("diverged run_cmd with Input must still refuse, got %v", err)
@@ -648,20 +626,17 @@ func TestApplyRefusesDivergedWriteFilePath(t *testing.T) {
 
 func TestDisableMissingUnitIsNoOp(t *testing.T) {
 	root := t.TempDir()
-	dir := fakePath(t)
-	// is-enabled prints nothing for a unit that does not exist
-	sysLog := fakeBin(t, dir, "systemctl", "")
+	sd := &sysdtest.Fake{}
 	e, out, _ := eng(root, true)
+	e.Sysd = func() sysd.Client { return sd }
 	if err := e.Apply([]Step{{ID: "no-persistenced", Kind: KindEnableUnit, Unit: "nvidia-persistenced.service", Enable: false}}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "not installed") {
 		t.Errorf("missing unit should be reported as a no-op:\n%s", out.String())
 	}
-	for _, line := range logLines(t, sysLog) {
-		if strings.HasPrefix(line, "disable") {
-			t.Errorf("disable ran against a missing unit: %s", line)
-		}
+	if sd.Logged("disable nvidia-persistenced.service") {
+		t.Errorf("disable ran against a missing unit: %v", sd.Calls)
 	}
 	if mustLoad(t, root).Has("no-persistenced") {
 		t.Error("a skipped unit step must not be journaled")
@@ -698,8 +673,6 @@ func TestApplyRefusesCrossRunBackupCollision(t *testing.T) {
 }
 
 func TestApplyOverwritesOrphanedBackup(t *testing.T) {
-	// a crash between writeBackup and manifest save leaves a backup file with
-	// no record; a re-apply of the same step must overwrite it, not refuse
 	root := t.TempDir()
 	write(t, root, "/etc/one", "original", 0o644)
 	write(t, root, "/var/lib/orthogonals/backup/a_b", "stale-crashed-attempt", 0o600)
@@ -732,9 +705,6 @@ func TestCheckUser(t *testing.T) {
 			t.Errorf("%q rejected: %v", ok, err)
 		}
 	}
-	// interpolated into the tmpfiles owner column and shell-quoted hook vars,
-	// and passed to usermod/virsh — must reject whitespace, shell metachars,
-	// a leading digit/'-', and the AD machine-account '$'.
 	for _, bad := range []string{"", "a b", "-flag", "1user", `q"y`, "m$", "u;id"} {
 		if err := CheckUser(bad); err == nil {
 			t.Errorf("%q accepted", bad)

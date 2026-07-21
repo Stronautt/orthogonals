@@ -2,17 +2,19 @@ package preflight
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	godbus "github.com/godbus/dbus/v5"
+
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// Facts are host facts preflight needs beyond the detect result; gathered
-// separately so analyzers stay pure functions over injectable inputs.
+// Facts are host facts preflight needs beyond the detect result.
 type Facts struct {
 	PersistencedEnabled bool     `json:"nvidia_persistenced_enabled"`
 	DefaultNetActive    bool     `json:"libvirt_default_net_active"`
@@ -21,13 +23,15 @@ type Facts struct {
 	ForeignVFIO         []string `json:"foreign_vfio,omitempty"`
 	SwitcherooEnabled   bool     `json:"switcheroo_enabled"`
 	SwitcherooNVIDIA    bool     `json:"switcheroo_nvidia_listed"`
+	LibvirtReachable    bool     `json:"libvirt_reachable"`
+	// BLSError is the error message from reading /boot/loader/entries.
+	BLSError string `json:"bls_error,omitempty"`
 }
 
 // GatherFacts reads the live host (prefixed by root, the test seam).
 func GatherFacts(root string) Facts {
 	f := Facts{
 		PersistencedEnabled: steps.UnitEnabled(root, hostcfg.UnitPersistenced),
-		// libvirt writes a live status XML per active network.
 		DefaultNetActive: exists(filepath.Join(root, "/var/run/libvirt/network/default.xml")) ||
 			exists(filepath.Join(root, "/run/libvirt/network/default.xml")),
 		FreeDiskBytes: freeDisk(
@@ -38,16 +42,18 @@ func GatherFacts(root string) Facts {
 		OrthogonalsManaged: exists(steps.ManifestPath(root)),
 		ForeignVFIO:        scanForeignVFIO(root),
 		SwitcherooEnabled:  steps.UnitEnabled(root, hostcfg.UnitSwitcheroo),
+		LibvirtReachable:   libvirtReachable(root),
 	}
 	if f.SwitcherooEnabled {
-		f.SwitcherooNVIDIA = switcherooListsNVIDIA()
+		f.SwitcherooNVIDIA = switcherooListsNVIDIA(root)
+	}
+	if _, err := bls.Tokens(root); err != nil {
+		f.BLSError = err.Error()
 	}
 	return f
 }
 
-// scanForeignVFIO finds vfio configuration orthogonals did not write: stray
-// modprobe.d options, dracut confs, and live kernel args (research §C4).
-// Ownership is decided by the caller via OrthogonalsManaged, not here.
+// scanForeignVFIO finds vfio configuration orthogonals did not write.
 func scanForeignVFIO(root string) []string {
 	var found []string
 	for _, pattern := range []string{"/etc/modprobe.d/*.conf", "/etc/dracut.conf.d/*.conf"} {
@@ -85,20 +91,42 @@ func vfioLines(path string) []string {
 	return out
 }
 
-// switcherooListsNVIDIA asks the running daemon for its GPU list. The daemon
-// enumerates GPUs only at startup, so a list without an NVIDIA offload entry
-// means GNOME's "Launch using Discrete Graphics Card" menu is missing/stale.
-func switcherooListsNVIDIA() bool {
-	out, err := exec.Command("switcherooctl", "list").Output()
+// switcherooListsNVIDIA reports whether the daemon lists the NVIDIA GPU for offload.
+var switcherooListsNVIDIA = func(root string) bool {
+	if root != "" {
+		return false
+	}
+	conn, err := godbus.SystemBus()
 	if err != nil {
 		return false
 	}
-	for _, block := range strings.Split(string(out), "Device:") {
-		if strings.Contains(block, "NVIDIA") && strings.Contains(block, "Environment:") {
+	obj := conn.Object("net.hadess.SwitcherooControl", "/net/hadess/SwitcherooControl")
+	v, err := obj.GetProperty("net.hadess.SwitcherooControl.GPUs")
+	if err != nil {
+		return false
+	}
+	gpus, ok := v.Value().([]map[string]godbus.Variant)
+	if !ok {
+		return false
+	}
+	for _, g := range gpus {
+		name, _ := g["Name"].Value().(string)
+		env, _ := g["Environment"].Value().([]string)
+		if strings.Contains(name, "NVIDIA") && len(env) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+// libvirtReachable probes the local libvirt socket.
+var libvirtReachable = func(root string) bool {
+	if root != "" {
+		return true
+	}
+	c := virt.New()
+	defer func() { _ = c.Close() }()
+	return c.Ping() == nil
 }
 
 func exists(path string) bool {
@@ -106,8 +134,7 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// freeDisk returns available bytes at the first path statfs accepts, so fake
-// roots without the libvirt tree fall back to the root filesystem.
+// freeDisk returns available bytes at the first path statfs accepts.
 func freeDisk(paths ...string) uint64 {
 	for _, p := range paths {
 		var st syscall.Statfs_t

@@ -2,7 +2,7 @@
 Type=Application
 Name={{.DisplayName}}
 Comment=Start the {{.VMName}} VM and connect via Looking Glass
-Exec=/usr/local/bin/{{.Launcher}}
+Exec={{.Exe}} vm launch --vm-name {{.VMName}}
 Icon=computer
 Terminal=false
 Categories=System;

@@ -2,81 +2,103 @@ package media
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
+
+	"github.com/kdomanski/iso9660"
 
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// VolumeLabel is how the guest locates the provision CD — drive letters vary.
+// VolumeLabel is how the guest locates the provision CD.
 const VolumeLabel = "ORTHOGONALS"
 
-// ISOPath is where a VM's provision ISO lands — per VM, so building media
-// for one VM can never hand another VM its provisioning. `up` deletes it
-// once the pipeline verifies (it carries the guest password).
+// ISOPath is where a VM's provision ISO lands.
 func ISOPath(root, vm string) string {
 	return filepath.Join(steps.StateDir(root), vm+"-provision.iso")
 }
 
-// Stage lays out the provision-ISO root in dir: the rendered files plus the
-// downloaded installer payloads.
-func Stage(dir string, rendered []Artifact, payloads []string) error {
+// BuildISO writes the provision ISO natively.
+func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Writer) error {
+	names := make([]string, 0, len(rendered)+len(payloads))
 	for _, a := range rendered {
-		if err := os.WriteFile(filepath.Join(dir, a.Name), a.Content, 0o600); err != nil {
+		names = append(names, a.Name)
+	}
+	for _, src := range payloads {
+		names = append(names, filepath.Base(src))
+	}
+	for _, name := range names {
+		if err := checkISOName(name); err != nil {
 			return err
 		}
 	}
+	w, err := iso9660.NewWriter()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = w.Cleanup() }()
+	for _, a := range rendered {
+		if err := w.AddFile(bytes.NewReader(a.Content), a.Name); err != nil {
+			return fmt.Errorf("add %s: %w", a.Name, err)
+		}
+	}
 	for _, src := range payloads {
-		if err := copyFile(src, filepath.Join(dir, filepath.Base(src))); err != nil {
-			return err
+		if err := w.AddLocalFile(src, filepath.Base(src)); err != nil {
+			return fmt.Errorf("add %s: %w", src, err)
+		}
+	}
+	f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := w.WriteTo(f, VolumeLabel); err != nil {
+		_ = f.Close()
+		_ = os.Remove(outPath)
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "wrote %s\n", outPath)
+	return nil
+}
+
+// checkISOName guards the writer's ceiling: plain ISO9660 without Joliet.
+func checkISOName(name string) error {
+	if len(name) > 30 {
+		return fmt.Errorf("provision ISO filename %q exceeds 30 chars — unsupported without Joliet", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+		default:
+			return fmt.Errorf("provision ISO filename %q contains %q — unsupported without Joliet", name, r)
 		}
 	}
 	return nil
 }
 
-// BuildISO wraps the staged tree into the provision ISO with xorriso. The
-// ISO carries the guest password (autounattend.xml), so xorriso must create
-// it 0600 from birth — a chmod-after-write would leave a world-readable
-// window on success and a world-readable residue if xorriso fails partway.
-func BuildISO(stageDir, outPath string, out io.Writer) error {
-	old := syscall.Umask(0o177)
-	defer syscall.Umask(old)
-	return steps.RunCmd(out, "xorriso", "-as", "mkisofs", "-quiet",
-		"-V", VolumeLabel, "-J", "-joliet-long", "-rock",
-		"-o", outPath, stageDir)
-}
-
-// WimInfo is what the edition gate learns about the installation image;
-// cmdMedia uses it to default and validate the guest locale.
+// WimInfo is what the edition gate learns about the installation image.
 type WimInfo struct {
 	Languages       []string
 	DefaultLanguage string
 }
 
-// ValidateWin11ISO mounts the user-supplied installation ISO and checks that
-// install.wim carries the required edition, failing early with the edition
-// list otherwise — image-by-name selection would only die ~20 minutes into
-// Setup (research §B2).
+// ValidateWin11ISO loop-mounts the installation ISO and checks install.wim carries the required edition.
 func ValidateWin11ISO(path string, out io.Writer) (WimInfo, error) {
 	if _, err := os.Stat(path); err != nil {
 		return WimInfo{}, fmt.Errorf("win11 ISO: %w", err)
 	}
-	mnt, err := os.MkdirTemp("", "orthogonals-iso-")
+	mnt, cleanup, err := MountISO(path)
 	if err != nil {
 		return WimInfo{}, err
 	}
-	defer func() { _ = os.RemoveAll(mnt) }()
-	if err := steps.RunCmd(out, "mount", "-o", "loop,ro", path, mnt); err != nil {
-		return WimInfo{}, fmt.Errorf("mount %s (root required): %w", path, err)
-	}
-	defer func() { _ = exec.Command("umount", mnt).Run() }()
+	defer cleanup()
 
 	wim := ""
 	for _, name := range []string{"install.wim", "install.esd"} {
@@ -88,71 +110,36 @@ func ValidateWin11ISO(path string, out io.Writer) (WimInfo, error) {
 	if wim == "" {
 		return WimInfo{}, fmt.Errorf("%s has no sources/install.wim — not a Windows installation ISO", path)
 	}
-	info, err := exec.Command("wiminfo", wim).Output()
+	images, err := parseWIM(wim)
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return WimInfo{}, fmt.Errorf("wiminfo %s: %w\n%s", wim, err, bytes.TrimSpace(ee.Stderr))
-		}
-		return WimInfo{}, fmt.Errorf("wiminfo %s: %w", wim, err)
+		return WimInfo{}, err
 	}
-	editions := wimEditions(info)
+	var editions []string
+	for _, img := range images.Images {
+		editions = append(editions, img.Name)
+	}
 	if slices.Contains(editions, Edition) {
 		fmt.Fprintf(out, "%s: %q found\n", path, Edition)
-		return wimLanguages(info), nil
+		return wimLanguages(images), nil
 	}
 	return WimInfo{}, fmt.Errorf("%s does not contain %q — it has: %s\nsupply a Pro ISO (download from https://www.microsoft.com/software-download/windows11)",
 		path, Edition, strings.Join(editions, ", "))
 }
 
-// wimEditions extracts the image names from wiminfo output.
-func wimEditions(info []byte) []string {
-	var names []string
-	for line := range strings.SplitSeq(string(info), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Name:"); ok {
-			names = append(names, strings.TrimSpace(rest))
-		}
-	}
-	return names
-}
-
-// wimLanguages extracts the image language lists and the first default.
-func wimLanguages(info []byte) WimInfo {
+// wimLanguages collects the per-image language lists and the first default.
+func wimLanguages(images wimXML) WimInfo {
 	var w WimInfo
 	seen := map[string]bool{}
-	for line := range strings.SplitSeq(string(info), "\n") {
-		l := strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(l, "Default Language:"); ok {
-			if w.DefaultLanguage == "" {
-				w.DefaultLanguage = strings.TrimSpace(rest)
-			}
-			continue
+	for _, img := range images.Images {
+		if w.DefaultLanguage == "" {
+			w.DefaultLanguage = img.Windows.Languages.Default
 		}
-		if rest, ok := strings.CutPrefix(l, "Languages:"); ok {
-			for lang := range strings.FieldsSeq(rest) {
-				if !seen[lang] {
-					seen[lang] = true
-					w.Languages = append(w.Languages, lang)
-				}
+		for _, lang := range img.Windows.Languages.Language {
+			if !seen[lang] {
+				seen[lang] = true
+				w.Languages = append(w.Languages, lang)
 			}
 		}
 	}
 	return w
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, in)
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }

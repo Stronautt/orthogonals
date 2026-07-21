@@ -2,7 +2,6 @@ package media
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -15,17 +14,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"encoding/binary"
+	"unicode/utf16"
+
+	"github.com/kdomanski/iso9660"
+
 	"github.com/stronautt/orthogonals/internal/artifacts"
+	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
-// reference matches the plan's Defaults table: user "user", en-US, 4K max.
 func referenceProfile(t *testing.T) Profile {
 	t.Helper()
 	p, err := NewProfile("user", "s3cretPassw0rd16", "", 0, 0)
@@ -94,16 +97,11 @@ func TestRenderGolden(t *testing.T) {
 	checkGolden(t, "provision.ps1", arts["provision.ps1"])
 }
 
-// The VDD is Authenticode-signed by a third party (SignPath Foundation), not
-// WHQL: without pre-trusting its publisher Windows raises a modal "cannot
-// verify the publisher" prompt, and a silent installer cannot answer it. The
-// NVIDIA package is WHQL-signed throughout and needs no such help.
 func TestProvisionTrustsTheVDDPublisher(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	if !strings.Contains(s, "Add-TrustedPublisher $cat.FullName") {
 		t.Error("provision.ps1 installs the VDD without trusting its publisher — that hangs on a modal prompt")
 	}
-	// the trust must reach the machine stores the driver installer consults
 	for _, store := range []string{"TrustedPublisher", "Root", "LocalMachine"} {
 		if !strings.Contains(s, store) {
 			t.Errorf("provision.ps1 does not populate the %s certificate store", store)
@@ -111,43 +109,34 @@ func TestProvisionTrustsTheVDDPublisher(t *testing.T) {
 	}
 }
 
-// Windows Update ships its own NVIDIA driver and installs it mid-provisioning:
-// the guest lands on an unpinned version, the concurrent device install throws
-// a modal prompt, and the box reboots mid-stage. Pinned artifacts are the whole
-// premise of the tool, so provisioning must own the drivers.
 func TestProvisionStopsWindowsUpdateFromInstallingDrivers(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	for _, want := range []string{
-		"SearchOrderConfig",               // never fetch drivers from Windows Update
-		"DontSearchWindowsUpdate",         // ... and the policy that enforces it
-		"ExcludeWUDriversInQualityUpdate", // ... including inside quality updates
+		"SearchOrderConfig",
+		"DontSearchWindowsUpdate",
+		"ExcludeWUDriversInQualityUpdate",
 		"Stop-Service wuauserv",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision.ps1 is missing %q — Windows Update will race the pinned driver", want)
 		}
 	}
-	// the update service must come back: only driver search stays disabled
 	if !strings.Contains(s, "Set-Service wuauserv -StartupType Manual") {
 		t.Error("cleanup must hand the update service back, or the guest never gets security updates")
 	}
 }
 
-// Win11Debloat runs from the provision ISO, never fetched by the guest, and
-// silently — a prompt would hang provisioning like every other modal has.
 func TestProvisionDebloatsTheGuest(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	for _, want := range []string{
-		"win11debloat.zip",     // shipped on the ISO, not downloaded in-guest
-		"Win11Debloat.ps1",     // the entry script inside the archive
-		"-Silent -RunDefaults", // unattended, defaults keep the gaming apps
+		"win11debloat.zip",
+		"Win11Debloat.ps1",
+		"-Silent -RunDefaults",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision.ps1 is missing %q", want)
 		}
 	}
-	// it must not run before the drivers are in: a debloat regression must not
-	// be able to disturb the GPU, the VDD or the Looking Glass service
 	debloat := strings.Index(s, "Name = 'debloat'")
 	for _, stage := range []string{"Name = 'nvidia-driver'", "Name = 'vdd'", "Name = 'lg-service'"} {
 		if i := strings.Index(s, stage); i == -1 || i > debloat {
@@ -156,11 +145,6 @@ func TestProvisionDebloatsTheGuest(t *testing.T) {
 	}
 }
 
-// The host polls provisioning solely through the QEMU guest agent, and the
-// clipboard rides the SPICE vdagent — both ship in virtio-win-guest-tools.exe,
-// not in the bare virtio-win-gt MSI (drivers only). Installing only the MSI
-// leaves the host polling a guest that can never answer, and a guest with no
-// clipboard.
 func TestProvisionInstallsGuestAgent(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	if !strings.Contains(s, `virtio-win-guest-tools.exe`) {
@@ -169,15 +153,9 @@ func TestProvisionInstallsGuestAgent(t *testing.T) {
 	if !strings.Contains(s, `'spice-agent'`) {
 		t.Error("provision.ps1 never checks the SPICE vdagent service — no clipboard without it")
 	}
-	// a stage whose installer exits 0 without reaching its done state must
-	// fail, not report success — that turns a broken install into a silent
-	// multi-hour hang on the host side
 	if !strings.Contains(s, "did not take effect") {
 		t.Error("provision.ps1 does not verify a stage reached its done state after running")
 	}
-	// the NVIDIA installer restarts the guest mid-install and the re-run then
-	// reports failure over a driver that is in fact installed — the adapter,
-	// not the exit code, decides whether the stage failed
 	if !strings.Contains(s, `$code -ne 0 -and -not (Get-NvidiaGpu)`) {
 		t.Error("provision.ps1 fails the nvidia-driver stage on exit code alone, without checking the adapter")
 	}
@@ -188,26 +166,20 @@ func TestAutounattendContent(t *testing.T) {
 	wellFormedXML(t, b)
 	s := string(b)
 
-	// research §B2: the VM passes Win11 checks legitimately — the bypass
-	// machinery is what 24H2/25H2 keeps breaking and must never come back
 	for _, banned := range []string{"LabConfig", "BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck", "BypassNRO"} {
 		if strings.Contains(s, banned) {
 			t.Errorf("autounattend.xml contains forbidden bypass key %s", banned)
 		}
 	}
 	for _, want := range []string{
-		"<Value>Windows 11 Pro</Value>", // image selected by name
-		// Microsoft's generic installation key for Pro — the only key allowed
-		// here (it selects the edition, never activates); a real license key
-		// must never land in the repo
+		"<Value>Windows 11 Pro</Value>",
 		"<Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>",
-		`viostor\w11\amd64`, // VirtIO storage driver for Setup
-		"ORTHOGONALS",       // provision volume located by label
+		`viostor\w11\amd64`,
+		"ORTHOGONALS",
 		"provision.ps1",
 		"<Name>user</Name>",
 		"<Value>s3cretPassw0rd16</Value>",
 		"<InputLocale>en-US</InputLocale>",
-		// a hard stop must not wedge boot in Automatic Repair
 		"bcdedit /set {default} recoveryenabled No",
 		"bcdedit /set {default} bootstatuspolicy IgnoreAllFailures",
 	} {
@@ -232,27 +204,26 @@ func TestAutounattendEscaping(t *testing.T) {
 func TestProvisionContent(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	for _, want := range []string{
-		"virtio-win-guest-tools.exe", "/install /quiet /norestart", // virtio guest tools bundle, silent
-		"-s -noreboot",                 // NVIDIA driver, silent
-		"looking-glass-host-setup.exe", // bundled in the host zip
-		"'/S'",                         // LG host silent install (brings IVSHMEM driver)
-		"nefconc.exe", "ROOT\\MttVDD",  // VDD installed reboot-free via nefcon
-		"TrustedPublisher",                             // driver signer trusted before install
-		"GPU_FRIENDLY_NAME",                            // vdd_settings pinned to the detected GPU
-		"C:\\VirtualDisplayDriver",                     // where VDD expects its settings
-		"Looking Glass (host)",                         // service enabled as final install stage
-		"C:\\Windows\\Panther\\unattend.xml",           // research §B2: cached answer file
-		"C:\\Windows\\System32\\Sysprep\\unattend.xml", // carries the admin password
-		"provision-status.json",                        // progress contract with the host poller
-		"orthogonals-provision",                        // re-entry scheduled task
-		"'user'",                                       // the admin account the task runs as
-		"AutoAdminLogon",                               // autologon disabled once provisioning is done
+		"virtio-win-guest-tools.exe", "/install /quiet /norestart",
+		"-s -noreboot",
+		"looking-glass-host-setup.exe",
+		"'/S'",
+		"nefconc.exe", "ROOT\\MttVDD",
+		"TrustedPublisher",
+		"GPU_FRIENDLY_NAME",
+		"C:\\VirtualDisplayDriver",
+		"Looking Glass (host)",
+		"C:\\Windows\\Panther\\unattend.xml",
+		"C:\\Windows\\System32\\Sysprep\\unattend.xml",
+		"provision-status.json",
+		"orthogonals-provision",
+		"'user'",
+		"AutoAdminLogon",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision.ps1 is missing %q", want)
 		}
 	}
-	// every provision-ISO payload must be consumed by a stage
 	for _, d := range artifacts.ProvisionPayloads() {
 		if !strings.Contains(s, d.File) {
 			t.Errorf("provision.ps1 never references payload %s", d.File)
@@ -274,8 +245,7 @@ func TestProvisionUserEscaping(t *testing.T) {
 	}
 }
 
-// TestProvisionPwshParse parse-checks the rendered script when pwsh is
-// installed (CI has it; plain Fedora dev boxes may not).
+// TestProvisionPwshParse parse-checks the rendered script when pwsh is installed.
 func TestProvisionPwshParse(t *testing.T) {
 	if _, err := exec.LookPath("pwsh"); err != nil {
 		t.Skip("pwsh not installed")
@@ -285,8 +255,6 @@ func TestProvisionPwshParse(t *testing.T) {
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// the path is baked into the command string: pwsh 7.6 does not expose
-	// post -Command arguments as $args (a t.TempDir path needs no quoting)
 	check := fmt.Sprintf(`$errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('%s', [ref]$null, [ref]$errs); if ($errs.Count) { $errs | Out-String | Write-Output; exit 1 }`, path)
 	out, err := exec.Command("pwsh", "-NoProfile", "-Command", check).CombinedOutput()
 	if err != nil {
@@ -294,46 +262,27 @@ func TestProvisionPwshParse(t *testing.T) {
 	}
 }
 
-// fakeVirshAgent fakes virsh qemu-agent-command: guest-exec returns a pid,
-// guest-exec-status returns the given exit code and base64 stdout.
-func fakeVirshAgent(t *testing.T, stdout string, exitCode int) string {
-	t.Helper()
-	return fakeVirshAgentStderr(t, stdout, "", exitCode)
-}
-
-func fakeVirshAgentStderr(t *testing.T, stdout, stderr string, exitCode int) string {
-	t.Helper()
-	dir := fakePath(t)
-	b64 := base64.StdEncoding.EncodeToString([]byte(stdout))
-	e64 := base64.StdEncoding.EncodeToString([]byte(stderr))
-	extra := `case "$*" in
-*guest-exec-status*) echo '{"return":{"exited":true,"exitcode":` + strconv.Itoa(exitCode) + `,"out-data":"` + b64 + `","err-data":"` + e64 + `"}}' ;;
-*guest-exec*) echo '{"return":{"pid":7}}' ;;
-esac`
-	return fakeBin(t, dir, "virsh", extra)
+// agentFake scripts the guest agent with the standard guest-exec responder.
+func agentFake(stdout string, exitCode int) *virttest.Fake {
+	return &virttest.Fake{State: "running", Agent: virttest.Responder(stdout, "", exitCode)}
 }
 
 func TestProvisionStatusDone(t *testing.T) {
-	log := fakeVirshAgent(t, `{"stage":"done","ok":true,"error":""}`, 0)
-	st, err := ProvisionStatus("win11")
+	f := agentFake(`{"stage":"done","ok":true,"error":""}`, 0)
+	st, err := ProvisionStatus(f, "win11")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !st.Done() || st.Stage != "done" {
 		t.Errorf("status = %+v, want done", st)
 	}
-	b, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), "qemu-agent-command win11") {
-		t.Errorf("virsh argv missing qemu-agent-command win11:\n%s", b)
+	if !strings.Contains(strings.Join(f.Calls, "\n"), "agent win11") {
+		t.Errorf("agent command not sent to win11:\n%v", f.Calls)
 	}
 }
 
 func TestProvisionStatusFailedStage(t *testing.T) {
-	fakeVirshAgent(t, `{"stage":"nvidia-driver","ok":false,"error":"boom"}`, 0)
-	st, err := ProvisionStatus("win11")
+	st, err := ProvisionStatus(agentFake(`{"stage":"nvidia-driver","ok":false,"error":"boom"}`, 0), "win11")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,25 +292,20 @@ func TestProvisionStatusFailedStage(t *testing.T) {
 }
 
 func TestProvisionStatusMissingFile(t *testing.T) {
-	// type(1) exits nonzero when the status file does not exist yet
-	fakeVirshAgent(t, "", 1)
-	if _, err := ProvisionStatus("win11"); !errors.Is(err, errNoStatus) {
+	if _, err := ProvisionStatus(agentFake("", 1), "win11"); !errors.Is(err, errNoStatus) {
 		t.Errorf("want errNoStatus, got %v", err)
 	}
 }
 
 func TestProvisionStatusAgentDown(t *testing.T) {
-	dir := fakePath(t)
-	fakeBin(t, dir, "virsh", "exit 1")
-	_, err := ProvisionStatus("win11")
+	_, err := ProvisionStatus(&virttest.Fake{State: "running"}, "win11")
 	if err == nil || errors.Is(err, errNoStatus) {
-		t.Errorf("want a hard virsh error, got %v", err)
+		t.Errorf("want a hard agent error, got %v", err)
 	}
 }
 
 func TestGuestExecOutput(t *testing.T) {
-	fakeVirshAgent(t, "hello from guest", 0)
-	out, errOut, code, err := GuestExec("win11", "cmd.exe", "/c", "echo hello")
+	out, errOut, code, err := GuestExec(agentFake("hello from guest", 0), "win11", "cmd.exe", "/c", "echo hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,8 +315,8 @@ func TestGuestExecOutput(t *testing.T) {
 }
 
 func TestGuestExecStderr(t *testing.T) {
-	fakeVirshAgentStderr(t, "", "no devices were found", 6)
-	out, errOut, code, err := GuestExec("win11", `C:\Windows\System32\nvidia-smi.exe`)
+	f := &virttest.Fake{State: "running", Agent: virttest.Responder("", "no devices were found", 6)}
+	out, errOut, code, err := GuestExec(f, "win11", `C:\Windows\System32\nvidia-smi.exe`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,8 +338,6 @@ func TestVDDSettingsContent(t *testing.T) {
 			t.Errorf("vdd_settings.xml is missing %q", want)
 		}
 	}
-	// full ladder at the 4K maximum: switching resolution in Windows must
-	// never need a re-provision or a domain re-define
 	for _, want := range []string{"<width>1920</width>", "<width>2560</width>", "<width>3440</width>", "<g_refresh_rate>144</g_refresh_rate>"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("vdd_settings.xml is missing %q", want)
@@ -409,12 +351,9 @@ func TestGuestModes(t *testing.T) {
 		width, height int
 		want          []Mode
 	}{
-		// default (4K buffer): the whole standard ladder fits
 		{"default", 0, 0, []Mode{{1920, 1080}, {2560, 1440}, {3440, 1440}, {3840, 2160}}},
-		// 64M buffer: ultrawide 3440x1440 fits the same region, 4K does not
 		{"1440p max", 2560, 1440, []Mode{{1920, 1080}, {2560, 1440}, {3440, 1440}}},
 		{"1080p max", 1920, 1080, []Mode{{1920, 1080}}},
-		// off-ladder maximum is still advertised
 		{"odd max", 1600, 900, []Mode{{1920, 1080}, {1600, 900}}},
 	}
 	for _, tc := range cases {
@@ -483,7 +422,6 @@ func TestFetch(t *testing.T) {
 		t.Errorf("path = %s, want %s", path, want)
 	}
 
-	// second call is served from the cache
 	if _, err := Fetch(root, d, &out); err != nil {
 		t.Fatal(err)
 	}
@@ -497,8 +435,6 @@ func TestFetchStalledConnectionFails(t *testing.T) {
 	stallTimeout = 20 * time.Millisecond
 	defer func() { stallTimeout = old }()
 
-	// send one byte, flush, then hang until the client's watchdog cancels —
-	// exercises the stall-cancel path and the .part cleanup
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("x"))
 		if f, ok := w.(http.Flusher); ok {
@@ -531,7 +467,6 @@ func TestFetchChecksumMismatchHardFails(t *testing.T) {
 	if _, err := Fetch(root, d, &out); err == nil || !strings.Contains(err.Error(), "SHA256") {
 		t.Fatalf("want SHA256 mismatch error, got %v", err)
 	}
-	// neither the file nor a partial download may remain
 	entries, _ := os.ReadDir(CacheDir(root))
 	for _, e := range entries {
 		t.Errorf("cache should be empty after mismatch, found %s", e.Name())
@@ -589,9 +524,8 @@ func TestImportInstaller(t *testing.T) {
 	}
 }
 
-// TestStageLayout is the provision-ISO layout contract: rendered files plus
-// every payload at the ISO root.
-func TestStageLayout(t *testing.T) {
+// TestBuildISO is the provision-ISO contract.
+func TestBuildISO(t *testing.T) {
 	arts, err := Render(referenceProfile(t))
 	if err != nil {
 		t.Fatal(err)
@@ -606,123 +540,104 @@ func TestStageLayout(t *testing.T) {
 		payloads = append(payloads, p)
 	}
 
-	stage := t.TempDir()
-	if err := Stage(stage, arts, payloads); err != nil {
+	out := filepath.Join(t.TempDir(), "win11-provision.iso")
+	var buf strings.Builder
+	if err := BuildISO(arts, payloads, out, &buf); err != nil {
 		t.Fatal(err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("ISO mode = %04o, want 0600", st.Mode().Perm())
+	}
+
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	img, err := iso9660.OpenImage(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootDir, err := img.RootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := rootDir.GetChildren()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, c := range children {
+		got[c.Name()] = true
 	}
 	want := map[string]bool{
 		"autounattend.xml": true, "provision.ps1": true, "vdd_settings.xml": true,
 		"nvidia-driver.exe": true, "looking-glass-host.zip": true,
 		"vdd-driver.zip": true, "nefcon.zip": true, "win11debloat.zip": true,
 	}
-	entries, err := os.ReadDir(stage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]bool{}
-	for _, e := range entries {
-		got[e.Name()] = true
-	}
 	for name := range want {
 		if !got[name] {
-			t.Errorf("staged ISO tree is missing %s", name)
+			t.Errorf("ISO is missing %s (got %v)", name, got)
 		}
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("staged ISO tree has unexpected %s", name)
+			t.Errorf("ISO has unexpected %s", name)
 		}
 	}
 }
 
-func fakePath(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return dir
+func TestBuildISORefusesLongNames(t *testing.T) {
+	long := Artifact{Name: "a-filename-well-past-thirty-characters.xml", Content: []byte("x")}
+	err := BuildISO([]Artifact{long}, nil, filepath.Join(t.TempDir(), "out.iso"), &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "Joliet") {
+		t.Fatalf("want a loud no-Joliet name refusal, got %v", err)
+	}
 }
 
-// fakeBin installs an executable stub that appends its argv to a log file,
-// then runs extra shell. Returns the log path.
-func fakeBin(t *testing.T, dir, name, extra string) string {
+const wimXMLProAndHome = `<WIM><IMAGE INDEX="1"><NAME>Windows 11 Home</NAME>` +
+	`<WINDOWS><LANGUAGES><LANGUAGE>uk-UA</LANGUAGE><DEFAULT>uk-UA</DEFAULT></LANGUAGES></WINDOWS></IMAGE>` +
+	`<IMAGE INDEX="2"><NAME>Windows 11 Pro</NAME>` +
+	`<WINDOWS><LANGUAGES><LANGUAGE>uk-UA</LANGUAGE><DEFAULT>uk-UA</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>`
+
+const wimXMLHomeOnly = `<WIM><IMAGE INDEX="1"><NAME>Windows 11 Home</NAME></IMAGE></WIM>`
+
+// writeTestWIM hand-builds a minimal install.wim.
+func writeTestWIM(t *testing.T, path, xmlBody string) {
 	t.Helper()
-	log := filepath.Join(dir, name+".log")
-	script := "#!/bin/sh\necho \"$*\" >> \"" + log + "\"\n" + extra + "\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+	u := utf16.Encode([]rune(xmlBody))
+	payload := make([]byte, 2+len(u)*2)
+	binary.LittleEndian.PutUint16(payload, 0xfeff)
+	for i, r := range u {
+		binary.LittleEndian.PutUint16(payload[2+i*2:], r)
+	}
+	hdr := make([]byte, 208)
+	copy(hdr, "MSWIM\x00\x00\x00")
+	binary.LittleEndian.PutUint32(hdr[8:], 208)
+	binary.LittleEndian.PutUint64(hdr[72:], uint64(len(payload)))
+	binary.LittleEndian.PutUint64(hdr[80:], 208)
+	binary.LittleEndian.PutUint64(hdr[88:], uint64(len(payload)))
+	if err := os.WriteFile(path, append(hdr, payload...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return log
 }
 
-func TestBuildISO(t *testing.T) {
-	dir := fakePath(t)
-	// touch the argument following -o so the chmod after xorriso has a target
-	log := fakeBin(t, dir, "xorriso", `prev=""; for a in "$@"; do [ "$prev" = "-o" ] && : > "$a"; prev="$a"; done`)
-
-	stage := t.TempDir()
-	out := filepath.Join(t.TempDir(), "win11-provision.iso")
-	var buf strings.Builder
-	if err := BuildISO(stage, out, &buf); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	argv := string(b)
-	for _, want := range []string{"-V " + VolumeLabel, "-o " + out, stage} {
-		if !strings.Contains(argv, want) {
-			t.Errorf("xorriso argv missing %q: %s", want, argv)
+// fakeMountISO points the validator's mount seam at a fixture directory.
+func fakeMountISO(t *testing.T, populate func(dir string)) {
+	t.Helper()
+	old := MountISO
+	MountISO = func(string) (string, func(), error) {
+		dir := t.TempDir()
+		if populate != nil {
+			populate(dir)
 		}
+		return dir, func() {}, nil
 	}
-	st, err := os.Stat(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the ISO carries the guest password in autounattend.xml
-	if st.Mode().Perm() != 0o600 {
-		t.Errorf("ISO mode = %04o, want 0600", st.Mode().Perm())
-	}
-}
-
-const wiminfoProAndHome = `WIM Information:
-----------------
-Path:           install.wim
-GUID:           0xdeadbeef
-
-Available Images:
------------------
-Index:                  1
-Name:                   Windows 11 Home
-Description:            Windows 11 Home
-Languages:              uk-UA
-Default Language:       uk-UA
-
-Index:                  2
-Name:                   Windows 11 Pro
-Description:            Windows 11 Pro
-Languages:              uk-UA
-Default Language:       uk-UA
-`
-
-const wiminfoHomeOnly = `Available Images:
------------------
-Index:                  1
-Name:                   Windows 11 Home
-Description:            Windows 11 Home
-`
-
-func fakeMountTools(t *testing.T, wiminfoOut string, createWim bool) {
-	t.Helper()
-	dir := fakePath(t)
-	extra := ""
-	if createWim {
-		// mount -o loop,ro <iso> <mnt>: create sources/install.wim under $4
-		extra = `mkdir -p "$4/sources"; : > "$4/sources/install.wim"`
-	}
-	fakeBin(t, dir, "mount", extra)
-	fakeBin(t, dir, "umount", "")
-	fakeBin(t, dir, "wiminfo", "cat <<'EOF'\n"+wiminfoOut+"EOF")
+	t.Cleanup(func() { MountISO = old })
 }
 
 func TestValidateWin11ISO(t *testing.T) {
@@ -730,9 +645,17 @@ func TestValidateWin11ISO(t *testing.T) {
 	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	withWIM := func(xmlBody string) func(string) {
+		return func(dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, "sources"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeTestWIM(t, filepath.Join(dir, "sources", "install.wim"), xmlBody)
+		}
+	}
 
 	t.Run("pro present", func(t *testing.T) {
-		fakeMountTools(t, wiminfoProAndHome, true)
+		fakeMountISO(t, withWIM(wimXMLProAndHome))
 		var out strings.Builder
 		info, err := ValidateWin11ISO(iso, &out)
 		if err != nil {
@@ -744,7 +667,7 @@ func TestValidateWin11ISO(t *testing.T) {
 	})
 
 	t.Run("pro absent lists editions", func(t *testing.T) {
-		fakeMountTools(t, wiminfoHomeOnly, true)
+		fakeMountISO(t, withWIM(wimXMLHomeOnly))
 		var out strings.Builder
 		_, err := ValidateWin11ISO(iso, &out)
 		if err == nil {
@@ -756,10 +679,25 @@ func TestValidateWin11ISO(t *testing.T) {
 	})
 
 	t.Run("not an installation iso", func(t *testing.T) {
-		fakeMountTools(t, "", false)
+		fakeMountISO(t, nil)
 		var out strings.Builder
 		if _, err := ValidateWin11ISO(iso, &out); err == nil || !strings.Contains(err.Error(), "install.wim") {
 			t.Fatalf("want missing install.wim error, got %v", err)
+		}
+	})
+
+	t.Run("not a wim", func(t *testing.T) {
+		fakeMountISO(t, func(dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, "sources"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "sources", "install.wim"), []byte("garbage"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+		var out strings.Builder
+		if _, err := ValidateWin11ISO(iso, &out); err == nil {
+			t.Fatal("want error for a corrupt install.wim")
 		}
 	})
 
@@ -769,18 +707,4 @@ func TestValidateWin11ISO(t *testing.T) {
 			t.Fatal("want error for missing ISO path")
 		}
 	})
-}
-
-func TestDownloadPins(t *testing.T) {
-	for _, d := range artifacts.Downloads() {
-		if d.URL == "" || d.SHA256 == "" || d.File == "" || d.Version == "" {
-			t.Errorf("%s: incomplete pin: %+v", d.Name, d)
-		}
-		if len(d.SHA256) != 64 {
-			t.Errorf("%s: SHA256 pin is not a sha256 hex digest", d.Name)
-		}
-		if !strings.HasPrefix(d.URL, "https://") {
-			t.Errorf("%s: URL must be https", d.Name)
-		}
-	}
 }

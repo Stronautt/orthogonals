@@ -9,6 +9,7 @@
       <orthogonals:password></orthogonals:password>
       <orthogonals:locale></orthogonals:locale>
       <orthogonals:resolution>3840x2160</orthogonals:resolution>
+      <orthogonals:win11-iso>/home/user/Win11.iso</orthogonals:win11-iso>
     </orthogonals:guest>
   </metadata>
   <memory unit='MiB'>24576</memory>

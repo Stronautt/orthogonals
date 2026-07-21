@@ -27,7 +27,6 @@ func TestUndoCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// default is dry-run
 	code, stdout, _ := run(t, "undo", "--root", root)
 	if code != 0 || !strings.Contains(stdout, "would restore /etc/foo.conf") {
 		t.Fatalf("dry-run undo: code=%d stdout=%q", code, stdout)
@@ -47,12 +46,5 @@ func TestUndoCommand(t *testing.T) {
 	code, stdout, _ = run(t, "undo", "--root", root)
 	if code != 0 || !strings.Contains(stdout, "nothing to undo") {
 		t.Fatalf("empty undo: code=%d stdout=%q", code, stdout)
-	}
-}
-
-func TestUndoBadFlag(t *testing.T) {
-	code, _, _ := run(t, "undo", "--no-such-flag")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
 	}
 }

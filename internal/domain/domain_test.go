@@ -18,8 +18,7 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
-// reference is the PoC machine: i5-13600K (P-threads 0-11, E-cores 12-19),
-// RTX 3080 + audio, 32 GiB RAM, 39-bit IOMMU address width.
+// reference is the PoC reference machine fixture.
 func reference(t *testing.T) *hw.Result {
 	t.Helper()
 	res, err := hw.Detect(hwtest.ReferenceRoot(t))
@@ -29,8 +28,7 @@ func reference(t *testing.T) *hw.Result {
 	return res
 }
 
-// noECores is a plain 8-core/16-thread desktop CPU on a 46-bit host —
-// exercises the no-E-core pinning fallback and the no-address-fix path.
+// noECores is a plain 8-core/16-thread desktop CPU on a 46-bit host.
 func noECores() *hw.Result {
 	cpus := make([]int, 16)
 	for i := range cpus {
@@ -67,8 +65,6 @@ func mustRender(t *testing.T, p Profile) []byte {
 	return out
 }
 
-// The guest settings survive the XML round trip — including characters that
-// need escaping — so media renders exactly what define was given.
 func TestGuestConfigRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	p := mustProfile(t, reference(t), Options{
@@ -99,21 +95,13 @@ func TestRenderGolden(t *testing.T) {
 		opts        Options
 		provisioned bool
 	}{
-		// 39-bit host, hybrid CPU, defaults (4K buffer, 24 GiB, 100 GiB disk),
-		// installer media attached as SATA cdroms
 		{"reference.xml", reference(t), Options{
 			Win11ISO:     "/home/user/Win11.iso",
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, false},
-		// 32M IVSHMEM sizing at an explicit 1080p maximum on the same 39-bit
-		// reference host; no media (the cdrom blocks must disappear when the
-		// ISO paths are empty)
 		{"reference-1080p.xml", reference(t), Options{Width: 1920, Height: 1080}, false},
-		// no E-cores + 46-bit host: pinning fallback, no maxphysaddr/fw_cfg
 		{"no-ecores-46bit.xml", noECores(), Options{}, false},
-		// a redefine after the pipeline finished: Converge must drop the
-		// cdroms the ISO options carry and render video model=none
 		{"provisioned.xml", reference(t), Options{
 			Win11ISO:     "/home/user/Win11.iso",
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
@@ -124,16 +112,10 @@ func TestRenderGolden(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := mustProfile(t, tc.res, tc.opts)
 			if tc.provisioned {
-				Converge(&p, &steps.Manifest{Records: []steps.Record{
-					{ID: InstallVideoStepID(p.Name)},
-					{ID: DetachMediaStepID(p.Name, "sda")},
-					{ID: DetachMediaStepID(p.Name, "sdb")},
-					{ID: DetachMediaStepID(p.Name, "sdc")},
-				}})
+				p.ApplyStage(StageFinal)
 			}
 			got := mustRender(t, p)
 
-			// well-formedness (including the qemu: namespace binding)
 			d := xml.NewDecoder(bytes.NewReader(got))
 			for {
 				_, err := d.Token()
@@ -163,8 +145,7 @@ func TestRenderGolden(t *testing.T) {
 	}
 }
 
-// TestReferenceProfile pins the computed values the golden file alone would
-// silently accept changes to under -update.
+// TestReferenceProfile pins the computed values -update would silently accept.
 func TestReferenceProfile(t *testing.T) {
 	p := mustProfile(t, reference(t), Options{})
 	if p.Name != "win11" {
@@ -176,8 +157,6 @@ func TestReferenceProfile(t *testing.T) {
 	if p.VCPUs != 10 || p.Cores != 5 || p.ThreadsPerCore != 2 {
 		t.Errorf("topology = %d vCPUs %d cores × %d threads, want 10 = 5×2", p.VCPUs, p.Cores, p.ThreadsPerCore)
 	}
-	// the first physical P-core (CPUs 0,1) stays with the host for the Looking
-	// Glass client and SPICE input; the guest gets the rest: vCPU i → CPU i+2
 	for i, pin := range p.VCPUPins {
 		if pin.VCPU != i || pin.CPU != i+2 {
 			t.Errorf("pin %d = vcpu %d → cpu %d, want vcpu %d → cpu %d", i, pin.VCPU, pin.CPU, i, i+2)
@@ -209,8 +188,7 @@ func TestReferenceProfile(t *testing.T) {
 	}
 }
 
-// TestNoECoresFallback: without E-cores physical core 0 stays with the host
-// and absorbs emulator+iothread; the guest gets every other thread.
+// TestNoECoresFallback pins the no-E-core pinning fallback.
 func TestNoECoresFallback(t *testing.T) {
 	p := mustProfile(t, noECores(), Options{})
 	if p.VCPUs != 14 || p.Cores != 7 || p.ThreadsPerCore != 2 {
@@ -227,9 +205,7 @@ func TestNoECoresFallback(t *testing.T) {
 	}
 }
 
-// TestAddressWidthFix: hosts under 40 bits get BOTH maxphysaddr and the OVMF
-// fw_cfg knob (PoC: maxphysaddr alone is ignored by OVMF); wide hosts get
-// neither.
+// TestAddressWidthFix pins the address-width fix on narrow and wide hosts.
 func TestAddressWidthFix(t *testing.T) {
 	narrow := string(mustRender(t, mustProfile(t, reference(t), Options{})))
 	for _, want := range []string{
@@ -249,34 +225,29 @@ func TestAddressWidthFix(t *testing.T) {
 	}
 }
 
-// TestQuirkFixes pins the PoC quirk set: install-time qxl + SPICE,
-// managed='no' hostdevs, HPET off, hypervclock on, VirtIO disk on an
-// iothread.
+// TestQuirkFixes pins the PoC quirk set.
 func TestQuirkFixes(t *testing.T) {
 	got := string(mustRender(t, mustProfile(t, reference(t), Options{})))
 	for _, want := range []string{
-		// defined with qxl (OOBE crash-loops with zero display adapters);
-		// up flips it to video=none after provisioning so the VDD monitor
-		// is the guest's only display
 		"<model type='qxl'/>",
 		"<graphics type='spice'",
-		"managed='no'", // hooks own the bind/unbind, not libvirt
+		"managed='no'",
 		"<timer name='hpet' present='no'/>",
 		"<timer name='hypervclock' present='yes'/>",
 		"<hyperv mode='custom'>",
 		"<target dev='vda' bus='virtio'/>",
 		"iothread='1'",
-		"<backend type='emulator' version='2.0'/>", // emulated TPM for Win11
+		"<backend type='emulator' version='2.0'/>",
 		"<shmem name='looking-glass'>",
-		"org.qemu.guest_agent.0", // provisioning poller needs the agent channel
-		"com.redhat.spice.0",     // spice-vdagent's transport: no channel, no clipboard (in Looking Glass either)
-		"<sound model='ich9'>",   // guest audio rides SPICE: the dGPU HDA has no sink on a headless card
+		"org.qemu.guest_agent.0",
+		"com.redhat.spice.0",
+		"<sound model='ich9'>",
 		"<audio id='1' type='spice'/>",
 		"machine='q35'",
-		"<libosinfo:os id='http://microsoft.com/win/11'/>", // virt tools show the guest as Windows 11
-		"<input type='mouse' bus='virtio'/>",               // Looking Glass raw-input path
+		"<libosinfo:os id='http://microsoft.com/win/11'/>",
+		"<input type='mouse' bus='virtio'/>",
 		"<input type='keyboard' bus='virtio'/>",
-		"<direct state='on'/>", // hv-stimer-direct: Windows takes synthetic timers without an intercept
+		"<direct state='on'/>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("domain missing %q", want)
@@ -297,12 +268,8 @@ func TestAssignableVCPUs(t *testing.T) {
 		cpu  hw.CPU
 		want int
 	}{
-		// 6 P-cores ×2 threads + 8 E-cores: first P-core kept for the host → 10
 		{"hybrid 6P+8E", hw.CPU{Threads: 20, Cores: 14, PCores: pcores(12), ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}}, 10},
-		// flat 8 cores, no HT, no E-cores: core 0 kept for host+emulator → 7
 		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 7},
-		// 2 cores HT: one core left after the host reserve — under MinVCPUs,
-		// so pinning still refuses it downstream
 		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 2},
 		{"unusable topology", hw.CPU{}, 0},
 	}
@@ -318,10 +285,10 @@ func TestDefaultGuestRAMGiB(t *testing.T) {
 		host uint64
 		want int
 	}{
-		{15872 << 20, 8}, // a "16 GiB" host reports ~15.5 GiB; round-up keeps it at the minimum
+		{15872 << 20, 8},
 		{32 << 30, 24},
 		{128 << 30, 120},
-		{12 << 30, 4}, // below the guest minimum — NewProfile rejects it downstream
+		{12 << 30, 4},
 	}
 	for _, tc := range cases {
 		if got := DefaultGuestRAMGiB(tc.host); got != tc.want {
@@ -348,7 +315,7 @@ func TestIVSHMEMSizing(t *testing.T) {
 
 func TestNewProfileErrors(t *testing.T) {
 	small := reference(t)
-	small.Platform.MemTotalBytes = 12 << 30 // 12 − 8 reserve = 4 GiB < 8 GiB minimum
+	small.Platform.MemTotalBytes = 12 << 30
 
 	tiny := noECores()
 	tiny.CPU = hw.CPU{Threads: 4, Cores: 2, PCores: []int{0, 1, 2, 3}}
@@ -387,35 +354,20 @@ func TestNewProfileErrors(t *testing.T) {
 	}
 }
 
-func TestConverge(t *testing.T) {
-	manifest := func(ids ...string) *steps.Manifest {
-		m := &steps.Manifest{}
-		for _, id := range ids {
-			m.Records = append(m.Records, steps.Record{ID: id})
-		}
-		return m
-	}
+func TestApplyStage(t *testing.T) {
 	cases := []struct {
-		name          string
-		m             *steps.Manifest
+		stage         Stage
 		wantVideoNone bool
-		wantISOs      [3]string // Win11, Virtio, Provision after Converge
+		wantISOs      [3]string
 	}{
-		{"fresh pipeline", manifest(), false, [3]string{"w.iso", "v.iso", "p.iso"}},
-		{"video flipped only", manifest(InstallVideoStepID("win11")), true, [3]string{"w.iso", "v.iso", "p.iso"}},
-		{"partial detach", manifest(DetachMediaStepID("win11", "sda")), false, [3]string{"", "v.iso", "p.iso"}},
-		{"fully provisioned", manifest(
-			InstallVideoStepID("win11"),
-			DetachMediaStepID("win11", "sda"),
-			DetachMediaStepID("win11", "sdb"),
-			DetachMediaStepID("win11", "sdc"),
-		), true, [3]string{"", "", ""}},
-		{"other VM's records", manifest(InstallVideoStepID("gaming"), DetachMediaStepID("gaming", "sda")), false, [3]string{"w.iso", "v.iso", "p.iso"}},
+		{StageInstall, false, [3]string{"w.iso", "v.iso", "p.iso"}},
+		{StageNoVideo, true, [3]string{"w.iso", "v.iso", "p.iso"}},
+		{StageFinal, true, [3]string{"", "", ""}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(string(tc.stage), func(t *testing.T) {
 			p := Profile{Name: "win11", Win11ISO: "w.iso", VirtioISO: "v.iso", ProvisionISO: "p.iso"}
-			Converge(&p, tc.m)
+			p.ApplyStage(tc.stage)
 			if p.VideoNone != tc.wantVideoNone {
 				t.Errorf("VideoNone = %v, want %v", p.VideoNone, tc.wantVideoNone)
 			}
@@ -424,17 +376,39 @@ func TestConverge(t *testing.T) {
 			}
 		})
 	}
-	if InstallMediaDetached(manifest(), "win11") {
-		t.Error("fresh manifest must not report media detached")
+}
+
+// TestStageRoundTrip pins CurrentStage reading back the render's stage.
+func TestStageRoundTrip(t *testing.T) {
+	for _, stage := range Stages {
+		t.Run(string(stage), func(t *testing.T) {
+			p := mustProfile(t, reference(t), Options{
+				Win11ISO:     "/isos/Win11.iso",
+				VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
+				ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
+			})
+			p.ApplyStage(stage)
+			root := t.TempDir()
+			path := filepath.Join(root, "etc/orthogonals/vms/win11.xml")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := CurrentStage(root, "win11"); got != stage {
+				t.Errorf("CurrentStage = %s, want %s", got, stage)
+			}
+		})
 	}
-	if !InstallMediaDetached(manifest(DetachMediaStepID("win11", "sda")), "win11") {
-		t.Error("journaled sda detach must report media detached")
+	if got := CurrentStage(t.TempDir(), "win11"); got != StageInstall {
+		t.Errorf("missing XML must read as the install stage, got %s", got)
 	}
 }
 
 func TestJournaledDisk(t *testing.T) {
-	record := func(cmd ...string) *steps.Manifest {
-		return &steps.Manifest{Records: []steps.Record{{ID: DiskImageID("win11"), Cmd: cmd}}}
+	record := func(args map[string]string) *steps.Manifest {
+		return &steps.Manifest{Records: []steps.Record{{ID: DiskImageID("win11"), OpArgs: args}}}
 	}
 	cases := []struct {
 		name     string
@@ -443,10 +417,10 @@ func TestJournaledDisk(t *testing.T) {
 		wantSize int
 		wantOK   bool
 	}{
-		{"journaled", record("qemu-img", "create", "-f", "qcow2", "/tank/win11.qcow2", "200G"), "/tank/win11.qcow2", 200, true},
+		{"journaled", record(map[string]string{"path": "/tank/win11.qcow2", "size-gib": "200"}), "/tank/win11.qcow2", 200, true},
 		{"not journaled", &steps.Manifest{}, "", 0, false},
-		{"foreign argv shape", record("qemu-img", "create", "/x.qcow2"), "", 0, false},
-		{"unparseable size", record("qemu-img", "create", "-f", "qcow2", "/x.qcow2", "big"), "", 0, false},
+		{"missing path", record(map[string]string{"size-gib": "200"}), "", 0, false},
+		{"unparseable size", record(map[string]string{"path": "/x.qcow2", "size-gib": "big"}), "", 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -479,53 +453,26 @@ func TestSteps(t *testing.T) {
 	if !disk.Data {
 		t.Error("disk image step must be a data step (plain undo keeps it)")
 	}
-	if got := strings.Join(disk.Cmd, " "); got != "qemu-img create -f qcow2 /var/lib/libvirt/images/win11.qcow2 100G" {
-		t.Errorf("disk cmd = %q", got)
+	if disk.Kind != steps.KindOp || disk.Op != steps.OpCreateVolume ||
+		disk.Args["path"] != "/var/lib/libvirt/images/win11.qcow2" || disk.Args["size-gib"] != "100" {
+		t.Errorf("disk step = %+v", disk)
 	}
-	if got := strings.Join(disk.UndoCmd, " "); got != "rm -f /var/lib/libvirt/images/win11.qcow2" {
-		t.Errorf("disk undo = %q (undo --purge must remove the image)", got)
+	if disk.UndoOp != steps.OpRemoveFile || disk.UndoArgs["path"] != "/var/lib/libvirt/images/win11.qcow2" {
+		t.Errorf("disk undo = %s %v (undo --purge must remove the image)", disk.UndoOp, disk.UndoArgs)
 	}
 	if got := strings.Join(list[2].Cmd, " "); got != "semanage fcontext -a -t virt_image_t /var/lib/libvirt/images/win11.qcow2" {
 		t.Errorf("fcontext cmd = %q", got)
 	}
-	if got := strings.Join(list[4].Cmd, " "); got != "virsh define /etc/orthogonals/vms/win11.xml" {
-		t.Errorf("define cmd = %q", got)
+	define := list[4]
+	if define.Kind != steps.KindOp || define.Op != steps.OpDefineDomain ||
+		define.Args["name"] != "win11" || define.Args["xml"] != "/etc/orthogonals/vms/win11.xml" {
+		t.Errorf("define step = %+v", define)
 	}
-	// the define re-runs when the rendered domain drifts, keyed on the same
-	// bytes the XML write step lands
-	if !bytes.Equal(list[4].Input, list[0].Content) {
+	if !bytes.Equal(define.Input, list[0].Content) {
 		t.Error("define step Input must be the rendered domain XML")
 	}
-	if got := strings.Join(list[4].UndoCmd, " "); got != "virsh undefine win11 --nvram --tpm" {
-		t.Errorf("define undo = %q", got)
-	}
-}
-
-// TestDetachMediaSteps: one virt-xml removal per installer cdrom, and the ID
-// list cli's undefine consumes is the exact reverse of apply order.
-func TestDetachMediaSteps(t *testing.T) {
-	list := DetachMediaSteps("win11")
-	wantCmds := []string{
-		"virt-xml win11 --remove-device --disk target=sda",
-		"virt-xml win11 --remove-device --disk target=sdb",
-		"virt-xml win11 --remove-device --disk target=sdc",
-	}
-	if len(list) != len(wantCmds) {
-		t.Fatalf("got %d steps, want %d", len(list), len(wantCmds))
-	}
-	for i, want := range wantCmds {
-		if got := strings.Join(list[i].Cmd, " "); got != want {
-			t.Errorf("step %d cmd = %q, want %q", i, got, want)
-		}
-		if list[i].UndoCmd != nil {
-			t.Errorf("step %d has an UndoCmd — undo drops the whole domain instead", i)
-		}
-	}
-	ids := DetachMediaStepIDs("win11")
-	for i := range list {
-		if ids[i] != list[len(list)-1-i].ID {
-			t.Errorf("undo id %d = %q, want %q (reverse apply order)", i, ids[i], list[len(list)-1-i].ID)
-		}
+	if define.UndoOp != steps.OpUndefineDomain || define.UndoArgs["name"] != "win11" {
+		t.Errorf("define undo = %s %v", define.UndoOp, define.UndoArgs)
 	}
 }
 

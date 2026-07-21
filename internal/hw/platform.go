@@ -10,42 +10,34 @@ import (
 	"strings"
 )
 
-// RequiredTools are host binaries later stages shell out to; detect reports
-// presence, preflight gates on it (hard requirements fail, the rest warn).
+// RequiredTools are host binaries later stages shell out to.
 var RequiredTools = []string{
-	"dracut", "grubby", "virsh", "qemu-img", "xorriso",
-	"semanage", "restorecon", "dnf", "lsof", "nvidia-smi",
-	"wiminfo", // wimlib-utils: media validates the Win11 ISO edition list
+	"dracut", "semanage", "restorecon", "nvidia-smi",
 }
 
 // Platform holds host facts that gate or shape the passthrough setup.
 type Platform struct {
-	IOMMUAddressWidth int `json:"iommu_address_width"` // 0 = IOMMU off or absent
-	// DMARTable: the ACPI DMAR table exists, i.e. the BIOS exposes VT-d even
-	// when the kernel has not enabled translation (no intel_iommu=on yet) —
-	// distinguishes "apply's kernel-args step will fix this" from "no VT-d".
+	IOMMUAddressWidth int `json:"iommu_address_width"`
+	// DMARTable reports that the ACPI DMAR table exists.
 	DMARTable     bool            `json:"dmar_table"`
-	SELinux       string          `json:"selinux"` // enforcing|permissive|disabled
+	SELinux       string          `json:"selinux"`
 	SecureBoot    bool            `json:"secure_boot"`
-	ChassisType   int             `json:"chassis_type"` // SMBIOS chassis type
+	ChassisType   int             `json:"chassis_type"`
 	MemTotalBytes uint64          `json:"mem_total_bytes"`
 	NVIDIA        NVIDIADriver    `json:"nvidia"`
 	Tools         map[string]bool `json:"tools"`
 }
 
-// NVIDIADriver describes the loaded NVIDIA kernel module. Flavor matters:
-// the open (GSP) module has documented unbind panics on driver teardown, so
-// dynamic-binding bug reports need flavor + version + nvidia_drm state.
+// NVIDIADriver describes the loaded NVIDIA kernel module.
 type NVIDIADriver struct {
 	Loaded  bool   `json:"loaded"`
 	Version string `json:"version,omitempty"`
-	Flavor  string `json:"flavor,omitempty"`  // open|proprietary
-	Modeset string `json:"modeset,omitempty"` // nvidia_drm.modeset Y|N, "" = nvidia_drm not loaded
-	Fbdev   string `json:"fbdev,omitempty"`   // nvidia_drm.fbdev Y|N, "" = param absent
+	Flavor  string `json:"flavor,omitempty"`
+	Modeset string `json:"modeset,omitempty"`
+	Fbdev   string `json:"fbdev,omitempty"`
 }
 
-// detectPlatform gathers platform facts; individual facts degrade to zero
-// values when their sysfs sources are absent.
+// detectPlatform gathers platform facts.
 func detectPlatform(root string) Platform {
 	p := Platform{
 		IOMMUAddressWidth: iommuAddressWidth(root),
@@ -66,16 +58,13 @@ func detectPlatform(root string) Platform {
 	return p
 }
 
-// dmarTablePresent stats the ACPI DMAR table; the file is root-read-only but
-// existence alone answers "is VT-d exposed by the firmware".
+// dmarTablePresent stats the ACPI DMAR table.
 func dmarTablePresent(root string) bool {
 	_, err := os.Stat(filepath.Join(root, "/sys/firmware/acpi/tables/DMAR"))
 	return err == nil
 }
 
-// iommuAddressWidth decodes MGAW (bits 21:16, stores width-1) from each VT-d
-// unit's CAP register and returns the minimum across units, matching the
-// kernel's "DMAR: Host address width N" line. 0 means no active IOMMU.
+// iommuAddressWidth decodes the address width from VT-d CAP registers.
 func iommuAddressWidth(root string) int {
 	caps, _ := filepath.Glob(filepath.Join(root, "/sys/class/iommu/dmar*/intel-iommu/cap"))
 	width := 0
@@ -92,14 +81,14 @@ func iommuAddressWidth(root string) int {
 	return width
 }
 
-// memTotalBytes parses the MemTotal line from /proc/meminfo (value is in kB).
-func memTotalBytes(root string) uint64 {
+// MeminfoKiB reads a "Key:" field from /proc/meminfo in KiB, 0 when absent or unreadable.
+func MeminfoKiB(root, key string) uint64 {
 	b, err := os.ReadFile(filepath.Join(root, "/proc/meminfo"))
 	if err != nil {
 		return 0
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		rest, ok := strings.CutPrefix(line, "MemTotal:")
+	for line := range strings.SplitSeq(string(b), "\n") {
+		rest, ok := strings.CutPrefix(line, key)
 		if !ok {
 			continue
 		}
@@ -111,23 +100,23 @@ func memTotalBytes(root string) uint64 {
 		if err != nil {
 			return 0
 		}
-		return kb * 1024
+		return kb
 	}
 	return 0
 }
 
+// memTotalBytes is the host's total RAM from /proc/meminfo.
+func memTotalBytes(root string) uint64 { return MeminfoKiB(root, "MemTotal:") * 1024 }
+
 // nvidiaVersionRe matches a driver version token like 570.153.02.
 var nvidiaVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)+$`)
 
-// KernelVersion is the running kernel release (uname -r equivalent), read
-// from /proc/sys/kernel/osrelease; empty when absent (fixture roots).
+// KernelVersion is the running kernel release.
 func KernelVersion(root string) string {
 	return readTrim(filepath.Join(root, "/proc/sys/kernel/osrelease"))
 }
 
-// DetectNVIDIA reads the loaded NVIDIA module's flavor and version from
-// /proc/driver/nvidia/version (NVRM line says "Open Kernel Module" for the
-// open flavor) and nvidia_drm's modeset/fbdev parameters from sysfs.
+// DetectNVIDIA reads the loaded NVIDIA module's flavor and version.
 func DetectNVIDIA(root string) NVIDIADriver {
 	var d NVIDIADriver
 	b, err := os.ReadFile(filepath.Join(root, "/proc/driver/nvidia/version"))
@@ -169,8 +158,7 @@ func selinuxMode(root string) string {
 	}
 }
 
-// secureBootEnabled reads the SecureBoot efivar: 4 attribute bytes + 1 value
-// byte; value 1 means enabled. Missing var (BIOS boot) reads as disabled.
+// secureBootEnabled reads the SecureBoot efivar.
 func secureBootEnabled(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root,
 		"/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"))

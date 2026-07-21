@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
+
+	"github.com/spf13/cobra"
 
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
@@ -13,44 +14,34 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// cmdUp runs the whole pipeline (apply → reboot → vm → media → install →
-// verify) as a persisted state machine: it stops cleanly at the reboot
-// boundary and resumes from /var/lib/orthogonals/state.json.
-func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet(cfg, stderr)
-	binding := fs.String("binding", hostcfg.BindingDynamic, "GPU binding mode: dynamic (libvirt hooks) or static (vfio-pci.ids at boot)")
-	user := fs.String("user", defaultUser(), "desktop user that owns the Looking Glass shm file")
-	vmName := fs.String("vm-name", "", "libvirt domain name (default: win11; a reboot-resume recovers the name the first run applied)")
-	displayName := fs.String("display-name", "", "desktop shortcut name (default: \"Windows 11\" for the default VM, else the VM name)")
-	ram := fs.Int("ram", 0, "guest RAM in GiB (default min(half of host RAM, 16))")
-	disk := fs.String("disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
-	diskSize := fs.Int("disk-size", 0, "disk image size in GiB (default 100)")
-	resolution := fs.String("resolution", "", "maximum guest resolution WxH (default 3840x2160)")
-	win11ISO := fs.String("win11-iso", "", "path to the user-supplied Windows 11 installation ISO")
-	guestUser := fs.String("guest-user", "", "guest admin account name")
-	guestPassword := fs.String("guest-password", "", "guest admin password (default: \""+media.DefaultGuestPassword+"\")")
-	locale := fs.String("locale", "", "guest locale and keyboard, e.g. uk-UA (default: the ISO's default language)")
-	nvidiaInstaller := fs.String("nvidia-installer", "", "user-downloaded NVIDIA Windows driver installer")
-	if err := fs.Parse(args); err != nil {
-		return 2
+// newUpCmd runs the whole pipeline as a persisted state machine.
+func newUpCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	var o vmOpts
+	var binding, nvidiaInstaller string
+	cmd := &cobra.Command{
+		Use:   "up",
+		Short: "run the whole pipeline (apply → vm → media → install → verify)",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return finish(stderr, "up", runUp(cfg, o, binding, nvidiaInstaller, stdout, stderr))
+		},
 	}
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "orthogonals up: %v\n", err)
-		return 1
-	}
+	addVMFlags(cmd.Flags(), &o)
+	cmd.Flags().StringVar(&binding, "binding", hostcfg.BindingDynamic, "GPU binding mode: dynamic (libvirt hooks) or static (vfio-pci.ids at boot)")
+	cmd.Flags().StringVar(&nvidiaInstaller, "nvidia-installer", "", "user-downloaded NVIDIA Windows driver installer")
+	return cmd
+}
+
+func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stderr io.Writer) error {
 	st, err := orchestrate.LoadState(cfg.Root)
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	// resolve the domain name once and persist it: a reboot-resume that omits
-	// --vm-name must target the name the first run applied into the hooks, not
-	// the default. state.json carries it across the reboot; it is removed by
-	// plain undo along with the rest of the pipeline state.
-	name := *vmName
+	name := o.vmName
 	if name == "" {
 		saved, err := orchestrate.SavedVMName(cfg.Root)
 		if err != nil {
-			return fail(err)
+			return err
 		}
 		if saved != "" {
 			name = saved
@@ -58,14 +49,9 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 			name = steps.DefaultVMName
 		}
 	}
-	// a completed pipeline plus a name the journal has no define step for is
-	// a NEW VM on a prepared host: restart the pipeline from scratch — apply
-	// no-ops, the boot checks pass without a reboot, and the remaining stages
-	// build the new domain. Mid-pipeline states stay untouched: that pipeline
-	// is still building its own VM.
 	man, err := steps.Load(cfg.Root)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	defined := man.Has(domain.DefineStepID(name))
 	restart := st == orchestrate.StateVerified && !defined
@@ -74,64 +60,27 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 		st = orchestrate.StateFresh
 	}
 
-	run := func(cmd command, cmdArgs []string) error {
-		if code := cmd(cfg, cmdArgs, stdout, stderr); code != 0 {
-			return fmt.Errorf("exit code %d (see output above)", code)
-		}
-		return nil
-	}
-	applyArgs := []string{"--binding", *binding, "--user", *user}
-	vmArgs := []string{"--vm-name", name, "--user", *user}
-	if *win11ISO != "" {
-		vmArgs = append(vmArgs, "--win11-iso", *win11ISO)
-	}
-	if *displayName != "" {
-		vmArgs = append(vmArgs, "--display-name", *displayName)
-	}
-	if *ram > 0 {
-		vmArgs = append(vmArgs, "--ram", strconv.Itoa(*ram))
-	}
-	if *disk != "" {
-		vmArgs = append(vmArgs, "--disk", *disk)
-	}
-	if *diskSize > 0 {
-		vmArgs = append(vmArgs, "--disk-size", strconv.Itoa(*diskSize))
-	}
-	if *resolution != "" {
-		vmArgs = append(vmArgs, "--resolution", *resolution)
-	}
-	// guest settings land in the domain's <metadata> block at define; the
-	// media stage reads them back from there
-	for _, opt := range []struct{ flag, val string }{
-		{"--guest-user", *guestUser}, {"--guest-password", *guestPassword},
-		{"--locale", *locale},
-	} {
-		if opt.val != "" {
-			vmArgs = append(vmArgs, opt.flag, opt.val)
-		}
-	}
-	vmArgs = append(vmArgs, "define")
-	launchHint := fmt.Sprintf("launch with %s or the %q desktop entry",
-		hostcfg.LauncherName(name), resolveDisplayName(cfg.Root, name, *displayName))
+	applyO := applyOpts{binding: binding, user: o.user}
+	vmO := o
+	vmO.vmName = name
+	vmO.stage = ""
+	vmO.purge = false
 
-	// a VM whose pipeline completed: converge instead of "setup complete" — a
-	// new release may render different host artifacts or domain XML, and the
-	// engine re-applies exactly what drifted. Completion is judged from the
-	// journal (media detach only ever runs after verify succeeds), not from
-	// state.json: the state file is ephemeral (undo removes it) while the
-	// manifest is the durable record. Both subcommands dry-run without --yes.
-	if defined && domain.InstallMediaDetached(man, name) {
+	launchHint := fmt.Sprintf("launch with `orthogonals vm launch --vm-name %s` or the %q desktop entry",
+		name, resolveDisplayName(cfg.Root, name, o.displayName))
+
+	if defined && domain.CurrentStage(cfg.Root, name) == domain.StageFinal {
 		fmt.Fprintf(stdout, "up: setup complete — converging host and VM %s to this binary's settings\n", name)
-		if err := run(cmdApply, applyArgs); err != nil {
-			return fail(err)
+		if err := runApply(cfg, applyO, stdout, stderr); err != nil {
+			return err
 		}
-		if err := run(cmdVM, vmArgs); err != nil {
-			return fail(err)
+		if err := runVMDefine(cfg, vmO, stdout, stderr); err != nil {
+			return err
 		}
 		if cfg.Yes {
 			fmt.Fprintf(stdout, "converged — %s\n", launchHint)
 		}
-		return 0
+		return nil
 	}
 	if !cfg.Yes {
 		fmt.Fprintf(stdout, "pipeline state: %s\n", st)
@@ -139,68 +88,56 @@ func cmdUp(cfg *Config, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  next: %s\n", s)
 		}
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to run the pipeline")
-		return 0
+		return nil
 	}
-	// the media stage needs the ISO; only demand it while that stage is ahead
-	if *win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
+	if o.win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
 		fmt.Fprintln(stderr, "usage: orthogonals up --yes --win11-iso <path> [flags]")
-		return 2
+		return exitCode(2)
 	}
 	if err := orchestrate.SaveVMName(cfg.Root, name); err != nil {
-		return fail(err)
+		return err
 	}
 	if restart {
-		// Machine.Run reloads the state from disk, so the restart must land
-		// there before the run starts
 		if err := orchestrate.SaveState(cfg.Root, st); err != nil {
-			return fail(err)
+			return err
 		}
 	}
-	mediaArgs := []string{"--win11-iso", *win11ISO, "--vm-name", name}
-	if *nvidiaInstaller != "" {
-		mediaArgs = append(mediaArgs, "--nvidia-installer", *nvidiaInstaller)
-	}
+	mediaO := mediaOpts{win11ISO: o.win11ISO, vmName: name, nvidiaInstaller: nvidiaInstaller}
 
+	c := virtClient()
+	defer func() { _ = c.Close() }()
 	m := &orchestrate.Machine{Root: cfg.Root, Out: stdout,
 		LaunchHint: launchHint,
 		Stages: orchestrate.Stages{
-			Apply:      func() error { return run(cmdApply, applyArgs) },
+			Apply:      func() error { return runApply(cfg, applyO, stdout, stderr) },
 			VerifyBoot: func() error { return orchestrate.VerifyBoot(cfg.Root) },
-			DefineVM:   func() error { return run(cmdVM, vmArgs) },
-			BuildMedia: func() error { return run(cmdMedia, mediaArgs) },
+			DefineVM:   func() error { return runVMDefine(cfg, vmO, stdout, stderr) },
+			BuildMedia: func() error { return runMedia(cfg, mediaO, stdout, stderr) },
 			Install: func() error {
-				if err := orchestrate.Install(name, stdout); err != nil {
+				if err := orchestrate.Install(c, name, stdout); err != nil {
 					return err
 				}
-				// journaled like every other host mutation, so re-runs skip it
-				// and vm undefine drops it with the domain
-				e := &steps.Engine{Root: cfg.Root, Yes: cfg.Yes, Out: stdout, Err: stderr}
-				return e.Apply([]steps.Step{domain.InstallVideoStep(name)})
+				noVideo := vmO
+				noVideo.stage = string(domain.StageNoVideo)
+				return runVMDefine(cfg, noVideo, stdout, stderr)
 			},
 			Verify: func() error {
-				if err := orchestrate.Verify(cfg.Root, name, stdout); err != nil {
+				if err := orchestrate.Verify(c, cfg.Root, name, stdout); err != nil {
 					return err
 				}
-				// only now: a failed verify may still want the install media
-				// around. Verified means the guest never boots from it again —
-				// drop the cdrom devices and the credentials-bearing ISO.
-				e := &steps.Engine{Root: cfg.Root, Yes: cfg.Yes, Out: stdout, Err: stderr}
-				if err := e.Apply(domain.DetachMediaSteps(name)); err != nil {
+				final := vmO
+				final.stage = string(domain.StageFinal)
+				if err := runVMDefine(cfg, final, stdout, stderr); err != nil {
 					return err
 				}
 				removeProvisionISO(cfg.Root, name, stdout)
 				return nil
 			},
 		}}
-	if err := m.Run(); err != nil {
-		return fail(err)
-	}
-	return 0
+	return m.Run()
 }
 
-// removeProvisionISO removes a VM's provision ISO once the pipeline verified —
-// it carries the guest credentials and is never needed again (the VM's cdrom
-// uses startupPolicy=optional, so the file can go at any time).
+// removeProvisionISO removes a VM's provision ISO once the pipeline verified.
 func removeProvisionISO(root, vm string, stdout io.Writer) {
 	path := media.ISOPath(root, vm)
 	if _, err := os.Stat(path); err != nil {

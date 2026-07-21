@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,39 +16,41 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
-// Record is the journaled outcome of one applied step — self-contained, so
-// undo works from the manifest alone.
+// Record is the journaled outcome of one applied step.
 type Record struct {
 	ID     string `json:"id"`
 	Kind   Kind   `json:"kind"`
 	Data   bool   `json:"data,omitempty"`
-	Reboot bool   `json:"reboot,omitempty"` // boot config; undo reports "reboot required"
+	Reboot bool   `json:"reboot,omitempty"`
 
 	// write_file
 	Path       string   `json:"path,omitempty"`
 	Mode       uint32   `json:"mode,omitempty"`
 	Restorecon bool     `json:"restorecon,omitempty"`
-	NewSHA256  string   `json:"new_sha256,omitempty"` // verified before restore
+	NewSHA256  string   `json:"new_sha256,omitempty"`
 	Existed    bool     `json:"existed,omitempty"`
-	Backup     string   `json:"backup,omitempty"` // filename under backup/, "" when the file was new
+	Backup     string   `json:"backup,omitempty"`
 	OrigMode   uint32   `json:"orig_mode,omitempty"`
-	MadeDirs   []string `json:"made_dirs,omitempty"` // dirs apply created, deepest first
+	MadeDirs   []string `json:"made_dirs,omitempty"`
 
 	// run_cmd
 	Cmd         []string `json:"cmd,omitempty"`
 	UndoCmd     []string `json:"undo_cmd,omitempty"`
-	InputSHA256 string   `json:"input_sha256,omitempty"` // re-run when the step's declared input drifts
+	InputSHA256 string   `json:"input_sha256,omitempty"`
 
 	// enable_unit
 	Unit       string `json:"unit,omitempty"`
 	Enable     bool   `json:"enable,omitempty"`
 	PriorState string `json:"prior_state,omitempty"`
+
+	// op
+	Op       string            `json:"op,omitempty"`
+	OpArgs   map[string]string `json:"op_args,omitempty"`
+	UndoOp   string            `json:"undo_op,omitempty"`
+	UndoArgs map[string]string `json:"undo_args,omitempty"`
 }
 
-// Manifest is the undo journal at /var/lib/orthogonals/manifest.json. The
-// version fields are stamped at apply time so undo can report host drift
-// ("host has since updated X → Y") — bug-report context, not a gate
-// (research §C2).
+// Manifest is the undo journal at /var/lib/orthogonals/manifest.json.
 type Manifest struct {
 	Kernel        string   `json:"kernel,omitempty"`
 	NVIDIAVersion string   `json:"nvidia_version,omitempty"`
@@ -61,24 +64,21 @@ func (m *Manifest) stamp(root string) {
 	m.NVIDIAVersion, m.NVIDIAFlavor = n.Version, n.Flavor
 }
 
-// StateDirPath is where orthogonals keeps its manifest, backups, cache, and
-// state; templates that need the path baked in take it as data from here.
+// StateDirPath is the orthogonals state directory.
 const StateDirPath = "/var/lib/orthogonals"
 
-// StateDir is StateDirPath under root (the test seam).
+// StateDir is StateDirPath under root.
 func StateDir(root string) string { return filepath.Join(root, StateDirPath) }
 
-// ManifestPath is the undo journal under root; preflight facts probe it to
-// report whether orthogonals already manages the host.
+// ManifestPath is the undo journal path under root.
 func ManifestPath(root string) string { return filepath.Join(StateDir(root), "manifest.json") }
 
-// StatePath is the persisted `up` pipeline position; undo removes it and
-// `vm undefine --purge` clears a stale one.
+// StatePath is the persisted up pipeline position under root.
 func StatePath(root string) string { return filepath.Join(StateDir(root), "state.json") }
 
 func backupDir(root string) string { return filepath.Join(StateDir(root), "backup") }
 
-// Load reads the manifest under root; a missing manifest is an empty one.
+// Load reads the manifest under root.
 func Load(root string) (*Manifest, error) {
 	b, err := os.ReadFile(ManifestPath(root))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -95,29 +95,40 @@ func Load(root string) (*Manifest, error) {
 }
 
 func (m *Manifest) save(root string) error {
-	if err := os.MkdirAll(StateDir(root), 0o755); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := ManifestPath(root) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, ManifestPath(root))
+	return WriteAtomic(ManifestPath(root), b)
 }
 
-// Has reports whether a step id is already journaled — callers use it to
-// tell a fresh mutation from a no-op re-run (e.g. "reboot required" only
-// when the kargs step actually landed this time).
+// WriteAtomic writes content to path via a temp file and rename, creating parent dirs.
+func WriteAtomic(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// Has reports whether a step id is already journaled.
 func (m *Manifest) Has(id string) bool { return m.find(id) != nil }
 
 // Cmd returns the journaled argv for id, nil if not journaled.
 func (m *Manifest) Cmd(id string) []string {
 	if r := m.find(id); r != nil {
 		return slices.Clone(r.Cmd)
+	}
+	return nil
+}
+
+// OpArgs returns the journaled op args for id, nil if not journaled.
+func (m *Manifest) OpArgs(id string) map[string]string {
+	if r := m.find(id); r != nil {
+		return maps.Clone(r.OpArgs)
 	}
 	return nil
 }

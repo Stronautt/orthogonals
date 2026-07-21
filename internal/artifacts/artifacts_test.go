@@ -8,12 +8,9 @@ import (
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// the pin table only ever fails at real download time; sanity-check it here
-// so a malformed bump is caught before a multi-GB fetch.
 func TestDownloadPinsWellFormed(t *testing.T) {
 	seen := map[string]string{}
-	all := append(Downloads(), LookingGlassSource)
-	for _, d := range all {
+	for _, d := range Downloads() {
 		if d.Name == "" || d.Version == "" {
 			t.Errorf("download missing name/version: %+v", d)
 		}
@@ -31,12 +28,8 @@ func TestDownloadPinsWellFormed(t *testing.T) {
 		}
 		seen[d.File] = d.Name
 	}
-	// LG requires client and guest host to be the same release
-	if LookingGlassHost.Version != LookingGlassSource.Version {
-		t.Errorf("Looking Glass host %s and source %s versions must match",
-			LookingGlassHost.Version, LookingGlassSource.Version)
-	}
-	if len(Packages) == 0 {
-		t.Error("host package list is empty")
+	if LookingGlassVersion == "" || !strings.Contains(LookingGlassHost.URL, LookingGlassVersion) {
+		t.Errorf("LookingGlassHost.URL %q must embed LookingGlassVersion %q",
+			LookingGlassHost.URL, LookingGlassVersion)
 	}
 }

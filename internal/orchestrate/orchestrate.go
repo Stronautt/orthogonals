@@ -1,7 +1,4 @@
-// Package orchestrate drives the end-to-end `orthogonals up` pipeline as a
-// state machine persisted in /var/lib/orthogonals/state.json, and implements
-// the health checks behind `orthogonals status` and the end-to-end
-// `orthogonals verify` sequence.
+// Package orchestrate drives the end-to-end orthogonals up pipeline.
 package orchestrate
 
 import (
@@ -17,8 +14,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// Banner sets operator instructions apart from step logs — the lines the
-// user must act on drown in "already applied" noise otherwise.
+// Banner sets operator instructions apart from step logs.
 func Banner(w io.Writer, lines ...string) {
 	rule := strings.Repeat("═", 72)
 	fmt.Fprintln(w)
@@ -43,7 +39,7 @@ const (
 	StateVerified    State = "verified"
 )
 
-// stateOrder is the pipeline sequence; Before relies on it.
+// stateOrder is the pipeline sequence.
 var stateOrder = []State{
 	StateFresh, StateHostApplied, StateRebooted, StateVMDefined,
 	StateMediaBuilt, StateInstalling, StateProvisioned, StateVerified,
@@ -54,10 +50,7 @@ func (s State) Before(t State) bool {
 	return slices.Index(stateOrder, s) < slices.Index(stateOrder, t)
 }
 
-// persisted is the on-disk state.json: the pipeline position plus the domain
-// name resolved at first run, so a reboot-resume that omits --vm-name still
-// targets the applied hooks (the registry only records the name after `vm
-// define`, which runs *after* the reboot boundary).
+// persisted is the on-disk state.json: pipeline position plus domain name.
 type persisted struct {
 	State State  `json:"state"`
 	Name  string `json:"name,omitempty"`
@@ -79,27 +72,14 @@ func loadPersisted(root string) (persisted, error) {
 }
 
 func writePersisted(root string, p persisted) error {
-	if err := os.MkdirAll(steps.StateDir(root), 0o755); err != nil {
-		return err
-	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	// temp+rename so a crash mid-write (the reboot boundary this state
-	// machine is built to survive) never leaves a half-written state.json.
-	// No fsync before the rename: on power loss some filesystems can still
-	// surface an empty file, which LoadState reports loudly — an acceptable
-	// failure for a file that just marks pipeline position
-	tmp := steps.StatePath(root) + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, steps.StatePath(root))
+	return steps.WriteAtomic(steps.StatePath(root), append(b, '\n'))
 }
 
-// LoadState reads the persisted pipeline state; a missing file (or a
-// name-only record written before the first stage) is a fresh host.
+// LoadState reads the persisted pipeline state.
 func LoadState(root string) (State, error) {
 	p, err := loadPersisted(root)
 	if err != nil {
@@ -114,10 +94,7 @@ func LoadState(root string) (State, error) {
 	return p.State, nil
 }
 
-// SavedVMName returns the domain name up persisted at first run, or "" if
-// none — so a reboot-resume that omits --vm-name recovers the applied name
-// instead of silently falling back to the default. The error distinguishes a
-// corrupt state.json from an absent one.
+// SavedVMName returns the domain name up persisted at first run, or "" if none.
 func SavedVMName(root string) (string, error) {
 	p, err := loadPersisted(root)
 	return p.Name, err
@@ -133,8 +110,7 @@ func SaveState(root string, st State) error {
 	return writePersisted(root, p)
 }
 
-// SaveVMName records the domain name for reboot-resume, preserving the
-// pipeline position.
+// SaveVMName records the domain name for reboot-resume.
 func SaveVMName(root, name string) error {
 	p, err := loadPersisted(root)
 	if err != nil {
@@ -144,14 +120,13 @@ func SaveVMName(root, name string) error {
 	return writePersisted(root, p)
 }
 
-// Stages are the pipeline stage implementations, injected so the state
-// machine is testable with fake step results.
+// Stages are the pipeline stage implementations.
 type Stages struct {
-	Apply      func() error // host configuration via the apply engine
-	VerifyBoot func() error // post-reboot checks: IOMMU, kargs, vfio module (research §C5)
+	Apply      func() error
+	VerifyBoot func() error
 	DefineVM   func() error
 	BuildMedia func() error
-	Install    func() error // Windows install + provisioning to completion
+	Install    func() error
 	Verify     func() error
 }
 
@@ -160,13 +135,10 @@ type Machine struct {
 	Root       string
 	Out        io.Writer
 	Stages     Stages
-	LaunchHint string // completion banner suffix naming the VM's launcher
+	LaunchHint string
 }
 
-// Run advances the pipeline, persisting state after every transition. It
-// stops cleanly (nil) at the reboot boundary — the next run resumes — and
-// wraps every failure with a pointer at `orthogonals bundle` so the failure
-// message is actionable.
+// Run advances the pipeline, persisting state after every transition.
 func (m *Machine) Run() error {
 	st, err := LoadState(m.Root)
 	if err != nil {
@@ -185,8 +157,6 @@ func (m *Machine) Run() error {
 		case StateHostApplied:
 			if err := m.Stages.VerifyBoot(); err != nil {
 				if appliedNow {
-					// half a transaction until the rebooted kernel proves the
-					// boot config took (research §C5)
 					Banner(m.Out,
 						"host configured — reboot now",
 						"continue after reboot by re-running the SAME `orthogonals up --yes`",
@@ -194,8 +164,6 @@ func (m *Machine) Run() error {
 						"only --vm-name is remembered across the reboot")
 					return nil
 				}
-				// a resumed run before the reboot lands here too — say so
-				// instead of presenting the expected state as a failure
 				return stageErr("post-reboot verification",
 					fmt.Errorf("%w\nif the host has not been rebooted since apply, reboot and re-run `orthogonals up --yes`", err))
 			}
@@ -213,8 +181,6 @@ func (m *Machine) Run() error {
 			}
 			st = StateMediaBuilt
 		case StateMediaBuilt:
-			// persisted before install starts so an interrupted install
-			// resumes here, not at the media build
 			st = StateInstalling
 		case StateInstalling:
 			fmt.Fprintln(m.Out, "up: installing and provisioning Windows")
@@ -238,15 +204,12 @@ func (m *Machine) Run() error {
 	}
 }
 
-// stageErr keeps every failure path actionable (plan Task 11): name the
-// stage and point at the diagnostics bundle.
+// stageErr names the stage and points at the diagnostics bundle.
 func stageErr(stage string, err error) error {
 	return fmt.Errorf("%s failed: %w\ncollect diagnostics with: orthogonals bundle orthogonals-diagnostics.tar.gz", stage, err)
 }
 
-// Remaining lists the stage descriptions Run would still execute from st,
-// for dry-run output. StateMediaBuilt is only a resume point inside the
-// install stage, so it carries no line of its own.
+// Remaining lists the stage descriptions Run would still execute from st.
 func Remaining(st State) []string {
 	stages := []struct {
 		from State

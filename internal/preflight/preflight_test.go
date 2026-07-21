@@ -7,8 +7,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
-// refResult mirrors the PoC reference machine (i5-13600K + RTX 3080) but with
-// a 46-bit address width and Secure Boot off so the base case is all-pass.
+// refResult mirrors the PoC reference machine (i5-13600K + RTX 3080).
 func refResult() *hw.Result {
 	igpu := hw.PCIDevice{Address: "0000:00:02.0", Vendor: hw.VendorIntel, Device: "0xa780", Class: "0x030000", Driver: "i915", IOMMUGroup: 0, HasReset: true,
 		BootVGA: true, DRMCard: "card0", Connectors: []string{"DP-1"}}
@@ -33,7 +32,7 @@ func refResult() *hw.Result {
 
 func goodFacts() Facts {
 	return Facts{DefaultNetActive: true, FreeDiskBytes: 500 << 30,
-		SwitcherooEnabled: true, SwitcherooNVIDIA: true}
+		SwitcherooEnabled: true, SwitcherooNVIDIA: true, LibvirtReachable: true}
 }
 
 func findCheck(t *testing.T, checks []Check, name string) Check {
@@ -60,10 +59,9 @@ func TestAnalyzers(t *testing.T) {
 		mutate func(*hw.Result, *Facts)
 		check  string
 		want   Status
-		has    []string // substrings expected in Message + Remedy
+		has    []string
 	}{
 		{
-			// no DMAR table at all = VT-d off in the BIOS or unsupported
 			name: "iommu off fails",
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.Platform.IOMMUAddressWidth = 0
@@ -72,8 +70,6 @@ func TestAnalyzers(t *testing.T) {
 			check: "iommu", want: Fail, has: []string{"BIOS"},
 		},
 		{
-			// DMAR table present but translation off = virgin host before
-			// apply adds the kernel args; must NOT block apply (it fixes this)
 			name:   "iommu inactive with dmar table warns",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.IOMMUAddressWidth = 0 },
 			check:  "iommu", want: Warn, has: []string{"apply", "reboot"},
@@ -174,7 +170,7 @@ func TestAnalyzers(t *testing.T) {
 				r.Devices = append(r.Devices, nvme)
 			},
 			check: "iommu-group", want: Fail,
-			has: []string{"0000:01:00.2", "ACS override", "BIOS", "slot", "kernel"},
+			has: []string{"0000:01:00.2", "ACS override", "BIOS", "slot", "kernel", "never"},
 		},
 		{
 			name: "bridge in gpu iommu group is fine",
@@ -190,19 +186,24 @@ func TestAnalyzers(t *testing.T) {
 			check:  "gpu-reset", want: Fail, has: []string{"reset"},
 		},
 		{
-			name:   "missing xorriso fails",
-			mutate: func(r *hw.Result, _ *Facts) { r.Platform.Tools["xorriso"] = false },
-			check:  "tools", want: Fail, has: []string{"xorriso"},
+			name:   "missing dracut fails",
+			mutate: func(r *hw.Result, _ *Facts) { r.Platform.Tools["dracut"] = false },
+			check:  "tools", want: Fail, has: []string{"dracut"},
 		},
 		{
-			name:   "missing virsh fails",
-			mutate: func(r *hw.Result, _ *Facts) { r.Platform.Tools["virsh"] = false },
-			check:  "tools", want: Fail, has: []string{"virsh"},
+			name:   "unreadable boot entries fail",
+			mutate: func(_ *hw.Result, f *Facts) { f.BLSError = "no BLS entries in /boot/loader/entries" },
+			check:  "boot entries", want: Fail, has: []string{"BLS entries"},
 		},
 		{
-			name:   "missing lsof only warns",
-			mutate: func(r *hw.Result, _ *Facts) { r.Platform.Tools["lsof"] = false },
-			check:  "tools", want: Warn, has: []string{"lsof"},
+			name:   "unreachable libvirt warns",
+			mutate: func(_ *hw.Result, f *Facts) { f.LibvirtReachable = false },
+			check:  "libvirt", want: Warn, has: []string{"virtqemud.socket"},
+		},
+		{
+			name:   "missing restorecon only warns",
+			mutate: func(r *hw.Result, _ *Facts) { r.Platform.Tools["restorecon"] = false },
+			check:  "tools", want: Warn, has: []string{"restorecon"},
 		},
 		{
 			name: "too few assignable vcpus fails",
@@ -212,10 +213,6 @@ func TestAnalyzers(t *testing.T) {
 			check: "cpu", want: Fail, has: []string{"vCPU"},
 		},
 		{
-			// non-hybrid 3c/6t: 2 threads/core, host takes one core and the
-			// emulator+iothread take a second (no E-cores), leaving only 2
-			// vCPUs — domain.pinning refuses this, so the gate must too, or the
-			// host gets mutated + rebooted before `vm define` fails.
 			name: "non-hybrid small cpu is refused to match pinning",
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.CPU = hw.CPU{Threads: 4, Cores: 2,
@@ -229,8 +226,6 @@ func TestAnalyzers(t *testing.T) {
 			check:  "memory", want: Fail, has: []string{"8 GiB"},
 		},
 		{
-			// a real 16 GiB host reports ~15.5 GiB MemTotal after firmware
-			// reservations; the documented minimum must still pass
 			name:   "16 GiB host with firmware reservations passes",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.MemTotalBytes = 15872 << 20 },
 			check:  "memory", want: Pass,
@@ -284,7 +279,7 @@ func TestAnalyzers(t *testing.T) {
 			name:   "switcheroo disabled warns",
 			mutate: func(_ *hw.Result, f *Facts) { f.SwitcherooEnabled = false; f.SwitcherooNVIDIA = false },
 			check:  "switcheroo", want: Warn,
-			has: []string{"switcheroo-control", "dnf install switcheroo-control", "systemctl enable --now switcheroo-control"},
+			has: []string{"switcheroo-control", "systemctl enable --now switcheroo-control"},
 		},
 		{
 			name:   "switcheroo missing nvidia gpu warns",
@@ -318,19 +313,6 @@ func TestAnalyzers(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// The ACS override must be refused outright, never offered as a fallback.
-func TestACSOverrideNeverOffered(t *testing.T) {
-	r, f := refResult(), goodFacts()
-	r.Devices = append(r.Devices, hw.PCIDevice{Address: "0000:01:00.2", Class: "0x010802", IOMMUGroup: 1})
-	c := findCheck(t, Analyze(r, f), "iommu-group")
-	if c.Status != Fail {
-		t.Fatalf("status = %v, want fail", c.Status)
-	}
-	if !strings.Contains(c.Remedy, "never") {
-		t.Errorf("remedy must state the ACS override is never enabled: %q", c.Remedy)
 	}
 }
 

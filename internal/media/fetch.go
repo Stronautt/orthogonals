@@ -15,8 +15,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// stallTimeout is how long a download may deliver no bytes before it is
-// aborted; var so tests can shrink it.
+// stallTimeout bounds how long a download may deliver no bytes.
 var stallTimeout = 60 * time.Second
 
 // stallResetReader pushes the watchdog forward on every successful read.
@@ -33,17 +32,13 @@ func (r stallResetReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// CachePath is where pinned downloads live; plain undo keeps it, undo --purge
-// removes it with the rest of the state dir. hostcfg's lg-build template
-// bakes the same path in.
+// CachePath is where pinned downloads live.
 const CachePath = steps.StateDirPath + "/cache"
 
-// CacheDir is CachePath under root (the test seam).
+// CacheDir is CachePath under root.
 func CacheDir(root string) string { return filepath.Join(root, CachePath) }
 
-// Fetch returns the cached path for d, downloading and pin-verifying when
-// absent. Any SHA256 mismatch — cached file or fresh download — is a hard
-// fail; a corrupted cache entry is never silently re-fetched.
+// Fetch returns the cached path for d, downloading and pin-verifying when absent.
 func Fetch(root string, d artifacts.Download, out io.Writer) (string, error) {
 	dest := filepath.Join(CacheDir(root), d.File)
 	if _, err := os.Stat(dest); err == nil {
@@ -62,16 +57,8 @@ func Fetch(root string, d artifacts.Download, out io.Writer) (string, error) {
 	}
 
 	fmt.Fprintf(out, "fetching %s %s from %s\n", d.Name, d.Version, d.URL)
-	// downloads are multi-GB, so no overall client timeout; instead a
-	// watchdog cancels the request when no bytes arrive for a while, so a
-	// stalled connection fails instead of hanging `media`/`up` forever
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// arm the watchdog before the request so DNS/connect/TLS/response-header
-	// stalls are covered too, not just the body read — a server that accepts
-	// the connection but never sends headers would otherwise hang forever.
-	// Reads push it forward, so only a genuine stall (no bytes for
-	// stallTimeout) cancels.
 	watchdog := time.AfterFunc(stallTimeout, cancel)
 	defer watchdog.Stop()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.URL, nil)
@@ -107,9 +94,7 @@ func Fetch(root string, d artifacts.Download, out io.Writer) (string, error) {
 	return dest, nil
 }
 
-// ImportInstaller copies a user-supplied installer into the cache under d's
-// stable filename — the last-resort path when the pinned download does not
-// cover the hardware. No pin to verify; the hash is printed for the record.
+// ImportInstaller copies a user-supplied installer into the cache under d's stable filename.
 func ImportInstaller(root string, d artifacts.Download, src string, out io.Writer) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -120,18 +105,20 @@ func ImportInstaller(root string, d artifacts.Download, src string, out io.Write
 		return "", err
 	}
 	dest := filepath.Join(CacheDir(root), d.File)
-	sum, err := hashCopy(dest, in)
+	part := dest + ".part"
+	sum, err := hashCopy(part, in)
 	if err != nil {
-		_ = os.Remove(dest)
+		_ = os.Remove(part)
 		return "", fmt.Errorf("%s: %w", d.Name, err)
+	}
+	if err := os.Rename(part, dest); err != nil {
+		return "", err
 	}
 	fmt.Fprintf(out, "%s: using user-supplied %s (SHA256 %s — not pin-verified)\n", d.Name, src, sum)
 	return dest, nil
 }
 
-// hashCopy streams r into a new file at dest, hashing in the same pass — the
-// payloads run hundreds of MB to multi-GB. Returns the SHA256 hex digest.
-// Callers remove dest on error.
+// hashCopy streams r into a new file at dest, hashing in the same pass.
 func hashCopy(dest string, r io.Reader) (string, error) {
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {

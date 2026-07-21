@@ -1,13 +1,19 @@
 package preflight
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 )
+
+// fakeSwitcheroo scripts the injectable switcheroo D-Bus probe for one test.
+func fakeSwitcheroo(t *testing.T, listsNVIDIA bool) {
+	t.Helper()
+	old := switcherooListsNVIDIA
+	switcherooListsNVIDIA = func(string) bool { return listsNVIDIA }
+	t.Cleanup(func() { switcherooListsNVIDIA = old })
+}
 
 func TestGatherFacts(t *testing.T) {
 	t.Run("bare root", func(t *testing.T) {
@@ -89,46 +95,21 @@ func TestGatherFacts(t *testing.T) {
 	t.Run("switcheroo enabled with nvidia listed", func(t *testing.T) {
 		root := t.TempDir()
 		hwtest.WriteFile(t, root, "etc/systemd/system/multi-user.target.wants/switcheroo-control.service", "")
-		bin := t.TempDir()
-		script := "#!/bin/sh\nprintf '%s\\n' " +
-			"'Device: 0' '  Name:        Intel UHD Graphics 770' '  Default:     yes' '  Environment: DRI_PRIME=pci-0000_00_02_0' '' " +
-			"'Device: 1' '  Name:        NVIDIA GeForce RTX 3080' '  Default:     no' '  Environment: __GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1'\n"
-		if err := os.WriteFile(filepath.Join(bin, "switcherooctl"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PATH", bin)
+		fakeSwitcheroo(t, true)
 		f := GatherFacts(root)
 		if !f.SwitcherooEnabled {
 			t.Error("SwitcherooEnabled = false, want true with wants symlink")
 		}
 		if !f.SwitcherooNVIDIA {
-			t.Error("SwitcherooNVIDIA = false, want true when switcherooctl lists an NVIDIA device with offload env")
+			t.Error("SwitcherooNVIDIA = false, want true when the daemon lists an NVIDIA device with offload env")
 		}
 	})
-	t.Run("switcheroo enabled but nvidia missing from list", func(t *testing.T) {
+	t.Run("switcheroo enabled but daemon unreachable", func(t *testing.T) {
 		root := t.TempDir()
 		hwtest.WriteFile(t, root, "etc/systemd/system/multi-user.target.wants/switcheroo-control.service", "")
-		bin := t.TempDir()
-		script := "#!/bin/sh\nprintf 'Device: 0\\n  Name:        Intel UHD Graphics 770\\n  Default:     yes\\n  Environment: DRI_PRIME=pci-0000_00_02_0\\n'\n"
-		if err := os.WriteFile(filepath.Join(bin, "switcherooctl"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PATH", bin)
-		f := GatherFacts(root)
-		if !f.SwitcherooEnabled {
-			t.Error("SwitcherooEnabled = false, want true")
-		}
-		if f.SwitcherooNVIDIA {
-			t.Error("SwitcherooNVIDIA = true, want false when the NVIDIA GPU is absent from the list")
-		}
-	})
-	t.Run("switcheroo enabled but switcherooctl missing", func(t *testing.T) {
-		root := t.TempDir()
-		hwtest.WriteFile(t, root, "etc/systemd/system/multi-user.target.wants/switcheroo-control.service", "")
-		t.Setenv("PATH", t.TempDir())
 		f := GatherFacts(root)
 		if f.SwitcherooNVIDIA {
-			t.Error("SwitcherooNVIDIA = true, want false when switcherooctl is unavailable")
+			t.Error("SwitcherooNVIDIA = true, want false when the daemon is unreachable (fixture root)")
 		}
 	})
 }

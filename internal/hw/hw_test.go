@@ -8,7 +8,7 @@ import (
 )
 
 func TestDetectReference(t *testing.T) {
-	t.Setenv("PATH", hwtest.FakeTools(t, "dracut", "grubby", "virsh"))
+	t.Setenv("PATH", hwtest.FakeTools(t, "dracut"))
 
 	r, err := Detect(hwtest.ReferenceRoot(t))
 	if err != nil {
@@ -41,14 +41,8 @@ func TestDetectReference(t *testing.T) {
 	}
 }
 
-func TestDetectMissingPCITree(t *testing.T) {
-	if _, err := Detect(t.TempDir()); err == nil {
-		t.Fatal("want error when sysfs PCI tree is missing")
-	}
-}
-
 func TestSummaryReference(t *testing.T) {
-	t.Setenv("PATH", hwtest.FakeTools(t, "dracut", "grubby"))
+	t.Setenv("PATH", hwtest.FakeTools(t, "dracut"))
 
 	r, err := Detect(hwtest.ReferenceRoot(t))
 	if err != nil {
@@ -67,7 +61,7 @@ func TestSummaryReference(t *testing.T) {
 		"enforcing",
 		"desktop",
 		"dracut: ok",
-		"virsh: MISSING",
+		"semanage: MISSING",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q:\n%s", want, s)

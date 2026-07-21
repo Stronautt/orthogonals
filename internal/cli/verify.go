@@ -4,26 +4,32 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/spf13/cobra"
+
 	"github.com/stronautt/orthogonals/internal/orchestrate"
 )
 
-func cmdVerify(cfg *Config, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet(cfg, stderr)
-	vmName := fs.String("vm-name", "", "libvirt domain name (default: the sole managed VM)")
-	if err := fs.Parse(args); err != nil {
-		return 2
+func newVerifyCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
+	var vmName string
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "check the guest is up and the GPU is passed through",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			name, err := vmNameOrSole(cfg.Root, vmName)
+			if err != nil {
+				fmt.Fprintf(stderr, "orthogonals verify: %v\n", err)
+				return exitCode(2)
+			}
+			c := virtClient()
+			defer func() { _ = c.Close() }()
+			if err := orchestrate.Verify(c, cfg.Root, name, stdout); err != nil {
+				fmt.Fprintf(stderr, "orthogonals verify: %v\ncollect diagnostics with: orthogonals bundle orthogonals-diagnostics.tar.gz\n", err)
+				return exitCode(1)
+			}
+			return nil
+		},
 	}
-	name := *vmName
-	if name == "" {
-		var err error
-		if name, err = soleVMName(cfg.Root); err != nil {
-			fmt.Fprintf(stderr, "orthogonals verify: %v\n", err)
-			return 2
-		}
-	}
-	if err := orchestrate.Verify(cfg.Root, name, stdout); err != nil {
-		fmt.Fprintf(stderr, "orthogonals verify: %v\ncollect diagnostics with: orthogonals bundle orthogonals-diagnostics.tar.gz\n", err)
-		return 1
-	}
-	return 0
+	cmd.Flags().StringVar(&vmName, "vm-name", "", "libvirt domain name (default: the sole managed VM)")
+	return cmd
 }

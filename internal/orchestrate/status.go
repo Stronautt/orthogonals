@@ -29,9 +29,7 @@ func Healthy(cs []Check) bool {
 	return true
 }
 
-// Status is the lightweight health check behind `orthogonals status`
-// (research §C5): catches kernel or driver updates silently undoing the
-// setup. It only checks what the manifest says orthogonals applied.
+// Status is the health check behind orthogonals status.
 func Status(root string) []Check {
 	m, err := steps.Load(root)
 	if err != nil {
@@ -54,17 +52,11 @@ func Status(root string) []Check {
 		add("iommu", iommuActive(root))
 		add("vfio module", vfioModuleLoaded(root))
 	} else {
-		// records exist but no kernel-args step: partial apply/undo — say so
-		// instead of silently skipping the boot-config checks
 		add("kernel arguments", err)
 	}
 
-	// nvidia (VM off) and vfio-pci (VM running) are both healthy bindings;
-	// no driver means a failed rebind — `orthogonals recover` territory
 	devs, err := hw.ScanPCI(root)
 	if err != nil {
-		// a health check that can't read the PCI tree must report a failure,
-		// not silently skip the very binding a driver update would break
 		add("gpu scan", fmt.Errorf("cannot read PCI devices: %w", err))
 	}
 	for _, d := range devs {
@@ -87,8 +79,6 @@ func Status(root string) []Check {
 	}
 
 	if m.Has(hooks.DispatcherStepID) {
-		// every hook script must exist for dynamic binding to work; the
-		// dispatcher alone starts VMs without ever detaching the GPU
 		var missing []string
 		for _, p := range hooks.InstalledPaths() {
 			if _, err := os.Stat(filepath.Join(root, p)); err != nil {

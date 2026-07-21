@@ -12,6 +12,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/media"
+	"github.com/stronautt/orthogonals/internal/media/mediatest"
 )
 
 func TestMediaRequiresISO(t *testing.T) {
@@ -47,14 +48,12 @@ func TestMediaDryRun(t *testing.T) {
 			t.Errorf("dry-run output missing %q\n%s", want, stdout)
 		}
 	}
-	// dry run generates nothing
 	if _, err := os.Stat(filepath.Join(root, "var/lib/orthogonals")); err == nil {
 		t.Error("dry run created state under root")
 	}
 }
 
-// writeGuestMeta registers a VM whose domain XML carries the given guest
-// metadata, the way `vm define` writes it.
+// writeGuestMeta registers a VM whose domain XML carries the given guest metadata.
 func writeGuestMeta(t *testing.T, root, vm, user, password, locale, resolution string) {
 	t.Helper()
 	xml := "<domain type='kvm'>\n  <name>" + vm + "</name>\n  <metadata>\n" +
@@ -73,25 +72,9 @@ func writeGuestMeta(t *testing.T, root, vm, user, password, locale, resolution s
 	}
 }
 
-// TestMediaLocaleNotOnMedia replays the live incident: a rebuild rendered an
-// answer file requesting a locale the Ukrainian-only media could not display,
-// and Windows Setup silently dropped to its interactive language page
-// (0x8007000D). The gate must turn the VM's registered locale into a loud
-// media-time failure naming the media's languages.
+// media turns a VM locale the media cannot display into a loud failure.
 func TestMediaLocaleNotOnMedia(t *testing.T) {
-	dir := t.TempDir()
-	for name, extra := range map[string]string{
-		"mount":   `mkdir -p "$4/sources"; : > "$4/sources/install.wim"`,
-		"umount":  "",
-		"wiminfo": `printf 'Name:                   Windows 11 Pro\nLanguages:              uk-UA\nDefault Language:       uk-UA\n'`,
-	} {
-		script := "#!/bin/sh\n" + extra + "\nexit 0\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
+	mediatest.InstallFixture(t, mediatest.WimXMLProUkrainian)
 	root := t.TempDir()
 	writeGuestMeta(t, root, "win11", "user", "pw", "en-US", "3840x2160")
 	iso := filepath.Join(t.TempDir(), "win11.iso")
@@ -109,8 +92,7 @@ func TestMediaLocaleNotOnMedia(t *testing.T) {
 	}
 }
 
-// fakeDownloads points every pin at a local server and returns the list —
-// same names and filenames as the real pins, test-computed hashes.
+// fakeDownloads points every pin at a local server with test-computed hashes.
 func fakeDownloads(t *testing.T) []artifacts.Download {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,20 +115,7 @@ func TestMediaYesEndToEnd(t *testing.T) {
 	downloads = func() []artifacts.Download { return fakes }
 	t.Cleanup(func() { downloads = prev })
 
-	dir := t.TempDir()
-	for name, extra := range map[string]string{
-		"mount":   `mkdir -p "$4/sources"; : > "$4/sources/install.wim"`,
-		"umount":  "",
-		"wiminfo": `printf 'Name:                   Windows 11 Pro\nLanguages:              uk-UA\nDefault Language:       uk-UA\n'`,
-		"xorriso": `prev=""; for a in "$@"; do [ "$prev" = "-o" ] && : > "$a"; prev="$a"; done`,
-	} {
-		script := "#!/bin/sh\n" + extra + "\nexit 0\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
+	mediatest.InstallFixture(t, mediatest.WimXMLProUkrainian)
 	root := t.TempDir()
 	iso := filepath.Join(t.TempDir(), "win11.iso")
 	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
@@ -171,8 +140,6 @@ func TestMediaYesEndToEnd(t *testing.T) {
 	if st.Mode().Perm() != 0o600 {
 		t.Errorf("ISO mode = %04o, want 0600", st.Mode().Perm())
 	}
-	// media must not create config state: the guest settings live in the
-	// VM's domain XML
 	if _, err := os.Stat(filepath.Join(root, "etc/orthogonals")); err == nil {
 		t.Error("media wrote under /etc/orthogonals")
 	}

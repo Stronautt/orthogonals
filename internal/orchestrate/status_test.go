@@ -12,8 +12,7 @@ import (
 
 const switcherooWants = "etc/systemd/system/multi-user.target.wants/switcheroo-control.service"
 
-// healthyRoot is an applied, rebooted host: an NVIDIA dGPU on the host
-// driver plus the live boot state and installed hooks the manifest promises.
+// healthyRoot is an applied, rebooted host.
 func healthyRoot(t *testing.T) string {
 	t.Helper()
 	root := rebootedRoot(t)
@@ -124,8 +123,6 @@ func TestStatusUnexpectedDriver(t *testing.T) {
 }
 
 func TestStatusMissingKernelArgsRecord(t *testing.T) {
-	// records exist but no kernel-args step (partial apply/undo): the boot
-	// config checks must be reported as failing, not silently skipped
 	root := healthyRoot(t)
 	m := `{"records":[{"id":"hook-qemu-dispatcher","kind":"write_file","path":"/etc/libvirt/hooks/qemu"}]}`
 	write(t, root, "var/lib/orthogonals/manifest.json", m)

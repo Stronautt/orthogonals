@@ -1,0 +1,3 @@
+[submodule "packaging/third_party/LookingGlass"]
+	path = packaging/third_party/LookingGlass
+	url = https://github.com/gnif/LookingGlass

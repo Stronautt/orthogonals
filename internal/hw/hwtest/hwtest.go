@@ -1,7 +1,4 @@
-// Package hwtest builds fake sysfs trees under a temp root for hw and cli
-// tests. Test-only, in the spirit of net/http/httptest. The reference
-// topology is also the single source for the shell test harnesses:
-// `go run ./test/fixture <dir>` emits it for the container and VM tiers.
+// Package hwtest builds fake sysfs trees under a temp root for hw and cli tests.
 package hwtest
 
 import (
@@ -15,14 +12,11 @@ import (
 // Dev describes one fixture PCI device.
 type Dev struct {
 	Addr, Vendor, Device, Class, Driver string
-	Group                               int // -1 = no iommu_group symlink
+	Group                               int
 	Reset                               bool
 }
 
-// BuildReferenceRoot writes the PoC reference machine under root:
-// i5-13600K (P-cores CPUs 0-11, E-cores 12-19), UHD 770 iGPU, RTX 3080 +
-// audio in IOMMU group 1, 39-bit IOMMU, SELinux enforcing, Secure Boot on,
-// desktop chassis. No testing.TB so the test/fixture generator can call it.
+// BuildReferenceRoot writes the PoC reference machine under root.
 func BuildReferenceRoot(root string) error {
 	devs := []Dev{
 		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
@@ -40,27 +34,26 @@ func BuildReferenceRoot(root string) error {
 		{"sys/devices/cpu_core/cpus", "0-11\n"},
 		{"sys/devices/cpu_atom/cpus", "12-19\n"},
 		{"proc/meminfo", "MemTotal:       33554432 kB\nMemFree:        20000000 kB\n"},
-		// Fresh-host NVIDIA state: proprietary module, nvidia_drm modeset on.
 		{"proc/driver/nvidia/version",
 			"NVRM version: NVIDIA UNIX x86_64 Kernel Module  570.153.02  Wed Apr 30 01:53:00 UTC 2025\n" +
 				"GCC version:  gcc version 15.0.1 20250418 (Red Hat 15.0.1-0) (GCC)\n"},
 		{"sys/module/nvidia_drm/parameters/modeset", "Y\n"},
 		{"sys/module/nvidia_drm/parameters/fbdev", "N\n"},
-		// VT-d CAP register with MGAW field (bits 21:16) = 38 -> 39-bit width.
 		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
-		// ACPI DMAR table: existence = firmware exposes VT-d (content unread)
 		{"sys/firmware/acpi/tables/DMAR", ""},
 		{"sys/fs/selinux/enforce", "1"},
 		{"sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", "\x06\x00\x00\x00\x01"},
 		{"sys/class/dmi/id/chassis_type", "3\n"},
-		// Firmware primary GPU + display cabling: monitor on the iGPU, none
-		// on the dGPU. The renderD entry pins the card-only DRM filter.
 		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
 		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
 		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
 		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
 		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
 		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
+		{"boot/loader/entries/fedora-6.15.0.conf",
+			"title Fedora Linux (6.15.0) 44\nversion 6.15.0\nlinux /vmlinuz-6.15.0\ninitrd /initramfs-6.15.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
+		{"boot/loader/entries/fedora-6.14.0.conf",
+			"title Fedora Linux (6.14.0) 44\nversion 6.14.0\nlinux /vmlinuz-6.14.0\ninitrd /initramfs-6.14.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
 	}
 	coreIDs := []int{0, 0, 4, 4, 8, 8, 12, 12, 16, 16, 20, 20, 24, 25, 26, 27, 28, 29, 30, 31}
 	for cpu, id := range coreIDs {
@@ -75,7 +68,7 @@ func BuildReferenceRoot(root string) error {
 	return nil
 }
 
-// ReferenceRoot is BuildReferenceRoot in a temp dir, for Go tests.
+// ReferenceRoot is BuildReferenceRoot in a temp dir.
 func ReferenceRoot(t testing.TB) string {
 	t.Helper()
 	root := t.TempDir()
@@ -93,8 +86,7 @@ func WriteFile(t testing.TB, root, rel, content string) {
 	}
 }
 
-// Symlink creates root/rel pointing at target (may dangle, like real sysfs
-// links resolved only by basename).
+// Symlink creates root/rel pointing at target.
 func Symlink(t testing.TB, root, rel, target string) {
 	t.Helper()
 	if err := symlink(root, rel, target); err != nil {
@@ -110,8 +102,7 @@ func AddPCI(t testing.TB, root string, d Dev) {
 	}
 }
 
-// FakeTools creates an executable stub per name and returns the dir; set it
-// as PATH so tool detection never depends on the host.
+// FakeTools creates an executable stub per name and returns the dir.
 func FakeTools(t testing.TB, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()

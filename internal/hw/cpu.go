@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// CPU is the host CPU topology. PCores/ECores hold logical CPU ids; on
-// non-hybrid CPUs PCores is all CPUs and ECores is nil.
+// CPU is the host CPU topology.
 type CPU struct {
 	Threads int   `json:"threads"`
 	Cores   int   `json:"cores"`
@@ -18,8 +17,7 @@ type CPU struct {
 	ECores  []int `json:"e_cores,omitempty"`
 }
 
-// detectCPU reads root/sys/devices/system/cpu. The P/E split comes from the
-// cpu_core/cpu_atom perf PMU cpulists when both exist (hybrid Intel).
+// detectCPU reads root/sys/devices/system/cpu.
 func detectCPU(root string) (CPU, error) {
 	present, err := os.ReadFile(filepath.Join(root, "/sys/devices/system/cpu/present"))
 	if err != nil {
@@ -31,8 +29,6 @@ func detectCPU(root string) (CPU, error) {
 	}
 	c := CPU{Threads: len(cpus)}
 
-	// Physical cores = unique core_id across present CPUs (single socket
-	// assumed; multi-socket is outside v1 scope).
 	coreIDs := map[string]bool{}
 	for _, n := range cpus {
 		id := readTrim(filepath.Join(root, "/sys/devices/system/cpu",
@@ -60,7 +56,7 @@ func detectCPU(root string) (CPU, error) {
 	return c, nil
 }
 
-// parseCPUList parses kernel cpulist syntax: "0", "0-3", "0-3,8-11".
+// parseCPUList parses kernel cpulist syntax.
 func parseCPUList(s string) ([]int, error) {
 	if s == "" {
 		return nil, nil

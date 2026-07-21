@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// Result is the full detect output. Its JSON form is the input contract for
-// preflight and every later stage.
+// Result is the full detect output.
 type Result struct {
 	Devices  []PCIDevice `json:"devices"`
 	GPUs     GPUs        `json:"gpus"`
@@ -34,9 +33,7 @@ func Detect(root string) (*Result, error) {
 	}, nil
 }
 
-// IOMMUActive reports whether the running kernel has IOMMU groups. The error
-// is non-nil only when sys/kernel/iommu_groups exists but cannot be read
-// (e.g. permissions), so callers can tell "off" from "unreadable".
+// IOMMUActive reports whether the running kernel has IOMMU groups.
 func IOMMUActive(root string) (bool, error) {
 	groups, err := os.ReadDir(filepath.Join(root, "/sys/kernel/iommu_groups"))
 	if err != nil && !os.IsNotExist(err) {
@@ -45,7 +42,7 @@ func IOMMUActive(root string) (bool, error) {
 	return len(groups) > 0, nil
 }
 
-// ModuleLoaded reports whether a kernel module is loaded (sys/module entry).
+// ModuleLoaded reports whether a kernel module is loaded.
 func ModuleLoaded(root, name string) bool {
 	_, err := os.Stat(filepath.Join(root, "/sys/module", name))
 	return err == nil
@@ -126,9 +123,7 @@ func devLine(d PCIDevice) string {
 	return fmt.Sprintf("%s %s (%s, %s)", d.Address, d.VendorDeviceID(), driver, group)
 }
 
-// gpuLine is devLine plus firmware-primary and cabling facts, so detect
-// output doubles as cabling guidance. A GPU without a DRM card says nothing
-// about displays: absence is unknown, not "no monitors".
+// gpuLine is devLine plus firmware-primary and cabling facts.
 func gpuLine(d PCIDevice) string {
 	line := devLine(d)
 	if d.BootVGA {
