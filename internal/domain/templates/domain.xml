@@ -20,6 +20,13 @@
   </metadata>
   <memory unit='MiB'>{{.RAMMiB}}</memory>
   <currentMemory unit='MiB'>{{.RAMMiB}}</currentMemory>
+  <!-- 2M hugepages: the qemu hook reserves nr_hugepages before QEMU starts and
+       frees them at shutdown; the pool must exist or QEMU cannot map guest RAM. -->
+  <memoryBacking>
+    <hugepages>
+      <page size='2' unit='M'/>
+    </hugepages>
+  </memoryBacking>
   <vcpu placement='static'>{{.VCPUs}}</vcpu>
   <iothreads>1</iothreads>
   <cputune>
@@ -78,7 +85,7 @@
   </pm>
   <devices>
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' iothread='1'/>
+      <driver name='qemu' type='qcow2' cache='none' io='io_uring' discard='unmap' iothread='1'/>
       <source file='{{.DiskPath}}'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>

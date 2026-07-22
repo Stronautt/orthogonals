@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,6 +89,91 @@ func TestGuestConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadMemoryMiB(t *testing.T) {
+	root := t.TempDir()
+	p := mustProfile(t, reference(t), Options{})
+	path := filepath.Join(root, xmlPath(p.Name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMemoryMiB(root, p.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 20480 {
+		t.Errorf("ReadMemoryMiB = %d, want 20480", got)
+	}
+
+	// A non-MiB unit is refused so a hugepage sizer can never mis-scale the pool.
+	badPath := filepath.Join(root, xmlPath("bad"))
+	if err := os.WriteFile(badPath, []byte(`<domain><memory unit='KiB'>25165824</memory></domain>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadMemoryMiB(root, "bad"); err == nil {
+		t.Error("ReadMemoryMiB must reject a non-MiB unit")
+	}
+	if _, err := ReadMemoryMiB(root, "missing"); err == nil {
+		t.Error("ReadMemoryMiB must error on a missing domain")
+	}
+}
+
+func TestParseCPUSet(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []int
+		err  bool
+	}{
+		{"", nil, false},
+		{"5", []int{5}, false},
+		{"0-1", []int{0, 1}, false},
+		{"12,13,14,15", []int{12, 13, 14, 15}, false},
+		{"2-11,14", []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14}, false},
+		{"3-1", nil, true},
+		{"x", nil, true},
+		{"1-y", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := ParseCPUSet(tc.in)
+			if tc.err {
+				if err == nil {
+					t.Errorf("ParseCPUSet(%q) = %v, want error", tc.in, got)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Errorf("ParseCPUSet(%q) = %v, %v, want %v", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadPinnedCPUs(t *testing.T) {
+	root := t.TempDir()
+	p := mustProfile(t, reference(t), Options{})
+	path := filepath.Join(root, xmlPath(p.Name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadPinnedCPUs(root, p.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
+	if !slices.Equal(got, want) {
+		t.Errorf("ReadPinnedCPUs = %v, want vcpu+emulator+iothread pins %v", got, want)
+	}
+	if _, err := ReadPinnedCPUs(root, "missing"); err == nil {
+		t.Error("ReadPinnedCPUs must error on a missing domain")
+	}
+}
+
 func TestRenderGolden(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -158,8 +244,8 @@ func TestReferenceProfile(t *testing.T) {
 	if p.Name != "win11" {
 		t.Errorf("Name = %q, want win11", p.Name)
 	}
-	if p.RAMMiB != 24*1024 {
-		t.Errorf("RAMMiB = %d, want 24576 (host minus the 8 GiB reserve)", p.RAMMiB)
+	if p.RAMMiB != 20*1024 {
+		t.Errorf("RAMMiB = %d, want 20480 (5/8 of the 32 GiB host)", p.RAMMiB)
 	}
 	if p.VCPUs != 10 || p.Cores != 5 || p.ThreadsPerCore != 2 {
 		t.Errorf("topology = %d vCPUs %d cores × %d threads, want 10 = 5×2", p.VCPUs, p.Cores, p.ThreadsPerCore)
@@ -359,10 +445,11 @@ func TestDefaultGuestRAMGiB(t *testing.T) {
 		host uint64
 		want int
 	}{
-		{15872 << 20, 8},
-		{32 << 30, 24},
-		{128 << 30, 120},
-		{12 << 30, 4},
+		{15872 << 20, 10}, // ~15.5 GiB rounds up to 16 → 10
+		{16 << 30, 10},
+		{24 << 30, 15},
+		{32 << 30, 20},
+		{64 << 30, 40},
 	}
 	for _, tc := range cases {
 		if got := DefaultGuestRAMGiB(tc.host); got != tc.want {

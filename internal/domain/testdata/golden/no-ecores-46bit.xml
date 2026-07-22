@@ -12,8 +12,15 @@
       <orthogonals:win11-iso></orthogonals:win11-iso>
     </orthogonals:guest>
   </metadata>
-  <memory unit='MiB'>57344</memory>
-  <currentMemory unit='MiB'>57344</currentMemory>
+  <memory unit='MiB'>40960</memory>
+  <currentMemory unit='MiB'>40960</currentMemory>
+  <!-- 2M hugepages: the qemu hook reserves nr_hugepages before QEMU starts and
+       frees them at shutdown; the pool must exist or QEMU cannot map guest RAM. -->
+  <memoryBacking>
+    <hugepages>
+      <page size='2' unit='M'/>
+    </hugepages>
+  </memoryBacking>
   <vcpu placement='static'>14</vcpu>
   <iothreads>1</iothreads>
   <cputune>
@@ -80,7 +87,7 @@
   </pm>
   <devices>
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' iothread='1'/>
+      <driver name='qemu' type='qcow2' cache='none' io='io_uring' discard='unmap' iothread='1'/>
       <source file='/var/lib/libvirt/images/win11.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>

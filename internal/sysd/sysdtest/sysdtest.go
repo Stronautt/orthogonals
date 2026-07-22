@@ -3,14 +3,16 @@ package sysdtest
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 )
 
 // Fake implements sysd.Client.
 type Fake struct {
-	Calls  []string
-	States map[string]string
-	Err    error
+	Calls       []string
+	States      map[string]string
+	AllowedCPUs map[string][]int
+	Err         error
 }
 
 func (f *Fake) log(verb, unit string) { f.Calls = append(f.Calls, verb+" "+unit) }
@@ -80,4 +82,22 @@ func (f *Fake) StartTransientUnit(name string, argv []string) error {
 	return f.Err
 }
 
+func (f *Fake) SetAllowedCPUs(unit string, cpus []int) error {
+	f.Calls = append(f.Calls, "set-allowed-cpus "+unit+" "+cpuList(cpus))
+	if f.AllowedCPUs == nil {
+		f.AllowedCPUs = map[string][]int{}
+	}
+	f.AllowedCPUs[unit] = cpus
+	return f.Err
+}
+
 func (f *Fake) Close() error { return nil }
+
+// cpuList renders a CPU index slice as a comma-separated string.
+func cpuList(cpus []int) string {
+	s := make([]string, len(cpus))
+	for i, c := range cpus {
+		s[i] = strconv.Itoa(c)
+	}
+	return strings.Join(s, ",")
+}

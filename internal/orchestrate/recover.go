@@ -29,6 +29,7 @@ func Recover(root string, s sysd.Client, yes bool, out io.Writer) error {
 			strings.Join(devs, " "))
 		return nil
 	}
+	hooks.ResetTransientState(root, s)
 	for _, m := range hooks.NVIDIAUnloadOrder {
 		_ = hooks.DeleteModule(m)
 	}

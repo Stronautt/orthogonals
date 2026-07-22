@@ -110,6 +110,17 @@ func stubNotify(t *testing.T) *[]string {
 	return &got
 }
 
+// stubSync swaps the global filesystem sync with a counter so unit tests never
+// flush the developer machine's disks.
+func stubSync(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	old := syncFS
+	syncFS = func() { n++ }
+	t.Cleanup(func() { syncFS = old })
+	return &n
+}
+
 // fakeBin installs an argv-logging stub on PATH and returns its log path.
 func fakeBin(t *testing.T, name, extra string) string {
 	t.Helper()
@@ -450,6 +461,148 @@ func TestGovernorRoundTrip(t *testing.T) {
 	restoreGovernor(root, log)
 	if got := read(t, filepath.Join(root, "sys/devices/system/cpu/cpu1/cpufreq/scaling_governor")); strings.TrimSpace(got) != "ondemand" {
 		t.Errorf("cpu1 governor = %q, want restored ondemand", got)
+	}
+}
+
+// seedHugepages writes a starting 2M pool size and a compaction sink under root.
+func seedHugepages(t *testing.T, root, nr string) {
+	t.Helper()
+	hwtest.WriteFile(t, root, "sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", nr+"\n")
+	hwtest.WriteFile(t, root, "proc/sys/vm/compact_memory", "0\n")
+}
+
+func TestReserveHugepagesRoundTrip(t *testing.T) {
+	cases := []struct {
+		name       string
+		prior      string
+		ramMiB     uint64
+		wantTarget string
+	}{
+		{"empty pool", "0", 24576, "12288"},
+		{"additive over existing pool", "100", 24576, "12388"},
+		{"odd RAM rounds up", "0", 8193, "4097"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedHugepages(t, root, tc.prior)
+			nrPath := filepath.Join(root, nrHugepages2MPath)
+
+			if err := reserveHugepages(root, "user", tc.ramMiB); err != nil {
+				t.Fatalf("reserveHugepages: %v", err)
+			}
+			if got := strings.TrimSpace(read(t, nrPath)); got != tc.wantTarget {
+				t.Errorf("nr_hugepages = %q, want %q", got, tc.wantTarget)
+			}
+			if got := strings.TrimSpace(read(t, filepath.Join(root, hugepageSaveFile))); got != tc.prior {
+				t.Errorf("saved prior = %q, want %q", got, tc.prior)
+			}
+
+			freeHugepages(root)
+			if got := strings.TrimSpace(read(t, nrPath)); got != tc.prior {
+				t.Errorf("nr_hugepages after free = %q, want restored %q", got, tc.prior)
+			}
+			if _, err := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(err) {
+				t.Error("hugepage marker must be removed after free")
+			}
+		})
+	}
+}
+
+func TestReserveHugepagesShortfall(t *testing.T) {
+	root := t.TempDir()
+	seedHugepages(t, root, "0")
+	nrPath := filepath.Join(root, nrHugepages2MPath)
+	// A pool that never grows: make nr_hugepages unwritable so every write is
+	// dropped and the readback stays at 0 — the kernel-fragmented case.
+	if err := os.Chmod(nrPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	notes := stubNotify(t)
+	syncs := stubSync(t)
+
+	err := reserveHugepages(root, "user", 24576)
+	if err == nil {
+		t.Fatal("reserveHugepages must fail when the pool cannot grow")
+	}
+	if len(*notes) != 1 {
+		t.Errorf("want one desktop notification, got %v", *notes)
+	}
+	// The two retries after the first short compaction each escalate to a cache drop.
+	if *syncs != hugepageAllocTries-1 {
+		t.Errorf("escalated sync count = %d, want %d", *syncs, hugepageAllocTries-1)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, dropCachesPath)); statErr != nil {
+		t.Errorf("retry must drop the page cache: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(statErr) {
+		t.Error("a failed reservation must roll back its marker")
+	}
+	if got := strings.TrimSpace(read(t, nrPath)); got != "0" {
+		t.Errorf("nr_hugepages = %q, want rolled back to 0", got)
+	}
+}
+
+func TestReserveHugepagesReadError(t *testing.T) {
+	root := t.TempDir() // no nr_hugepages file at all
+	notes := stubNotify(t)
+	if err := reserveHugepages(root, "user", 24576); err == nil {
+		t.Fatal("reserveHugepages must fail when the pool size is unreadable")
+	}
+	if len(*notes) != 1 {
+		t.Errorf("want one desktop notification, got %v", *notes)
+	}
+}
+
+func TestFreeHugepagesNoMarker(t *testing.T) {
+	root := t.TempDir()
+	seedHugepages(t, root, "5")
+	freeHugepages(root) // marker absent — must be a silent no-op
+	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "5" {
+		t.Errorf("nr_hugepages = %q, want untouched 5", got)
+	}
+}
+
+func TestFreeHugepagesCorruptMarker(t *testing.T) {
+	root := t.TempDir()
+	seedHugepages(t, root, "5")
+	hwtest.WriteFile(t, root, "run/orthogonals-hugepages", "garbage")
+	freeHugepages(root)
+	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "5" {
+		t.Errorf("a corrupt marker must leave nr_hugepages untouched, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(err) {
+		t.Error("a corrupt hugepage marker must still be cleared")
+	}
+}
+
+func TestResetTransientState(t *testing.T) {
+	root := t.TempDir()
+	// governor boosted, hugepages reserved, and cpuset isolated — a crashed start.
+	for _, cpu := range []string{"cpu0", "cpu1"} {
+		hwtest.WriteFile(t, root, "sys/devices/system/cpu/"+cpu+"/cpufreq/scaling_governor", "performance\n")
+	}
+	hwtest.WriteFile(t, root, "run/orthogonals-governor", "schedutil")
+	hwtest.WriteFile(t, root, "sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "12288\n")
+	hwtest.WriteFile(t, root, "run/orthogonals-hugepages", "0")
+	hwtest.WriteFile(t, root, "run/orthogonals-cpuset", "0-19")
+	sd := &sysdtest.Fake{}
+
+	ResetTransientState(root, sd)
+
+	if got := strings.TrimSpace(read(t, filepath.Join(root, "sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"))); got != "schedutil" {
+		t.Errorf("governor = %q, want restored schedutil", got)
+	}
+	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "0" {
+		t.Errorf("nr_hugepages = %q, want restored 0", got)
+	}
+	if len(sd.AllowedCPUs) == 0 {
+		t.Error("cpuset isolation was not lifted")
+	}
+	for _, marker := range []string{govSaveFile, hugepageSaveFile, cpusetSaveFile} {
+		if _, err := os.Stat(filepath.Join(root, marker)); !os.IsNotExist(err) {
+			t.Errorf("marker %s must be removed", marker)
+		}
 	}
 }
 

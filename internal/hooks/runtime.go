@@ -41,10 +41,22 @@ var (
 	// WakeSettle and WakeTimeout bound the D3cold wake poll.
 	WakeSettle  = 50 * time.Millisecond
 	WakeTimeout = 5 * time.Second
+	// syncFS flushes filesystem buffers before a cache drop; a seam for tests.
+	syncFS = unix.Sync
 )
 
 // govSaveFile holds the pre-boost CPU governor.
 const govSaveFile = "/run/orthogonals-governor"
+
+// Hugepage pool paths and the pre-VM pool-size marker.
+const (
+	hugepageSaveFile   = "/run/orthogonals-hugepages"
+	nrHugepages2MPath  = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+	compactMemoryPath  = "/proc/sys/vm/compact_memory"
+	dropCachesPath     = "/proc/sys/vm/drop_caches"
+	hugepageSizeMiB    = 2
+	hugepageAllocTries = 3
+)
 
 // Detach evicts the passthrough GPU to vfio-pci.
 func Detach(root, user string, sd sysd.Client) error {
@@ -339,6 +351,96 @@ func boostGovernor(root string, log logFunc) {
 		_ = os.WriteFile(g, []byte("performance\n"), 0o644)
 	}
 	log("cpu governor performance")
+}
+
+// reserveHugepages pre-allocates the 2M hugepage pool the domain's memoryBacking
+// requires. QEMU maps guest RAM from this pool at start, so it must exist before
+// the process launches. The prior pool size is saved to /run once and restored on
+// release. A shortfall rolls back this call's own allocation and aborts the start:
+// a clear pre-start failure beats QEMU's opaque out-of-memory.
+func reserveHugepages(root, user string, ramMiB uint64) error {
+	log := hookLog(root, "hugepages")
+	need := (ramMiB + hugepageSizeMiB - 1) / hugepageSizeMiB
+	nrPath := filepath.Join(root, nrHugepages2MPath)
+	prior, err := readUint(nrPath)
+	if err != nil {
+		return hugepageAbort(user, log, "read %s: %v", nrHugepages2MPath, err)
+	}
+	save := filepath.Join(root, hugepageSaveFile)
+	if _, err := os.Stat(save); err != nil {
+		_ = os.MkdirAll(filepath.Dir(save), 0o755)
+		_ = os.WriteFile(save, []byte(strconv.FormatUint(prior, 10)), 0o644)
+	}
+	target := prior + need
+	got := prior
+	for attempt := 0; attempt < hugepageAllocTries && got < target; attempt++ {
+		if attempt > 0 {
+			// The cheap compaction fell short. Flush dirty pages (sync) and drop
+			// clean page cache so the next compaction has more movable memory to
+			// fold into 2M blocks. Only on retry — a freshly-booted host that
+			// succeeds at once keeps its cache warm.
+			syncFS()
+			_ = os.WriteFile(filepath.Join(root, dropCachesPath), []byte("3\n"), 0o644)
+		}
+		_ = os.WriteFile(filepath.Join(root, compactMemoryPath), []byte("1\n"), 0o644)
+		_ = os.WriteFile(nrPath, []byte(strconv.FormatUint(target, 10)+"\n"), 0o644)
+		got, _ = readUint(nrPath)
+	}
+	if got < target {
+		_ = os.WriteFile(nrPath, []byte(strconv.FormatUint(prior, 10)+"\n"), 0o644)
+		_ = os.Remove(save)
+		return hugepageAbort(user, log,
+			"could not reserve %d 2M hugepages (got %d) — host memory is fragmented; reboot or free memory, then start the VM again",
+			need, got-prior)
+	}
+	log("reserved %d 2M hugepages (pool %d→%d)", need, prior, got)
+	return nil
+}
+
+// hugepageAbort logs, notifies the user with hugepage-specific guidance, and returns.
+func hugepageAbort(user string, log logFunc, format string, a ...any) error {
+	err := fmt.Errorf(format, a...)
+	log("failed — %v", err)
+	notify.Send(vmNote(user, "VM not started — could not reserve hugepages (host memory fragmented). Reboot or close apps, then start the VM again.", false))
+	return err
+}
+
+// freeHugepages restores the pool to its pre-VM size. No-op when the marker is
+// absent (the VM never reserved). Errors never block teardown.
+func freeHugepages(root string) {
+	log := hookLog(root, "hugepages")
+	save := filepath.Join(root, hugepageSaveFile)
+	b, err := os.ReadFile(save)
+	if err != nil {
+		return
+	}
+	prior := strings.TrimSpace(string(b))
+	if _, err := strconv.ParseUint(prior, 10, 64); err != nil {
+		_ = os.Remove(save)
+		return
+	}
+	_ = os.WriteFile(filepath.Join(root, nrHugepages2MPath), []byte(prior+"\n"), 0o644)
+	_ = os.Remove(save)
+	log("hugepage pool restored to %s", prior)
+}
+
+// readUint reads a sysfs/proc file holding a single unsigned integer.
+func readUint(path string) (uint64, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+}
+
+// ResetTransientState reverts every host tweak the qemu hook may leave behind
+// after a crashed VM start — CPU governor, hugepage pool, and cgroup isolation.
+// Each is a no-op when its /run marker is absent, so recover can call it any time.
+func ResetTransientState(root string, sd sysd.Client) {
+	log := hookLog(root, "recover")
+	restoreGovernor(root, log)
+	freeHugepages(root)
+	unisolateCPUs(root, sd)
 }
 
 // restoreGovernor writes the saved governor back and clears the save file.

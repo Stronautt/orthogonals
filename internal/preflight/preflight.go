@@ -423,8 +423,8 @@ func checkMemory(r *hw.Result) Check {
 	assignable := domain.DefaultGuestRAMGiB(r.Platform.MemTotalBytes)
 	if assignable < domain.MinRAMGiB {
 		return Check{name, Fail,
-			fmt.Sprintf("host has %.1f GiB RAM; the guest gets all but %d GiB = %d GiB but needs at least %d GiB",
-				gib(r.Platform.MemTotalBytes), domain.HostReserveRAMGiB, assignable, domain.MinRAMGiB),
+			fmt.Sprintf("host has %.1f GiB RAM; the default guest RAM works out to %d GiB but needs at least %d GiB",
+				gib(r.Platform.MemTotalBytes), assignable, domain.MinRAMGiB),
 			"Windows 11 needs 8 GiB minimum; v1 requires a 16 GiB host"}
 	}
 	return Check{name, Pass, fmt.Sprintf("%.1f GiB host RAM, %d GiB assignable", gib(r.Platform.MemTotalBytes), assignable), ""}

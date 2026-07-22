@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -26,8 +27,12 @@ const (
 
 	// MinRAMGiB is the minimum guest RAM in GiB.
 	MinRAMGiB = 8
-	// HostReserveRAMGiB is the RAM default sizing leaves the host.
-	HostReserveRAMGiB  = 8
+	// DefaultRAMNum/DefaultRAMDen size the default guest RAM as a fraction of host
+	// RAM (5/8 — e.g. 20 GiB on a 32 GiB host), scaling with the host and leaving
+	// the rest free so the hook's 2M hugepage pool reserves cleanly. Override with
+	// --ram.
+	DefaultRAMNum      = 5
+	DefaultRAMDen      = 8
 	MinVCPUs           = 4
 	DefaultDiskSizeGiB = 100
 	// DefaultWidth and DefaultHeight are the default maximum guest resolution.
@@ -43,10 +48,11 @@ const (
 	WideAddressWidthBits = 40
 )
 
-// DefaultGuestRAMGiB is the default guest RAM in GiB for a host of hostBytes.
+// DefaultGuestRAMGiB is the default guest RAM in GiB for a host of hostBytes:
+// DefaultRAMNum/DefaultRAMDen (5/8) of host RAM, scaling with the host.
 func DefaultGuestRAMGiB(hostBytes uint64) int {
 	memGiB := int((hostBytes + gib - 1) / gib)
-	return memGiB - HostReserveRAMGiB
+	return memGiB * DefaultRAMNum / DefaultRAMDen
 }
 
 // Options are the user-tunable domain knobs; zero values pick host-derived defaults.
@@ -345,6 +351,118 @@ func ReadGuestConfig(root, name string) GuestConfig {
 	}
 	_ = xml.Unmarshal(b, &g)
 	return g
+}
+
+// ReadMemoryMiB returns the guest RAM in MiB from the VM's registry XML under
+// root. The template always renders unit='MiB'; any other unit is refused so a
+// caller sizing the hugepage pool can never mis-scale it.
+func ReadMemoryMiB(root, name string) (uint64, error) {
+	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
+	if err != nil {
+		return 0, err
+	}
+	var doc struct {
+		Memory struct {
+			Unit  string `xml:"unit,attr"`
+			Value string `xml:",chardata"`
+		} `xml:"memory"`
+	}
+	if err := xml.Unmarshal(b, &doc); err != nil {
+		return 0, fmt.Errorf("parse domain memory: %w", err)
+	}
+	if doc.Memory.Unit != "MiB" {
+		return 0, fmt.Errorf("domain memory unit %q is not MiB", doc.Memory.Unit)
+	}
+	mib, err := strconv.ParseUint(strings.TrimSpace(doc.Memory.Value), 10, 64)
+	if err != nil || mib == 0 {
+		return 0, fmt.Errorf("bad domain memory %q", doc.Memory.Value)
+	}
+	return mib, nil
+}
+
+// ParseCPUSet parses a libvirt/sysfs cpuset list ("0-3,7,9-11") into CPU indices.
+func ParseCPUSet(s string) ([]int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var cpus []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		start, err := strconv.Atoi(strings.TrimSpace(lo))
+		if err != nil {
+			return nil, fmt.Errorf("bad cpuset %q", s)
+		}
+		end := start
+		if isRange {
+			if end, err = strconv.Atoi(strings.TrimSpace(hi)); err != nil {
+				return nil, fmt.Errorf("bad cpuset %q", s)
+			}
+		}
+		if end < start {
+			return nil, fmt.Errorf("bad cpuset %q", s)
+		}
+		for c := start; c <= end; c++ {
+			cpus = append(cpus, c)
+		}
+	}
+	return cpus, nil
+}
+
+// ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to guest
+// threads (vcpu, emulator, iothread) — the complement of the host's housekeeping
+// cores.
+func ReadPinnedCPUs(root, name string) ([]int, error) {
+	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		VCPUPin []struct {
+			CPUSet string `xml:"cpuset,attr"`
+		} `xml:"cputune>vcpupin"`
+		EmulatorPin struct {
+			CPUSet string `xml:"cpuset,attr"`
+		} `xml:"cputune>emulatorpin"`
+		IOThreadPin struct {
+			CPUSet string `xml:"cpuset,attr"`
+		} `xml:"cputune>iothreadpin"`
+	}
+	if err := xml.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("parse cputune: %w", err)
+	}
+	seen := map[int]bool{}
+	var out []int
+	add := func(set string) error {
+		cpus, err := ParseCPUSet(set)
+		if err != nil {
+			return err
+		}
+		for _, c := range cpus {
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+		return nil
+	}
+	for _, v := range doc.VCPUPin {
+		if err := add(v.CPUSet); err != nil {
+			return nil, err
+		}
+	}
+	if err := add(doc.EmulatorPin.CPUSet); err != nil {
+		return nil, err
+	}
+	if err := add(doc.IOThreadPin.CPUSet); err != nil {
+		return nil, err
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 // DomainXMLID and the other ID funcs return journal step IDs for a VM's domain steps.

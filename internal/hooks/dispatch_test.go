@@ -8,10 +8,12 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 )
 
-// registerVM registers a managed VM.
+// registerVM registers a managed VM with the minimal XML the hook reads back
+// (the <memory> element the hugepage reservation sizes from).
 func registerVM(t *testing.T, root, vm string) {
 	t.Helper()
-	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml", "<domain/>")
+	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml",
+		"<domain><memory unit='MiB'>24576</memory></domain>")
 }
 
 func TestDispatchUnmanagedPassesThrough(t *testing.T) {
@@ -40,6 +42,7 @@ func TestDispatchOneVMAtATime(t *testing.T) {
 func TestDispatchPrepareStartsInhibitor(t *testing.T) {
 	root := hookRoot(t)
 	registerVM(t, root, "win11")
+	seedHugepages(t, root, "0")
 	stubDeviceDriver(t, driverFromOverride)
 	stubDeleteModule(t, nil)
 	stubNotify(t)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
@@ -27,6 +28,14 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 			return fmt.Errorf("GPU handover to vfio-pci failed — VM start aborted. Details: %s: %w",
 				filepath.Join(root, LogPath), err)
 		}
+		ramMiB, err := domain.ReadMemoryMiB(root, vm)
+		if err != nil {
+			return fmt.Errorf("read guest RAM for hugepage reservation: %w", err)
+		}
+		if err := reserveHugepages(root, user, ramMiB); err != nil {
+			return err
+		}
+		isolateCPUs(root, sd, vm)
 		unit := inhibitUnit(vm)
 		_ = sd.ResetFailedUnit(unit)
 		if err := sd.StartTransientUnit(unit, []string{exe, "hook", "inhibit", vm}); err != nil {
@@ -34,6 +43,8 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 		}
 	case "release/end":
 		_ = sd.StopUnit(inhibitUnit(vm))
+		unisolateCPUs(root, sd)
+		freeHugepages(root)
 		if err := Reattach(root, user, sd); err != nil {
 			return fmt.Errorf("GPU reattach to the host driver failed — run: sudo orthogonals recover --yes. Details: %s: %w",
 				filepath.Join(root, LogPath), err)

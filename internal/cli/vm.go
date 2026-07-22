@@ -45,7 +45,7 @@ func addVMFlags(fs *pflag.FlagSet, o *vmOpts) {
 	fs.StringVar(&o.vmName, "vm-name", "", "libvirt domain name (default: win11)")
 	fs.StringVar(&o.displayName, "display-name", "", "desktop shortcut name (default: the registered name, \"Windows 11\" for the default VM, else the VM name)")
 	fs.StringVar(&o.user, "user", defaultUser(), "desktop user whose ~/Desktop gets the VM shortcut link")
-	fs.IntVar(&o.ram, "ram", 0, "guest RAM in GiB (default min(half of host RAM, 16))")
+	fs.IntVar(&o.ram, "ram", 0, "guest RAM in GiB (default: 5/8 of host RAM)")
 	fs.StringVar(&o.disk, "disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
 	fs.IntVar(&o.diskSize, "disk-size", 0, "disk image size in GiB (default 100)")
 	fs.StringVar(&o.resolution, "resolution", "", "maximum guest resolution WxH, sizes the Looking Glass shared memory; the actual mode is picked in Windows display settings (default 3840x2160)")

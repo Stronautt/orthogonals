@@ -29,6 +29,9 @@ type Client interface {
 	ResetFailedUnit(unit string) error
 	// StartTransientUnit runs argv as a transient systemd service.
 	StartTransientUnit(name string, argv []string) error
+	// SetAllowedCPUs restricts a unit's cgroup cpuset to cpus at runtime (cgroup
+	// v2 AllowedCPUs). Passing the full CPU set lifts a prior restriction.
+	SetAllowedCPUs(unit string, cpus []int) error
 	Close() error
 }
 
@@ -193,6 +196,36 @@ func (c *client) StartTransientUnit(name string, argv []string) error {
 			return conn.StartTransientUnitContext(ctx, name, "replace", props, done)
 		})
 	})
+}
+
+func (c *client) SetAllowedCPUs(unit string, cpus []int) error {
+	return c.do("set AllowedCPUs "+unit, func(ctx context.Context, conn *sddbus.Conn) error {
+		return conn.SetUnitPropertiesContext(ctx, unit, true, sddbus.Property{
+			Name:  "AllowedCPUs",
+			Value: godbus.MakeVariant(allowedCPUsMask(cpus)),
+		})
+	})
+}
+
+// allowedCPUsMask encodes cpus as systemd's AllowedCPUs value: a little-endian
+// bitmask where bit N (byte N/8, bit N%8) is set when CPU N is allowed.
+func allowedCPUsMask(cpus []int) []byte {
+	high := -1
+	for _, c := range cpus {
+		if c > high {
+			high = c
+		}
+	}
+	if high < 0 {
+		return []byte{}
+	}
+	mask := make([]byte, high/8+1)
+	for _, c := range cpus {
+		if c >= 0 {
+			mask[c/8] |= 1 << (uint(c) % 8)
+		}
+	}
+	return mask
 }
 
 // waitJob starts a systemd job and blocks on its completion signal.
