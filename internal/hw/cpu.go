@@ -31,7 +31,7 @@ func detectCPU(root string) (CPU, error) {
 	if err != nil {
 		return CPU{}, fmt.Errorf("read cpu present: %w", err)
 	}
-	cpus, err := parseCPUList(strings.TrimSpace(string(present)))
+	cpus, err := ParseCPUList(strings.TrimSpace(string(present)))
 	if err != nil {
 		return CPU{}, fmt.Errorf("parse cpu present: %w", err)
 	}
@@ -53,8 +53,8 @@ func detectCPU(root string) (CPU, error) {
 	pList := readTrim(filepath.Join(root, "/sys/devices/cpu_core/cpus"))
 	eList := readTrim(filepath.Join(root, "/sys/devices/cpu_atom/cpus"))
 	if pList != "" && eList != "" {
-		p, errP := parseCPUList(pList)
-		e, errE := parseCPUList(eList)
+		p, errP := ParseCPUList(pList)
+		e, errE := ParseCPUList(eList)
 		if errP == nil && errE == nil {
 			c.Hybrid, c.PCores, c.ECores = true, p, e
 			return c, nil
@@ -87,28 +87,55 @@ func cpuVendor(root string) string {
 	return ""
 }
 
-// parseCPUList parses kernel cpulist syntax.
-func parseCPUList(s string) ([]int, error) {
+// MaxCPUIndex bounds a parsed cpulist. Linux caps CONFIG_NR_CPUS at 8192, and
+// the qemu hook parses cpusets from sysfs and from a domain XML a user may have
+// edited: an unbounded range would expand to an allocation that kills the hook
+// mid-handover, with the GPU already detached.
+const MaxCPUIndex = 8191
+
+// ParseCPUList parses kernel/libvirt cpulist syntax ("0-3,7,9-11") into CPU
+// indices. The one parser for every cpulist in the tree — sysfs, domain XML,
+// and hook state all go through the same bounds.
+func ParseCPUList(s string) ([]int, error) {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil
 	}
 	var out []int
 	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
 		lo, hi, isRange := strings.Cut(part, "-")
-		a, err := strconv.Atoi(lo)
+		a, err := strconv.Atoi(strings.TrimSpace(lo))
 		if err != nil {
 			return nil, fmt.Errorf("bad cpulist %q", s)
 		}
 		b := a
 		if isRange {
-			b, err = strconv.Atoi(hi)
-			if err != nil || b < a {
+			if b, err = strconv.Atoi(strings.TrimSpace(hi)); err != nil {
 				return nil, fmt.Errorf("bad cpulist %q", s)
 			}
 		}
+		if b < a || b > MaxCPUIndex {
+			return nil, fmt.Errorf("bad cpulist %q", s)
+		}
 		for n := a; n <= b; n++ {
+			if len(out) > MaxCPUIndex {
+				return nil, fmt.Errorf("bad cpulist %q", s)
+			}
 			out = append(out, n)
 		}
 	}
 	return out, nil
+}
+
+// FormatCPUList renders CPU indices as a compact cpulist string ("0,1").
+func FormatCPUList(cpus []int) string {
+	s := make([]string, len(cpus))
+	for i, c := range cpus {
+		s[i] = strconv.Itoa(c)
+	}
+	return strings.Join(s, ",")
 }

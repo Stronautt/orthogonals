@@ -18,9 +18,9 @@ var RequiredTools = []string{
 // Platform holds host facts that gate or shape the passthrough setup.
 type Platform struct {
 	IOMMUAddressWidth int `json:"iommu_address_width"`
-	// IOMMUTable reports that the firmware exposes an IOMMU via an ACPI table
-	// (Intel DMAR or AMD IVRS).
-	IOMMUTable  bool   `json:"iommu_table"`
+	// IOMMUTable names the ACPI table the firmware exposes its IOMMU through:
+	// "DMAR" (Intel VT-d), "IVRS" (AMD-Vi), or "" when there is none.
+	IOMMUTable  string `json:"iommu_table,omitempty"`
 	SELinux     string `json:"selinux"`
 	SecureBoot  bool   `json:"secure_boot"`
 	ChassisType int    `json:"chassis_type"`
@@ -46,7 +46,7 @@ type NVIDIADriver struct {
 func detectPlatform(root string) Platform {
 	p := Platform{
 		IOMMUAddressWidth: iommuAddressWidth(root),
-		IOMMUTable:        iommuTablePresent(root),
+		IOMMUTable:        iommuTable(root),
 		SELinux:           selinuxMode(root),
 		SecureBoot:        secureBootEnabled(root),
 		MemTotalBytes:     memTotalBytes(root),
@@ -63,14 +63,20 @@ func detectPlatform(root string) Platform {
 	return p
 }
 
-// iommuTablePresent stats the firmware IOMMU ACPI table: Intel DMAR or AMD IVRS.
-func iommuTablePresent(root string) bool {
-	for _, table := range []string{"DMAR", "IVRS"} {
+// Platform.IOMMUTable values: the firmware IOMMU ACPI table names.
+const (
+	IOMMUTableDMAR = "DMAR"
+	IOMMUTableIVRS = "IVRS"
+)
+
+// iommuTable stats the firmware IOMMU ACPI tables and names the one present.
+func iommuTable(root string) string {
+	for _, table := range []string{IOMMUTableDMAR, IOMMUTableIVRS} {
 		if _, err := os.Stat(filepath.Join(root, "/sys/firmware/acpi/tables", table)); err == nil {
-			return true
+			return table
 		}
 	}
-	return false
+	return ""
 }
 
 // iommuAddressWidth decodes the host DMA address width from the VT-d CAP register.
@@ -196,14 +202,16 @@ func IsLaptopChassis(t int) bool {
 	return laptopChassisTypes[t]
 }
 
+// chassisNames labels the SMBIOS chassis types, like laptopChassisTypes above.
+var chassisNames = map[int]string{
+	3: "desktop", 4: "low-profile desktop", 6: "mini tower", 7: "tower",
+	9: "laptop", 10: "notebook", 13: "all-in-one", 14: "sub notebook",
+	30: "tablet", 31: "convertible", 32: "detachable",
+}
+
 // ChassisName maps the SMBIOS chassis type to a human label.
 func ChassisName(t int) string {
-	names := map[int]string{
-		3: "desktop", 4: "low-profile desktop", 6: "mini tower", 7: "tower",
-		9: "laptop", 10: "notebook", 13: "all-in-one", 14: "sub notebook",
-		30: "tablet", 31: "convertible", 32: "detachable",
-	}
-	if n, ok := names[t]; ok {
+	if n, ok := chassisNames[t]; ok {
 		return n
 	}
 	return fmt.Sprintf("type %d", t)

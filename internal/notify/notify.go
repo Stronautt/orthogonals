@@ -32,8 +32,13 @@ var Send = func(n Notification) {
 			return
 		}
 		cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"+u.Uid+"/bus")
-		if uid, _ := strconv.Atoi(u.Uid); uid != os.Geteuid() {
-			gid, _ := strconv.Atoi(u.Gid)
+		// 31-bit parse: the ids get converted to both int and uint32 below.
+		uid, uidErr := strconv.ParseUint(u.Uid, 10, 31)
+		gid, gidErr := strconv.ParseUint(u.Gid, 10, 31)
+		if uidErr != nil || gidErr != nil {
+			return
+		}
+		if int(uid) != os.Geteuid() {
 			cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
 		}
 	}

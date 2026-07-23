@@ -14,7 +14,7 @@ import (
 )
 
 // vmFakeBins are every binary the vm step list still shells out to.
-var vmFakeBins = []string{"semanage", "restorecon", "runuser"}
+var vmFakeBins = []string{"semanage", "restorecon"}
 
 // countCalls counts fake-client calls whose verb prefix matches.
 func countCalls(calls []string, prefix string) int {
@@ -424,7 +424,7 @@ func TestVMDefineRegistersName(t *testing.T) {
 }
 
 func TestVMDefineWritesVMArtifacts(t *testing.T) {
-	dir := fakeVMPath(t)
+	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
 	code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "work",
 		"--display-name", "Work PC", "--win11-iso", "/isos/Win11.iso", "--yes", "define")
@@ -455,12 +455,14 @@ func TestVMDefineWritesVMArtifacts(t *testing.T) {
 	if st, err := os.Stat(filepath.Join(root, "/usr/share/applications/work.orthogonals.desktop")); err != nil || st.Mode().Perm() != 0o755 {
 		t.Errorf("desktop entry must be executable to launch from ~/Desktop, got %v %v", st.Mode().Perm(), err)
 	}
-	got := binLog(t, dir, "runuser")
-	if !strings.Contains(got, "ln -sfn /usr/share/applications/work.orthogonals.desktop /home/testuser/Desktop/work.orthogonals.desktop") {
-		t.Errorf("runuser log = %q — ~/Desktop must get a link, not a copy", got)
+	// ~/Desktop gets a symlink, not a copy, so a re-rendered entry is picked up.
+	link := filepath.Join(root, "/home/testuser/Desktop/work.orthogonals.desktop")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("~/Desktop did not get a link: %v", err)
 	}
-	if !strings.Contains(got, "gio set /home/testuser/Desktop/work.orthogonals.desktop metadata::trusted true") {
-		t.Errorf("runuser log = %q — the link must be gio-trusted for double-click launch", got)
+	if want := "/usr/share/applications/work.orthogonals.desktop"; target != want {
+		t.Errorf("link points at %q, want %q", target, want)
 	}
 }
 

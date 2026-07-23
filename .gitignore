@@ -1,9 +1,13 @@
 /orthogonals
-/test/integration/orthogonals
-/test/integration/fixture-root/
-/test/integration/fixture-root-laptop/
-/test/integration/fixture-root-laptop-amd/
+/vfiohost
+# built beside the test: the binary refuses to run from a temp dir
+/test/fault/orthogonals
+# rapid writes a counterexample here on failure; reproduce, fix, then delete
+testdata/rapid/
+# tmt run directories and coverage merges land here
 /dist/
+# vendored only into the srpm tarball, never the repo
+/vendor/
 # rpmbuild --build-in-place byproducts
 /debug*.list
 /elfbins.list
@@ -20,4 +24,4 @@ coverage.html
 .DS_Store
 
 # local agent settings
-/.claude/settings.local.json
+.claude/

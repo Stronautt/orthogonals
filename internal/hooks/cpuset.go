@@ -4,10 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
 
@@ -47,13 +47,13 @@ func isolateCPUs(root string, sd sysd.Client, vm string) {
 	// cpuset even if only some units below were confined.
 	save := filepath.Join(root, cpusetSaveFile)
 	_ = os.MkdirAll(filepath.Dir(save), 0o755)
-	_ = os.WriteFile(save, []byte(cpuListString(present)), 0o644)
+	_ = os.WriteFile(save, []byte(hw.FormatCPUList(present)), 0o644)
 	for _, unit := range isolationUnits {
 		if err := sd.SetAllowedCPUs(unit, hk); err != nil {
 			log("confine %s: %v", unit, err)
 		}
 	}
-	log("host confined to CPUs %s", cpuListString(hk))
+	log("host confined to CPUs %s", hw.FormatCPUList(hk))
 }
 
 // unisolateCPUs lifts a prior isolation by restoring an unrestricted cpuset.
@@ -116,13 +116,4 @@ func readPresentCPUs(root string) ([]int, error) {
 		return nil, err
 	}
 	return domain.ParseCPUSet(string(b))
-}
-
-// cpuListString renders CPU indices as a compact cpuset string ("0,1").
-func cpuListString(cpus []int) string {
-	s := make([]string, len(cpus))
-	for i, c := range cpus {
-		s[i] = strconv.Itoa(c)
-	}
-	return strings.Join(s, ",")
 }

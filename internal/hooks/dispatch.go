@@ -1,7 +1,9 @@
 package hooks
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -16,7 +18,13 @@ func inhibitUnit(vm string) string { return "libvirt-nosleep-" + vm + ".service"
 // Dispatch is the qemu hook body: prepare/begin detaches the GPU, release/end reattaches it.
 func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) error {
 	if _, err := os.Stat(filepath.Join(steps.VMsDir(root), vm+".xml")); err != nil {
-		return nil
+		// Only true absence means "not ours". Any other stat failure (EACCES on
+		// the registry) must not silently no-op the hook: skipping release/end
+		// would leave the GPU on vfio-pci.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("check VM registry for %s: %w", vm, err)
 	}
 	log := hookLog(root, "qemu")
 	switch op + "/" + subop {

@@ -19,8 +19,7 @@ func newRecoverCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 			s := sysdClient()
 			defer func() { _ = s.Close() }()
 			if err := orchestrate.Recover(cfg.Root, s, cfg.Yes, stdout); err != nil {
-				fmt.Fprintf(stderr, "orthogonals recover: %v\n", err)
-				return exitCode(1)
+				return finish(stderr, "recover", err)
 			}
 			if !cfg.Yes {
 				fmt.Fprintln(stdout, "dry run — re-run with --yes to recover")

@@ -1,0 +1,120 @@
+{
+  "checks": [
+    {
+      "message": "IOMMU active, host address width 39 bits",
+      "name": "iommu",
+      "status": "pass"
+    },
+    {
+      "message": "Intel iGPU 0000:00:02.0 + NVIDIA dGPU 0000:01:00.0",
+      "name": "gpu-topology",
+      "status": "pass"
+    },
+    {
+      "message": "all connected displays are on the iGPU (DP-1)",
+      "name": "display-topology",
+      "status": "pass"
+    },
+    {
+      "message": "the firmware primary GPU (boot_vga) is the Intel iGPU",
+      "name": "boot-vga",
+      "status": "pass"
+    },
+    {
+      "message": "no duplicate NVIDIA vendor:device IDs",
+      "name": "duplicate-gpu-ids",
+      "status": "pass"
+    },
+    {
+      "message": "IOMMU group 1 contains only the GPU, its audio function, and bridges",
+      "name": "iommu-group",
+      "status": "pass"
+    },
+    {
+      "message": "dGPU exposes a sysfs reset file",
+      "name": "gpu-reset",
+      "status": "pass"
+    },
+    {
+      "message": "pre-existing vfio configuration found: /etc/modprobe.d/vfio-preexisting.conf: options vfio-pci ids=10de:2206,10de:1aef",
+      "name": "foreign-vfio",
+      "remedy": "remove or let orthogonals adopt it: delete these entries and reboot so apply starts from a clean slate; if they are leftovers from an orthogonals install whose /var/lib/orthogonals state was deleted, restore that state (or remove the leftovers) before re-running apply",
+      "status": "fail"
+    },
+    {
+      "message": "chassis: desktop",
+      "name": "chassis",
+      "status": "pass"
+    },
+    {
+      "message": "skipped (not a laptop)",
+      "name": "mux",
+      "status": "pass"
+    },
+    {
+      "message": "skipped (no ASUS gpu_mux_mode knob)",
+      "name": "gpu-mux",
+      "status": "pass"
+    },
+    {
+      "message": "all required host binaries present",
+      "name": "tools",
+      "status": "pass"
+    },
+    {
+      "message": "10 assignable vCPU threads",
+      "name": "cpu",
+      "status": "pass"
+    },
+    {
+      "message": "32.0 GiB host RAM, 20 GiB assignable",
+      "name": "memory",
+      "status": "pass"
+    },
+    {
+      "message": "host IOMMU address width is 39 bits: 64-bit GPU BARs can map above the DMA limit and stall the guest",
+      "name": "address-width",
+      "remedy": "no action needed — VM definition applies the maxphysaddr + OVMF PciMmio64 fix automatically",
+      "status": "warn"
+    },
+    {
+      "message": "Secure Boot is enabled: the NVIDIA kernel module must be signed or it will not load after the setup reboot",
+      "name": "secure-boot",
+      "remedy": "if the NVIDIA driver works today you are fine (akmods MOK is enrolled); otherwise enroll it before apply",
+      "status": "warn"
+    },
+    {
+      "message": "nvidia-persistenced not enabled",
+      "name": "persistenced",
+      "status": "pass"
+    },
+    {
+      "message": "switcheroo-control.service is not enabled — GNOME's \"Launch using Discrete Graphics Card\" menu needs it",
+      "name": "switcheroo",
+      "remedy": "systemctl enable --now switcheroo-control (apply does this too)",
+      "status": "warn"
+    },
+    {
+      "message": "libvirt answers on its local socket",
+      "name": "libvirt",
+      "status": "pass"
+    },
+    {
+      "message": "libvirt default NAT network is inactive",
+      "name": "default-network",
+      "remedy": "apply activates it and marks it autostart",
+      "status": "warn"
+    },
+    {
+      "message": "\u003chost-dependent\u003e",
+      "name": "disk-space",
+      "status": "\u003chost-dependent\u003e"
+    },
+    {
+      "message": "boot loader entries are readable",
+      "name": "boot-entries",
+      "status": "pass"
+    }
+  ],
+  "status": "fail"
+}

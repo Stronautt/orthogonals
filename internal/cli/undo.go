@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"os"
 
@@ -16,11 +15,7 @@ func newUndoCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			e := newEngine(cfg, stdout, stderr)
-			if err := e.Undo(force, purge, os.Stdin); err != nil {
-				fmt.Fprintf(stderr, "orthogonals undo: %v\n", err)
-				return exitCode(1)
-			}
-			return nil
+			return finish(stderr, "undo", e.Undo(force, purge, os.Stdin))
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "restore files even if they changed after apply")

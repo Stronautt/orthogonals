@@ -40,7 +40,10 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 
 	state, err := c.DomainState(name)
 	if err != nil {
-		return fail("no such VM %q — define it first with `orthogonals vm define`", name)
+		if virt.IsNotFound(err) {
+			return fail("no such VM %q — define it first with `orthogonals vm define`", name)
+		}
+		return fail("query %s (is libvirtd running?): %v", name, err)
 	}
 	if !virt.Live(state) {
 		if code, ok := ensureMemory(cfg.Root, c, name, fail); !ok {

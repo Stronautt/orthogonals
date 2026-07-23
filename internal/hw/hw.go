@@ -77,7 +77,7 @@ func (r *Result) Summary() string {
 
 	if r.Platform.IOMMUAddressWidth > 0 {
 		fmt.Fprintf(&b, "IOMMU: on, host address width %d\n", r.Platform.IOMMUAddressWidth)
-	} else if r.Platform.IOMMUTable {
+	} else if r.Platform.IOMMUTable != "" {
 		b.WriteString("IOMMU: off (firmware exposes an IOMMU — apply enables it)\n")
 	} else {
 		b.WriteString("IOMMU: off or unsupported\n")

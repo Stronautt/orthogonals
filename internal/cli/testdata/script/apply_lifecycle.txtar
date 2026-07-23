@@ -1,0 +1,73 @@
+# The desktop lifecycle: dry-run touches nothing, apply --yes lands every
+# artifact, re-apply is idempotent, and undo restores the tree byte for byte.
+
+fixture $WORK/root
+faketools
+snapshot $WORK/root pristine.txt
+
+# --- dry run is inert -------------------------------------------------------
+
+exec orthogonals apply --root $WORK/root --user testuser
+stdout 'dry run'
+snapshot $WORK/root afterdry.txt
+cmp pristine.txt afterdry.txt
+
+# --- apply --yes ------------------------------------------------------------
+
+exec orthogonals apply --root $WORK/root --user testuser --yes
+stdout 'reboot'
+
+exists $WORK/root/etc/dracut.conf.d/vfio.conf
+exists $WORK/root/etc/udev/rules.d/61-mutter-ignore-nvidia.rules
+exists $WORK/root/etc/environment.d/50-orthogonals-igpu.conf
+exists $WORK/root/etc/tmpfiles.d/looking-glass.conf
+exists $WORK/root/etc/libvirt/hooks/qemu
+exists $WORK/root/var/lib/orthogonals/manifest.json
+
+# the hook is the orthogonals shim, executable, and carries the desktop user
+exec cat $WORK/root/etc/libvirt/hooks/qemu
+stdout 'hook --user testuser qemu'
+chmod 0755 $WORK/root/etc/libvirt/hooks/qemu
+
+# the superseded shell hooks are gone for good
+! exists $WORK/root/etc/libvirt/hooks/orthogonals-gpu-detach.sh
+! exists $WORK/root/etc/libvirt/hooks/orthogonals-gpu-reattach.sh
+
+# a desktop gets no laptop-only RTD3 artifacts
+! exists $WORK/root/etc/modprobe.d/nvidia-rtd3.conf
+! exists $WORK/root/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules
+
+# every boot loader entry carries the IOMMU args
+grep 'intel_iommu=on iommu=pt' $WORK/root/boot/loader/entries/fedora-6.15.0.conf
+grep 'intel_iommu=on iommu=pt' $WORK/root/boot/loader/entries/fedora-6.14.0.conf
+
+# the initramfs was regenerated
+grep -count=1 'regenerate-all' $WORK/fakebin/dracut.log
+
+# --- re-apply is idempotent -------------------------------------------------
+
+snapshot $WORK/root applied.txt
+exec orthogonals apply --root $WORK/root --user testuser --yes
+stdout 'reboot'
+snapshot $WORK/root reapplied.txt
+cmp applied.txt reapplied.txt
+
+# once the args are live on the running kernel, no reboot is demanded
+mkdir $WORK/root/proc
+cp cmdline.txt $WORK/root/proc/cmdline
+exec orthogonals apply --root $WORK/root --user testuser --yes
+! stdout 'reboot required'
+rm $WORK/root/proc/cmdline
+
+# --- undo restores the tree byte for byte -----------------------------------
+
+exec orthogonals undo --root $WORK/root --yes
+stdout 'undo complete'
+! exists $WORK/root/var/lib/orthogonals/manifest.json
+! grep 'intel_iommu' $WORK/root/boot/loader/entries/fedora-6.15.0.conf
+
+snapshot $WORK/root restored.txt
+cmp pristine.txt restored.txt
+
+-- cmdline.txt --
+BOOT_IMAGE=vmlinuz root=/dev/sda1 ro intel_iommu=on iommu=pt

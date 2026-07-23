@@ -1,80 +1,184 @@
-name: ci
+name: CI
 
+# The push/PR gate only. Scheduled suites live in regression.yml; the tag
+# release in release.yml, which reuses this whole workflow via workflow_call —
+# hence branches-only on push, so a tag push does not run the gate twice.
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
+    name: Unit suite
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go vet ./...
-      - run: go test ./...
+      # test/desk is behind the desk build tag, so a plain `go vet ./...` never compiles it.
+      - run: go vet -tags desk ./test/desk
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      # runs the unit suite, the property tests, the CLI contract scripts,
+      # and every fuzz target's committed seed corpus
+      - name: Unit suite (race detector, shuffled)
+        run: |
+          go run gotest.tools/gotestsum@latest \
+            --format github-actions --jsonfile unit.json -- -race -shuffle=on ./...
+      # use-actions-summary renders into the run summary page, so no check
+      # run and no checks:write.
+      - name: Test summary
+        uses: dorny/test-reporter@v3
+        if: ${{ !cancelled() && hashFiles('unit.json') != '' }}
+        with:
+          name: Unit suite
+          path: unit.json
+          reporter: golang-json
+          use-actions-summary: 'true'
+          badge-title: unit tests
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
-  integration:
+  vuln:
+    name: Vulnerabilities
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - run: make test-integration
+      # Two runs because SARIF output and exit-code gating are mutually
+      # exclusive: -format sarif always exits 0.
+      - name: govulncheck report (Security tab)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -format sarif ./... > govulncheck.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: govulncheck.sarif
+      - name: govulncheck gate
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, integration]
+  deadcode:
+    name: Dead code
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      # -test so the *test helper packages (hwtest, virttest, …) count as
+      # reachable; they are only ever called from tests. The tool itself
+      # always exits 0, so the gate is on its output being empty.
+      - name: deadcode gate
+        run: |
+          out=$(go run golang.org/x/tools/cmd/deadcode@latest -test ./...)
+          if [ -n "$out" ]; then
+            { echo '### Dead code'; echo '```'; echo "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "$out"
+            exit 1
+          fi
+
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@latest
+
+  rpm:
+    name: RPM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: fedora:44
-    permissions:
-      contents: write
     steps:
       - name: Install build tools
-        run: dnf install -y git golang rpm-build copr-cli gh
-
+        run: dnf install -y git golang rpm-build rpmlint
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Verify tag matches VERSION
-        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
-
-      - name: Build SRPMs
+      - name: Build the RPM
         run: |
           git config --global --add safe.directory '*'
-          make srpm
-          make srpm-lg
-
-      - name: Build in COPR
-        shell: bash
-        env:
-          COPR_API_CONFIG: ${{ secrets.COPR_API_CONFIG }}
+          make rpm
+      # gates; inherent findings are filtered in packaging/orthogonals.rpmlintrc
+      - name: Lint the RPM and spec
         run: |
-          mkdir -p ~/.config
-          echo "$COPR_API_CONFIG" > ~/.config/copr
-          # non-blocking: it only needs to land in the repo for the runtime dep
-          copr-cli build --nowait orthogonals dist/looking-glass-client-*.src.rpm
-          copr-cli build orthogonals dist/orthogonals-*.src.rpm \
-            | tee copr-build.log
-          BUILD_ID=$(grep -oP 'Created builds:\s*\K\d+' copr-build.log)
-          copr-cli download-build --dest dist/copr "$BUILD_ID"
+          st=0
+          rpmlint -r packaging/orthogonals.rpmlintrc \
+            packaging/orthogonals.spec dist/x86_64/*.rpm > rpmlint.txt || st=$?
+          cat rpmlint.txt
+          { echo '### rpmlint'; echo '```'; cat rpmlint.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $st
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpm
+          path: dist/x86_64/*.rpm
+          retention-days: 14
 
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+  integration:
+    name: Container tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      # tmt's container provisioner shells out to podman specifically.
+      - name: Install tmt and podman
         run: |
-          rpms=$(find dist/copr -name 'orthogonals-*.rpm' ! -name '*debug*' ! -name '*.src.rpm')
-          test -n "$rpms" # no installable rpm → fail, never publish an empty release
-          gh release create "$GITHUB_REF_NAME" \
-            $rpms \
-            dist/orthogonals-*.src.rpm \
-            --title "$GITHUB_REF_NAME" --generate-notes
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+          pipx install tmt
+      - run: make test-integration
+      - name: Test summary
+        if: always()
+        run: ./test/tmt/gha-summary.sh /var/tmp/orthogonals-tmt-container >> "$GITHUB_STEP_SUMMARY"
+      - name: Merged coverage (unit + the real binary under tmt)
+        run: |
+          make coverage
+          pct=$(go tool cover -func=dist/coverage/merged.txt | tail -1 | grep -o '[0-9.]*%' | tr -d '%')
+          go tool cover -html=dist/coverage/merged.txt -o dist/coverage/coverage.html
+          echo "### Coverage — unit + container tier: ${pct}%" >> "$GITHUB_STEP_SUMMARY"
+          # the documented floor, enforced on the merged profile
+          awk -v p="$pct" 'BEGIN { exit (p < 80) }'
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            dist/coverage/merged.txt
+            dist/coverage/coverage.html
+          retention-days: 14

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"slices"
@@ -49,14 +50,8 @@ func runMedia(cfg *Config, o mediaOpts, stdout, stderr io.Writer) error {
 	}
 
 	meta := domain.ReadGuestConfig(cfg.Root, name)
-	user := meta.User
-	if user == "" {
-		user = media.DefaultGuestUser
-	}
-	pass := meta.Password
-	if pass == "" {
-		pass = media.DefaultGuestPassword
-	}
+	user := cmp.Or(meta.User, media.DefaultGuestUser)
+	pass := cmp.Or(meta.Password, media.DefaultGuestPassword)
 	loc := meta.Locale
 	w, h, err := parseResolution(meta.Resolution)
 	if err != nil {

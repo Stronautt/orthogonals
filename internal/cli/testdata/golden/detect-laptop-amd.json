@@ -1,0 +1,129 @@
+{
+  "devices": [
+    {
+      "address": "0000:01:00.0",
+      "vendor": "0x10de",
+      "device": "0x2206",
+      "class": "0x030000",
+      "driver": "nvidia",
+      "iommu_group": 1,
+      "has_reset": true,
+      "boot_vga": false,
+      "drm_card": "card1"
+    },
+    {
+      "address": "0000:01:00.1",
+      "vendor": "0x10de",
+      "device": "0x1aef",
+      "class": "0x040300",
+      "driver": "snd_hda_intel",
+      "iommu_group": 1,
+      "has_reset": false,
+      "boot_vga": false
+    },
+    {
+      "address": "0000:05:00.0",
+      "vendor": "0x1002",
+      "device": "0x1638",
+      "class": "0x030000",
+      "driver": "amdgpu",
+      "iommu_group": 0,
+      "has_reset": true,
+      "boot_vga": true,
+      "drm_card": "card0",
+      "connectors": [
+        "eDP-1"
+      ]
+    }
+  ],
+  "gpus": {
+    "igpu": {
+      "address": "0000:05:00.0",
+      "vendor": "0x1002",
+      "device": "0x1638",
+      "class": "0x030000",
+      "driver": "amdgpu",
+      "iommu_group": 0,
+      "has_reset": true,
+      "boot_vga": true,
+      "drm_card": "card0",
+      "connectors": [
+        "eDP-1"
+      ]
+    },
+    "dgpus": [
+      {
+        "address": "0000:01:00.0",
+        "vendor": "0x10de",
+        "device": "0x2206",
+        "class": "0x030000",
+        "driver": "nvidia",
+        "iommu_group": 1,
+        "has_reset": true,
+        "boot_vga": false,
+        "drm_card": "card1",
+        "audio": {
+          "address": "0000:01:00.1",
+          "vendor": "0x10de",
+          "device": "0x1aef",
+          "class": "0x040300",
+          "driver": "snd_hda_intel",
+          "iommu_group": 1,
+          "has_reset": false,
+          "boot_vga": false
+        }
+      }
+    ]
+  },
+  "cpu": {
+    "vendor": "amd",
+    "threads": 20,
+    "cores": 14,
+    "hybrid": true,
+    "p_cores": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "e_cores": [
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19
+    ]
+  },
+  "platform": {
+    "iommu_address_width": 48,
+    "iommu_table": "IVRS",
+    "selinux": "enforcing",
+    "secure_boot": true,
+    "chassis_type": 10,
+    "mem_total_bytes": 34359738368,
+    "nvidia": {
+      "loaded": true,
+      "version": "570.153.02",
+      "flavor": "proprietary",
+      "modeset": "Y",
+      "fbdev": "N"
+    },
+    "tools": {
+      "dracut": true,
+      "nvidia-smi": true,
+      "restorecon": true,
+      "semanage": true
+    }
+  }
+}

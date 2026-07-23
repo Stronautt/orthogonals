@@ -1,0 +1,33 @@
+# Laptop hosts get the RTD3 power-management artifacts, and the IOMMU kernel
+# args follow the CPU vendor. Undo restores both chassis byte for byte.
+
+faketools
+
+# --- Intel laptop -----------------------------------------------------------
+
+fixture $WORK/intel laptop
+snapshot $WORK/intel intel-pristine.txt
+
+exec orthogonals apply --root $WORK/intel --user testuser --yes
+exists $WORK/intel/etc/modprobe.d/nvidia-rtd3.conf
+exists $WORK/intel/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules
+grep 'NVreg_DynamicPowerManagement=0x02' $WORK/intel/etc/modprobe.d/nvidia-rtd3.conf
+grep 'intel_iommu=on iommu=pt' $WORK/intel/boot/loader/entries/fedora-6.15.0.conf
+
+exec orthogonals undo --root $WORK/intel --yes
+snapshot $WORK/intel intel-restored.txt
+cmp intel-pristine.txt intel-restored.txt
+
+# --- AMD laptop: iommu=pt only, never intel_iommu ---------------------------
+
+fixture $WORK/amd laptop-amd
+snapshot $WORK/amd amd-pristine.txt
+
+exec orthogonals apply --root $WORK/amd --user testuser --yes
+exists $WORK/amd/etc/modprobe.d/nvidia-rtd3.conf
+grep 'iommu=pt' $WORK/amd/boot/loader/entries/fedora-6.15.0.conf
+! grep 'intel_iommu' $WORK/amd/boot/loader/entries/fedora-6.15.0.conf
+
+exec orthogonals undo --root $WORK/amd --yes
+snapshot $WORK/amd amd-restored.txt
+cmp amd-pristine.txt amd-restored.txt

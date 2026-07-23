@@ -102,16 +102,50 @@ func (m *Manifest) save(root string) error {
 	return WriteAtomic(ManifestPath(root), b)
 }
 
-// WriteAtomic writes content to path via a temp file and rename, creating parent dirs.
+// WriteAtomic writes content to path via a temp file and rename, creating
+// parent dirs. File and directory are fsynced: a torn manifest.json after
+// power loss would wedge every command and lose undo records for mutations
+// already on disk.
 func WriteAtomic(path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+	if err := writeSync(tmp, content, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+func writeSync(path string, content []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // Has reports whether a step id is already journaled.
@@ -150,11 +184,24 @@ func (m *Manifest) put(r Record) {
 	m.Records = append(m.Records, r)
 }
 
+// drop removes a record, undoing a write-ahead journal entry whose mutation
+// then failed. Without it a failed step would read as "already applied" on the
+// next run and never be retried.
+func (m *Manifest) drop(id string) {
+	m.Records = slices.DeleteFunc(m.Records, func(r Record) bool { return r.ID == id })
+}
+
+// writeBackup makes the backup durable before the journal records it exists —
+// otherwise a crash can leave a record whose backup is empty, and undo would
+// "restore" the original as a zero-length file.
 func writeBackup(root, name string, content []byte) error {
 	if err := os.MkdirAll(backupDir(root), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(backupDir(root), name), content, 0o600)
+	if err := writeSync(filepath.Join(backupDir(root), name), content, 0o600); err != nil {
+		return err
+	}
+	return syncDir(backupDir(root))
 }
 
 func backupName(id string) string {

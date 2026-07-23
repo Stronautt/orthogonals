@@ -1,0 +1,146 @@
+summary: orthogonals host-mutation plans
+
+# Shared by every plan: the tests build and drive the real binary, so the only
+# thing a plan chooses is the machine it runs on. Testing Farm overrides
+# provision, which is why the local method lives here as a default rather than
+# as part of the plan's definition.
+discover:
+    how: fmf
+execute:
+    how: tmt
+
+/container:
+    summary: Container tier — apply and undo under --root
+    description: |
+        Every host mutation is confined to a --root prefix and every exec'd
+        vendor tool is faked, so this tier proves the apply engine's
+        bookkeeping without a real kernel. Daemon-touching steps journal and
+        print "skipped under --root"; the VM tier covers those live.
+    discover+:
+        filter: "tier:3"
+    provision:
+        how: container
+        image: registry.fedoraproject.org/fedora:44
+    prepare:
+      - name: build tools
+        how: install
+        package:
+          - golang
+          - diffutils
+          - python3
+      - &build-binary
+        name: build the binary under test
+        how: shell
+        script: |
+          set -eux
+          cd "$TMT_TREE"
+          # -cover so the run feeds the merged coverage figure; /usr/local/bin
+          # because the binary refuses to run from anywhere under TMPDIR.
+          go build -cover -o /usr/local/bin/orthogonals .
+          go build -o /usr/local/bin/orthogonals-fixture ./test/fixture
+
+/desk:
+    summary: Desk tier — the fixtures against real hardware
+    description: |
+        Runs on the developer's own machine, because no CI runner has an Intel
+        iGPU beside an NVIDIA dGPU. Strictly read-only, so it is safe on a
+        daily driver. Selected by name rather than by tier: the VFIO tier is
+        also tier 5, and the two want different provisioning.
+    discover+:
+        test:
+          - ^/test/tmt/desk$
+    provision:
+        how: local
+
+/vm:
+    summary: VM tier — a real kernel, root, and a reboot
+    description: |
+        Everything the --root prefix cannot reach: loop ioctls, a live
+        libvirtd, kernel args that actually take effect. Tests run as root in a
+        throwaway guest, so a mistake costs a VM rather than the host. Testing
+        Farm overrides provision here and supplies the Fedora matrix.
+    discover+:
+        filter: "tier:4"
+    provision:
+        how: virtual
+        image: fedora-44
+        # Headroom for the hugepage test: its shortfall arm deliberately asks
+        # for more of the pool than exists, so the kernel pins everything it
+        # can find before giving up. What is left over has to carry the test.
+        memory: 6144
+        disk: 20
+    # Anchored, because the /vfio plan needs the same guest set up the same
+    # way. The two plans differ only in where the machine comes from.
+    prepare: &host-prepare
+      - name: build tools
+        how: install
+        package:
+          - golang
+          - diffutils
+          - python3
+          - rpm-build
+      - name: host packages the spec declares
+        how: shell
+        script: |
+          set -eux
+          # Derived from the spec, never copied: a missing Requires: then fails
+          # here instead of on a user's first run. looking-glass-client is
+          # filtered because it only exists in COPR — installing the built RPM
+          # is what proves that one, and that happens in the Packit build.
+          pkgs=$(rpmspec -q --requires \
+            --define "pkgver 0" --define "lgver 0" \
+            "$TMT_TREE/packaging/orthogonals.spec" \
+            | grep -v '^rpmlib\|^looking-glass-client')
+          test -n "$pkgs"
+          # Mirrors time out often enough to matter in CI.
+          # shellcheck disable=SC2086
+          dnf install -y --setopt=retries=10 --setopt=timeout=60 $pkgs
+      - name: vfio kernel modules
+        how: shell
+        script: |
+          set -eux
+          # Cloud images ship kernel-core only, so vfio-pci.ko is absent and
+          # dracut's force_drivers silently produces an initramfs without it.
+          # A Workstation host — what this project targets — has these. Pin to
+          # the running kernel: dracut regenerates for installed kernels, and
+          # the assertion reads the running one's initramfs.
+          dnf install -y "kernel-modules-core-$(uname -r)"
+          modinfo vfio-pci >/dev/null
+      - name: desktop user and libvirt
+        how: shell
+        script: |
+          set -eux
+          # apply runs a real usermod, so the desktop user has to exist.
+          id orthtest || useradd --create-home orthtest
+          systemctl start virtqemud.socket virtnetworkd.socket virtstoraged.socket
+          virsh --connect qemu:///system version
+      - name: goss
+        how: shell
+        script: |
+          set -eux
+          # Pinned by URL and SHA256, like every other download in this project.
+          curl -fsSL -o /usr/local/bin/goss \
+            https://github.com/goss-org/goss/releases/download/v0.4.9/goss-linux-amd64
+          echo "87dd36cfa1b8b50554e6e2ca29168272e26755b19ba5438341f7c66b36decc19  /usr/local/bin/goss" \
+            | sha256sum -c -
+          chmod 0755 /usr/local/bin/goss
+      - *build-binary
+
+/vfio:
+    summary: VFIO tier — an emulated IOMMU, a real bind
+    description: |
+        The one tier where the kernel answers instead of a fixture. Its guest
+        is not provisioned by tmt: testcloud cannot request an emulated IOMMU
+        (the hardware matrix supports iommu on beaker only), and that is the
+        single thing this guest exists to have. test/vfiohost boots it over
+        libvirt and `make test-vfio` hands tmt the address, so the provision
+        block below is a placeholder that is always overridden.
+    discover+:
+        # By name, like /desk: this plan and /desk each map to a single test,
+        # so the name pins it and a tag filter would be redundant.
+        test:
+          - ^/test/tmt/vfio$
+    provision:
+        how: connect
+        guest: overridden-by-make-test-vfio
+    prepare: *host-prepare

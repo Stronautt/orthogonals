@@ -24,7 +24,7 @@ func refResult() *hw.Result {
 		CPU: hw.CPU{Threads: 20, Cores: 14, Hybrid: true,
 			PCores: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}},
 		Platform: hw.Platform{
-			IOMMUAddressWidth: 46, IOMMUTable: true, SELinux: "enforcing", SecureBoot: false,
+			IOMMUAddressWidth: 46, IOMMUTable: hw.IOMMUTableDMAR, SELinux: "enforcing", SecureBoot: false,
 			ChassisType: 3, MemTotalBytes: 32 << 30, Tools: tools,
 		},
 	}
@@ -75,7 +75,7 @@ func TestAnalyzers(t *testing.T) {
 			name: "iommu off fails",
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.Platform.IOMMUAddressWidth = 0
-				r.Platform.IOMMUTable = false
+				r.Platform.IOMMUTable = ""
 			},
 			check: "iommu", want: Fail, has: []string{"BIOS"},
 		},
@@ -89,6 +89,7 @@ func TestAnalyzers(t *testing.T) {
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.CPU.Vendor = hw.CPUVendorAMD
 				r.Platform.IOMMUAddressWidth = 0
+				r.Platform.IOMMUTable = hw.IOMMUTableIVRS
 			},
 			check: "iommu", want: Warn, has: []string{"AMD-Vi", "iommu=pt", "reboot"},
 		},
@@ -97,7 +98,7 @@ func TestAnalyzers(t *testing.T) {
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.CPU.Vendor = hw.CPUVendorAMD
 				r.Platform.IOMMUAddressWidth = 0
-				r.Platform.IOMMUTable = false
+				r.Platform.IOMMUTable = ""
 			},
 			check: "iommu", want: Fail, has: []string{"AMD-Vi", "BIOS"},
 		},
@@ -105,7 +106,7 @@ func TestAnalyzers(t *testing.T) {
 			name: "iommu off names an exposed firmware attribute",
 			mutate: func(r *hw.Result, _ *Facts) {
 				r.Platform.IOMMUAddressWidth = 0
-				r.Platform.IOMMUTable = false
+				r.Platform.IOMMUTable = ""
 				r.Platform.FirmwareIOMMU = []hw.FirmwareAttr{
 					{Driver: "thinklmi", Name: "VTdFeature", Current: "Disable", PossibleValues: []string{"Disable", "Enable"}},
 				}
@@ -290,7 +291,7 @@ func TestAnalyzers(t *testing.T) {
 		{
 			name:   "unreadable boot entries fail",
 			mutate: func(_ *hw.Result, f *Facts) { f.BLSError = "no BLS entries in /boot/loader/entries" },
-			check:  "boot entries", want: Fail, has: []string{"BLS entries"},
+			check:  "boot-entries", want: Fail, has: []string{"BLS entries"},
 		},
 		{
 			name:   "unreachable libvirt warns",

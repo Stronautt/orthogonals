@@ -315,7 +315,9 @@ func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	root := t.TempDir()
 	dir := fakePath(t)
 	linkerLog := fakeBin(t, dir, "linker", "")
-	product := filepath.Join(t.TempDir(), "product")
+	// Host-absolute, the way production declares it: under --root the product
+	// lands inside the prefix.
+	const product = "/var/lib/orthogonals/product"
 	e, _, _ := eng(root, true)
 
 	step := Step{
@@ -332,7 +334,10 @@ func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	if lines := logLines(t, linkerLog); len(lines) != 2 {
 		t.Fatalf("re-apply with the product gone must re-run, got %d invocations", len(lines))
 	}
-	if err := os.WriteFile(product, nil, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(product)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, product), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Apply([]Step{step}); err != nil {

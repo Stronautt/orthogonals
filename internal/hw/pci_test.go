@@ -18,7 +18,7 @@ func TestScanPCIReference(t *testing.T) {
 			BootVGA: true, DRMCard: "card0", Connectors: []string{"DP-1"}},
 		{Address: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", IOMMUGroup: 1, HasReset: true,
 			DRMCard: "card1"},
-		{Address: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", IOMMUGroup: 1, HasReset: true},
+		{Address: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", IOMMUGroup: 1},
 	}
 	if !reflect.DeepEqual(devs, want) {
 		t.Fatalf("devices mismatch:\ngot  %+v\nwant %+v", devs, want)

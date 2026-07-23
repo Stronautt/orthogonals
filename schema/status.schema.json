@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/stronautt/orthogonals/schema/status.schema.json",
+  "title": "orthogonals status --json",
+  "description": "Whether the applied host configuration is still intact. Exit code is 0 when every check passes, 1 otherwise.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["name", "ok"],
+    "properties": {
+      "name": {
+        "description": "Stable check identifier, safe to match on.",
+        "type": "string"
+      },
+      "ok": { "type": "boolean" },
+      "detail": {
+        "description": "Human-readable explanation. Not a stable contract; match on name.",
+        "type": "string"
+      }
+    }
+  }
+}

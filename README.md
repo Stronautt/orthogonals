@@ -9,6 +9,8 @@
 
 <p align="center">
   <a href="https://github.com/stronautt/orthogonals/actions/workflows/ci.yml"><img src="https://github.com/stronautt/orthogonals/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/stronautt/orthogonals/actions/workflows/regression.yml"><img src="https://github.com/stronautt/orthogonals/actions/workflows/regression.yml/badge.svg" alt="Regression"></a>
+  <a href="https://github.com/stronautt/orthogonals/actions/workflows/codeql.yml"><img src="https://github.com/stronautt/orthogonals/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
   <a href="https://copr.fedorainfracloud.org/coprs/stronautt/orthogonals/package/orthogonals/"><img src="https://copr.fedorainfracloud.org/coprs/stronautt/orthogonals/package/orthogonals/status_image/last_build.png" alt="COPR build" /></a>
   <a href="https://github.com/stronautt/orthogonals/releases/latest"><img src="https://img.shields.io/github/v/release/stronautt/orthogonals" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License: GPL-3.0">
@@ -219,8 +221,8 @@ refuses and explains instead of forcing and hoping.
 
 The full list is printed by the dry run before anything happens.
 
-- Kernel arguments, via grubby: `intel_iommu=on iommu=pt` on Intel, `iommu=pt`
-  on AMD.
+- Kernel arguments: `intel_iommu=on iommu=pt` on a VT-d (Intel) platform,
+  `iommu=pt` on AMD-Vi.
 - A dracut config that adds the vfio modules to the initramfs. This is the
   reason for the one reboot.
 - On a laptop only: a modprobe.d option and udev rules that enable NVIDIA RTD3,

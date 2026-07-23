@@ -1,0 +1,78 @@
+# Host state after `orthogonals up --yes` on a real Fedora host, asserted from
+# the outside: what an operator would see, not what the manifest claims. The
+# kernel-argument checks only hold after the reboot that makes them live.
+#
+# Rendered with `goss --vars vars.yaml`; see test/tmt/reboot.sh.
+file:
+  # The whole point of the reboot: the BLS edit reached the running kernel.
+  /proc/cmdline:
+    exists: true
+    contains:
+      - intel_iommu=on
+      - iommu=pt
+  /etc/dracut.conf.d/vfio.conf:
+    exists: true
+    mode: "0644"
+    contains:
+      - force_drivers
+      - vfio_pci
+  /etc/libvirt/hooks/qemu:
+    exists: true
+    mode: "0755"
+    contains:
+      - "hook --user {{.Vars.user}} qemu"
+  # The shell launchers this project deliberately does not ship.
+  /etc/libvirt/hooks/orthogonals-gpu-detach.sh:
+    exists: false
+  /etc/libvirt/hooks/orthogonals-gpu-reattach.sh:
+    exists: false
+  /etc/tmpfiles.d/looking-glass.conf:
+    exists: true
+    mode: "0644"
+    contains:
+      - "/dev/shm/looking-glass"
+      - "{{.Vars.user}}"
+  /etc/udev/rules.d/61-mutter-ignore-nvidia.rules:
+    exists: true
+  /etc/environment.d/50-orthogonals-igpu.conf:
+    exists: true
+  /var/lib/orthogonals/manifest.json:
+    exists: true
+  # The managed-VM registry entry `undo` keys off.
+  /etc/orthogonals/vms/{{.Vars.vm}}.xml:
+    exists: true
+
+package:
+  # Every one of these is a Requires: in packaging/orthogonals.spec. A missing
+  # entry there shows up here rather than on a user's first run.
+  libvirt:
+    installed: true
+  qemu-kvm:
+    installed: true
+  edk2-ovmf:
+    installed: true
+  swtpm-tools:
+    installed: true
+  dracut:
+    installed: true
+  policycoreutils-python-utils:
+    installed: true
+
+command:
+  # grubby reads the same BLS entries the native editor wrote — an independent
+  # implementation agreeing is what makes the native edit trustworthy.
+  grubby --info=ALL:
+    exit-status: 0
+    stdout:
+      - intel_iommu=on
+      - iommu=pt
+  semanage fcontext -l:
+    exit-status: 0
+    stdout:
+      - looking-glass
+  # The domain reached libvirtd, not just the registry.
+  virsh --connect qemu:///system dumpxml {{.Vars.vm}}:
+    exit-status: 0
+    stdout:
+      - "/<domain[^>]*type='kvm'/"
+      - "{{.Vars.vm}}"

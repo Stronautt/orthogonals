@@ -173,8 +173,8 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	for i, c := range vcpu {
 		p.VCPUPins = append(p.VCPUPins, Pin{VCPU: i, CPU: c})
 	}
-	p.EmulatorPin = cpuset(emu)
-	p.IOThreadPin = cpuset(iot)
+	p.EmulatorPin = hw.FormatCPUList(emu)
+	p.IOThreadPin = hw.FormatCPUList(iot)
 
 	w, h := o.Width, o.Height
 	if w == 0 && h == 0 {
@@ -231,7 +231,7 @@ func pinning(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
 }
 
 // reserve keeps the first physical P-core for the host and assigns the rest.
-// TODO(refactor): assumes sibling threads are adjacent in the kernel cpulists.
+// Assumes sibling threads are adjacent in the kernel cpulists.
 func reserve(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
 	phys := c.Cores - len(c.ECores)
 	if phys <= 0 || len(c.PCores) < phys {
@@ -300,26 +300,17 @@ func parseBDF(addr string) (BDF, error) {
 	return BDF{Domain: parts[0], Bus: parts[1], Slot: parts[2], Function: fn}, nil
 }
 
-func cpuset(cpus []int) string {
-	s := make([]string, len(cpus))
-	for i, c := range cpus {
-		s[i] = strconv.Itoa(c)
-	}
-	return strings.Join(s, ",")
-}
-
 // xmlPath is where apply writes the domain XML.
 func xmlPath(name string) string { return steps.VMsDirPath + "/" + name + ".xml" }
 
+var domainTpl = template.Must(template.New("domain.xml").
+	Funcs(template.FuncMap{"xml": XMLEscape}).
+	ParseFS(templateFS, "templates/domain.xml"))
+
 // render produces the domain XML for the profile.
 func render(p Profile) ([]byte, error) {
-	tpl, err := template.New("domain.xml").Funcs(template.FuncMap{"xml": XMLEscape}).
-		ParseFS(templateFS, "templates/domain.xml")
-	if err != nil {
-		return nil, err
-	}
 	var buf bytes.Buffer
-	if err := tpl.Execute(&buf, p); err != nil {
+	if err := domainTpl.Execute(&buf, p); err != nil {
 		return nil, fmt.Errorf("render domain XML: %w", err)
 	}
 	return buf.Bytes(), nil
@@ -380,38 +371,11 @@ func ReadMemoryMiB(root, name string) (uint64, error) {
 	return mib, nil
 }
 
+// MaxCPUIndex bounds a parsed cpuset; see hw.MaxCPUIndex.
+const MaxCPUIndex = hw.MaxCPUIndex
+
 // ParseCPUSet parses a libvirt/sysfs cpuset list ("0-3,7,9-11") into CPU indices.
-func ParseCPUSet(s string) ([]int, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil, nil
-	}
-	var cpus []int
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		lo, hi, isRange := strings.Cut(part, "-")
-		start, err := strconv.Atoi(strings.TrimSpace(lo))
-		if err != nil {
-			return nil, fmt.Errorf("bad cpuset %q", s)
-		}
-		end := start
-		if isRange {
-			if end, err = strconv.Atoi(strings.TrimSpace(hi)); err != nil {
-				return nil, fmt.Errorf("bad cpuset %q", s)
-			}
-		}
-		if end < start {
-			return nil, fmt.Errorf("bad cpuset %q", s)
-		}
-		for c := start; c <= end; c++ {
-			cpus = append(cpus, c)
-		}
-	}
-	return cpus, nil
-}
+func ParseCPUSet(s string) ([]int, error) { return hw.ParseCPUList(s) }
 
 // ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to guest
 // threads (vcpu, emulator, iothread) — the complement of the host's housekeeping
@@ -525,6 +489,22 @@ func JournaledDisk(m *steps.Manifest, vm string) (string, int, bool) {
 	return args["path"], size, true
 }
 
+// imageLabelSteps is the semanage-fcontext + restorecon pair every labeled
+// image file needs — one builder so the disk and ROM pairs cannot drift.
+func imageLabelSteps(fcID, rcID, path string) []steps.Step {
+	return []steps.Step{
+		{
+			ID: fcID, Kind: steps.KindRunCmd,
+			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "virt_image_t", path},
+			UndoCmd: []string{"semanage", "fcontext", "-d", path},
+		},
+		{
+			ID: rcID, Kind: steps.KindRunCmd,
+			Cmd: []string{"restorecon", path},
+		},
+	}
+}
+
 // Steps assembles the `vm define` step list: domain XML, disk image, SELinux
 // label, an optional vBIOS install, then define.
 func Steps(p Profile) ([]steps.Step, error) {
@@ -544,32 +524,14 @@ func Steps(p Profile) ([]steps.Step, error) {
 			UndoOp:   steps.OpRemoveFile,
 			UndoArgs: map[string]string{"path": p.DiskPath},
 		},
-		{
-			ID: DiskFcontextID(p.Name), Kind: steps.KindRunCmd,
-			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "virt_image_t", p.DiskPath},
-			UndoCmd: []string{"semanage", "fcontext", "-d", p.DiskPath},
-		},
-		{
-			ID: DiskRestoreconID(p.Name), Kind: steps.KindRunCmd,
-			Cmd: []string{"restorecon", p.DiskPath},
-		},
 	}
+	list = append(list, imageLabelSteps(DiskFcontextID(p.Name), DiskRestoreconID(p.Name), p.DiskPath)...)
 	if p.ROMFile != "" {
-		list = append(list,
-			steps.Step{
-				ID: ROMFileID(p.Name), Kind: steps.KindWriteFile,
-				Path: p.ROMFile, Content: p.ROMContent, Mode: 0o644,
-			},
-			steps.Step{
-				ID: ROMFcontextID(p.Name), Kind: steps.KindRunCmd,
-				Cmd:     []string{"semanage", "fcontext", "-a", "-t", "virt_image_t", p.ROMFile},
-				UndoCmd: []string{"semanage", "fcontext", "-d", p.ROMFile},
-			},
-			steps.Step{
-				ID: ROMRestoreconID(p.Name), Kind: steps.KindRunCmd,
-				Cmd: []string{"restorecon", p.ROMFile},
-			},
-		)
+		list = append(list, steps.Step{
+			ID: ROMFileID(p.Name), Kind: steps.KindWriteFile,
+			Path: p.ROMFile, Content: p.ROMContent, Mode: 0o644,
+		})
+		list = append(list, imageLabelSteps(ROMFcontextID(p.Name), ROMRestoreconID(p.Name), p.ROMFile)...)
 	}
 	return append(list, steps.Step{
 		ID: DefineStepID(p.Name), Kind: steps.KindOp,

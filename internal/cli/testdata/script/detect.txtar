@@ -1,0 +1,25 @@
+# detect reports the topology it found, exits 0, and mutates nothing.
+
+fixture $WORK/root
+faketools
+snapshot $WORK/root before.txt
+
+exec orthogonals detect --root $WORK/root --json
+stdout '"vendor": "0x10de"'
+stdout '"device": "0x2206"'
+stdout '"iommu_address_width": 39'
+stdout '"boot_vga": true'
+
+# the human form names both GPUs
+exec orthogonals detect --root $WORK/root
+stdout '0000:00:02.0'
+stdout '0000:01:00.0'
+
+# an AMD host reports its own IOMMU flavor
+fixture $WORK/amd laptop-amd
+exec orthogonals detect --root $WORK/amd --json
+stdout '"vendor": "0x1002"'
+
+# detect is read-only
+snapshot $WORK/root after.txt
+cmp before.txt after.txt

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"os"
@@ -112,8 +113,7 @@ func newVMLaunchCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 		RunE: func(*cobra.Command, []string) error {
 			name, err := vmNameOrSole(cfg.Root, vmName)
 			if err != nil {
-				fmt.Fprintf(stderr, "orthogonals vm: %v\n", err)
-				return exitCode(1)
+				return finish(stderr, "vm", err)
 			}
 			c := virtClient()
 			defer func() { _ = c.Close() }()
@@ -147,12 +147,6 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		}
 	}
 	prev := domain.ReadGuestConfig(cfg.Root, o.vmName)
-	keep := func(flag, prev string) string {
-		if flag != "" {
-			return flag
-		}
-		return prev
-	}
 	isoPath := prev.Win11ISO
 	if o.win11ISO != "" {
 		if isoPath, err = filepath.Abs(o.win11ISO); err != nil {
@@ -163,7 +157,7 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "usage: orthogonals vm --win11-iso <path> [flags] define")
 		return exitCode(2)
 	}
-	w, h, err := parseResolution(keep(o.resolution, prev.Resolution))
+	w, h, err := parseResolution(cmp.Or(o.resolution, prev.Resolution))
 	if err != nil {
 		return err
 	}
@@ -187,9 +181,9 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	p, err := domain.NewProfile(res, domain.Options{
 		VMName: o.vmName, RAMGiB: o.ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
 		Width: w, Height: h,
-		GuestUser:     keep(o.guestUser, prev.User),
-		GuestPassword: keep(o.guestPassword, prev.Password),
-		Locale:        keep(o.locale, prev.Locale),
+		GuestUser:     cmp.Or(o.guestUser, prev.User),
+		GuestPassword: cmp.Or(o.guestPassword, prev.Password),
+		Locale:        cmp.Or(o.locale, prev.Locale),
 		Win11ISO:      isoPath,
 		VirtioISO:     filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
 		ProvisionISO:  media.ISOPath("", o.vmName),
@@ -201,8 +195,15 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	}
 	p.ApplyStage(stage)
 	if m.Has(domain.DefineStepID(p.Name)) {
-		if uuid, err := c.DomainUUID(p.Name); err == nil {
+		uuid, err := c.DomainUUID(p.Name)
+		switch {
+		case err == nil:
 			p.UUID = uuid
+		case cfg.Root == "" && !virt.IsNotFound(err):
+			// Swallowed, this re-renders the XML UUID-less and the redefine
+			// fails far away with "domain already exists". Under --root there
+			// is no daemon to ask, so only a live host treats it as fatal.
+			return fmt.Errorf("read UUID of defined domain %s: %w", p.Name, err)
 		}
 	}
 	if !m.Has(domain.DiskImageID(p.Name)) {
@@ -261,16 +262,11 @@ func resolveGPUROM(root, vm, flag, prev string) (romFile string, content []byte,
 
 // resolveDisplayName picks the desktop shortcut name.
 func resolveDisplayName(root, name, flag string) string {
-	if flag != "" {
-		return flag
-	}
-	if reg := hostcfg.DisplayName(root, name); reg != "" {
-		return reg
-	}
+	fallback := name
 	if name == steps.DefaultVMName {
-		return "Windows 11"
+		fallback = "Windows 11"
 	}
-	return name
+	return cmp.Or(flag, hostcfg.DisplayName(root, name), fallback)
 }
 
 // runVMUndefine removes the domain and its host artifacts, purging the disk with --purge.

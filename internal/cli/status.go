@@ -19,8 +19,7 @@ func newStatusCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 			checks := orchestrate.Status(cfg.Root)
 			if cfg.JSON {
 				if err := writeJSON(stdout, checks); err != nil {
-					fmt.Fprintf(stderr, "orthogonals status: %v\n", err)
-					return exitCode(1)
+					return finish(stderr, "status", err)
 				}
 			} else {
 				for _, c := range checks {

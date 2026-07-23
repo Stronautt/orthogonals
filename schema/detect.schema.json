@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/stronautt/orthogonals/schema/detect.schema.json",
+  "title": "orthogonals detect --json",
+  "description": "Host GPU, CPU, and platform topology as reported by `orthogonals detect --json`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["devices", "gpus", "cpu", "platform"],
+  "properties": {
+    "devices": {
+      "description": "Every PCI device under /sys/bus/pci/devices.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/pciDevice" }
+    },
+    "gpus": {
+      "description": "Display-class devices split into the integrated GPU and the discrete ones.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "igpu": { "$ref": "#/$defs/pciDevice" },
+        "dgpus": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/pciDevice" }],
+            "properties": {
+              "audio": {
+                "description": "The co-slot HDMI audio function, when present.",
+                "$ref": "#/$defs/pciDevice"
+              }
+            }
+          }
+        }
+      }
+    },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threads", "cores", "hybrid", "p_cores"],
+      "properties": {
+        "vendor": { "type": "string", "enum": ["intel", "amd", ""] },
+        "threads": { "type": "integer", "minimum": 0 },
+        "cores": { "type": "integer", "minimum": 0 },
+        "hybrid": {
+          "description": "True on Intel hybrid parts with distinct P and E cores.",
+          "type": "boolean"
+        },
+        "p_cores": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "e_cores": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iommu_address_width",
+        "selinux",
+        "secure_boot",
+        "chassis_type",
+        "mem_total_bytes",
+        "nvidia",
+        "tools"
+      ],
+      "properties": {
+        "iommu_address_width": {
+          "description": "Host IOMMU address width in bits; 39 needs the maxphysaddr workaround.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "iommu_table": {
+          "description": "ACPI table the firmware exposes its IOMMU through: DMAR (Intel VT-d) or IVRS (AMD-Vi). Absent when there is none.",
+          "type": "string",
+          "enum": ["DMAR", "IVRS"]
+        },
+        "selinux": { "type": "string" },
+        "secure_boot": { "type": "boolean" },
+        "chassis_type": {
+          "description": "SMBIOS chassis type; 8-11 and 14 are laptop classes.",
+          "type": "integer"
+        },
+        "gpu_mux": { "type": "string", "enum": ["hybrid", "discrete", ""] },
+        "firmware_iommu": {
+          "description": "BIOS attributes controlling the IOMMU, when the host exposes them.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" }
+            }
+          }
+        },
+        "mem_total_bytes": { "type": "integer", "minimum": 0 },
+        "nvidia": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["loaded"],
+          "properties": {
+            "loaded": { "type": "boolean" },
+            "version": { "type": "string" },
+            "flavor": { "type": "string" },
+            "modeset": { "type": "string" },
+            "fbdev": { "type": "string" }
+          }
+        },
+        "tools": {
+          "description": "Presence of each host binary later stages shell out to.",
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pciDevice": {
+      "type": "object",
+      "required": ["address", "vendor", "device", "class", "driver", "iommu_group", "has_reset", "boot_vga"],
+      "properties": {
+        "address": {
+          "description": "PCI domain:bus:device.function. The domain is padded to four hex digits but is not limited to them: Thunderbolt/USB4 tunneled PCIe gets domains above 0xffff, e.g. 10000:e0:06.0.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{4,}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-9a-f]$"
+        },
+        "vendor": { "type": "string", "pattern": "^0x[0-9a-f]{4}$" },
+        "device": { "type": "string", "pattern": "^0x[0-9a-f]{4}$" },
+        "class": { "type": "string", "pattern": "^0x[0-9a-f]{6}$" },
+        "driver": {
+          "description": "Bound kernel driver; empty when the device is unbound.",
+          "type": "string"
+        },
+        "iommu_group": { "type": "integer" },
+        "has_reset": { "type": "boolean" },
+        "boot_vga": {
+          "description": "The firmware primary display device.",
+          "type": "boolean"
+        },
+        "drm_card": { "type": "string" },
+        "connectors": { "type": "array", "items": { "type": "string" } },
+        "audio": true
+      }
+    }
+  }
+}

@@ -108,23 +108,23 @@ type Artifact struct {
 	Content []byte
 }
 
+// templates holds the embedded provision templates, parsed once.
+var templates = template.Must(template.New("media").
+	Funcs(template.FuncMap{"xml": domain.XMLEscape, "ps": psEscape}).
+	ParseFS(templateFS, "templates/*"))
+
 // Render produces the generated provision-ISO files.
 func Render(p Profile) ([]Artifact, error) {
 	names := []string{"autounattend.xml", "vdd_settings.xml", "provision.ps1"}
 	out := make([]Artifact, 0, len(names))
-	funcs := template.FuncMap{"xml": domain.XMLEscape, "ps": psEscape}
 	data := struct {
 		Profile
 		VDDHardwareID string
 		LGService     string
 	}{p, VDDHardwareID, LGHostServiceName}
 	for _, name := range names {
-		tpl, err := template.New(name).Funcs(funcs).ParseFS(templateFS, "templates/"+name)
-		if err != nil {
-			return nil, err
-		}
 		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, data); err != nil {
+		if err := templates.ExecuteTemplate(&buf, name, data); err != nil {
 			return nil, fmt.Errorf("render %s: %w", name, err)
 		}
 		out = append(out, Artifact{Name: name, Content: buf.Bytes()})

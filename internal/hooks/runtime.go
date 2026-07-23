@@ -263,20 +263,19 @@ func nvidiaDevices(root string) (gpu string, devs []string, err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	devs = []string{nvidia.Address}
-	if nvidia.Audio != nil {
-		devs = append(devs, nvidia.Audio.Address)
-	}
-	return nvidia.Address, devs, nil
+	return nvidia.Address, nvidia.Addresses(), nil
 }
 
 type holder struct {
 	Comm string
 }
 
-// nvidiaHolders lists processes holding /dev/nvidia* open.
+// nvidiaHolders lists processes holding /dev/nvidia* open. The leading slash
+// on "/proc" is load-bearing: filepath.Join drops an empty root, so a bare
+// "proc" is relative and the scan finds nothing unless the caller happens to
+// be standing in /.
 func nvidiaHolders(root string) []holder {
-	entries, err := os.ReadDir(filepath.Join(root, "proc"))
+	entries, err := os.ReadDir(filepath.Join(root, "/proc"))
 	if err != nil {
 		return nil
 	}
@@ -285,7 +284,7 @@ func nvidiaHolders(root string) []holder {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		procPid := filepath.Join(root, "proc", e.Name())
+		procPid := filepath.Join(root, "/proc", e.Name())
 		if pidHoldsNVIDIA(procPid) {
 			holders = append(holders, holder{Comm: readComm(procPid)})
 		}
@@ -369,7 +368,12 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 	save := filepath.Join(root, hugepageSaveFile)
 	if _, err := os.Stat(save); err != nil {
 		_ = os.MkdirAll(filepath.Dir(save), 0o755)
-		_ = os.WriteFile(save, []byte(strconv.FormatUint(prior, 10)), 0o644)
+		// Without the marker freeHugepages can never release the pool — a
+		// guest-RAM-sized reservation would outlive the VM until reboot, so a
+		// failed save aborts the start rather than proceeding.
+		if err := os.WriteFile(save, []byte(strconv.FormatUint(prior, 10)), 0o644); err != nil {
+			return hugepageAbort(user, log, "save prior pool size to %s: %v", hugepageSaveFile, err)
+		}
 	}
 	target := prior + need
 	got := prior
@@ -391,7 +395,7 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 		_ = os.Remove(save)
 		return hugepageAbort(user, log,
 			"could not reserve %d 2M hugepages (got %d) — host memory is fragmented; reboot or free memory, then start the VM again",
-			need, got-prior)
+			need, max(got, prior)-prior)
 	}
 	log("reserved %d 2M hugepages (pool %d→%d)", need, prior, got)
 	return nil

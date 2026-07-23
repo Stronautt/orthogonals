@@ -1,0 +1,7 @@
+# version and --version report the build version on stdout, exit 0.
+
+exec orthogonals version
+stdout 'orthogonals '
+
+exec orthogonals --version
+stdout 'orthogonals'

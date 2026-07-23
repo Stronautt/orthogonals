@@ -1,0 +1,195 @@
+name: Regression
+
+# The suites too slow or too stateful to gate a push: fuzzing, vendor-pin
+# reachability, and the runs that mutate a real kernel in a throwaway guest.
+# One nightly schedule runs everything (the job ifs match any schedule, so
+# this cron is referenced nowhere else); the dispatch input runs any one
+# suite (or all) on demand without paying for the rest.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which suite to run
+        type: choice
+        options: [all, fuzz, pins, vm, vfio]
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","fuzz"]'), inputs.suite))
+    name: Fuzz ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [bls, domain, steps, hw]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Fuzz every target in internal/${{ matrix.package }}
+        run: |
+          echo "### Fuzz — internal/${{ matrix.package }}" >> "$GITHUB_STEP_SUMMARY"
+          for t in $(go test ./internal/${{ matrix.package }} -list 'Fuzz.*' | grep '^Fuzz'); do
+            echo "::group::$t"
+            go test ./internal/${{ matrix.package }} -run "$t" -fuzz "$t" -fuzztime=120s
+            echo "::endgroup::"
+            echo "- ✅ \`$t\` (120s, no crashers)" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Upload any crashers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashers-${{ matrix.package }}
+          path: internal/${{ matrix.package }}/testdata/fuzz/
+          retention-days: 90
+
+  pins:
+    # a rotted vendor URL should surface here, not in a user's media run;
+    # nightly is fine because this is HEAD requests, not downloads
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","pins"]'), inputs.suite))
+    name: Pinned downloads
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Check every pinned download
+        run: |
+          st=0
+          go run ./test/pins > pins.txt 2>&1 || st=$?
+          cat pins.txt
+          { echo '### Pinned downloads'; echo '```'; cat pins.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $st
+
+  # The two jobs below mutate a real kernel, so they live in throwaway guests
+  # and are far too slow to gate a push.
+  vm-tier:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","vm"]'), inputs.suite))
+    name: VM tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # The node ships /dev/kvm 0660 root:kvm and the runner user is not in
+      # that group, so the chmod is load-bearing; the ioctl proves the
+      # subsystem answers.
+      - name: Require a usable /dev/kvm
+        run: |
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          sudo chmod 666 /dev/kvm
+          python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      # libvirt-dev because the provision-virtual extra builds libvirt-python
+      # from source — there is no binary wheel.
+      - name: Install libvirt and tmt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvirt-daemon-system libvirt-dev python3-dev qemu-system-x86 genisoimage
+          sudo systemctl start libvirtd
+          pipx install 'tmt[provision-virtual]'
+      - run: make test-vm
+      - name: Test summary
+        if: always()
+        run: ./test/tmt/gha-summary.sh /var/tmp/orthogonals-tmt-vm >> "$GITHUB_STEP_SUMMARY"
+      # Informational, never gated: the gating number is ci.yml's merged profile.
+      - name: Merged coverage (unit + the real binary under tmt)
+        run: |
+          make coverage
+          go tool cover -html=dist/coverage/merged.txt -o dist/coverage/coverage.html
+          pct=$(go tool cover -func=dist/coverage/merged.txt | tail -1 | grep -o '[0-9.]*%')
+          echo "### Coverage — unit + vm tier: ${pct}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-vm-tier
+          path: |
+            dist/coverage/merged.txt
+            dist/coverage/coverage.html
+          retention-days: 14
+
+  vfio-tier:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","vfio"]'), inputs.suite))
+    name: VFIO tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Require a usable /dev/kvm
+        run: |
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          sudo chmod 666 /dev/kvm
+          python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      # No provision plugin needed: test/vfiohost boots the guest itself,
+      # because testcloud cannot ask for the emulated IOMMU this job exists to have.
+      - name: Install libvirt and tmt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvirt-daemon-system qemu-system-x86
+          sudo systemctl start libvirtd
+          sudo virsh net-start default || true
+          # test/vfiohost dials the system socket (0770 root:libvirt); sg in
+          # the next step picks the new group up without a re-login
+          sudo usermod -aG libvirt "$USER"
+          pipx install tmt
+      - run: sg libvirt -c "make test-vfio"
+      - name: Test summary
+        if: always()
+        run: ./test/tmt/gha-summary.sh /var/tmp/orthogonals-tmt-vfio >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the guest's hook log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vfio-tier-logs
+          path: /var/tmp/orthogonals-tmt-vfio/
+          retention-days: 14
+
+  # Nobody watches a nightly. Failures land on one accumulating issue
+  # instead of sailing past in the Actions tab.
+  report-failure:
+    name: Report failure
+    needs: [fuzz, pins, vm-tier, vfio-tier]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create regression --repo "$GITHUB_REPOSITORY" \
+            --description "Scheduled regression failures" --color B60205 --force
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --label regression --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "Regression failure: $url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Scheduled regression failure" \
+              --label regression --body "Automated tracker for scheduled regression failures. Latest: $url"
+          fi

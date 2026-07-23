@@ -18,6 +18,11 @@ func (e exitCode) Error() string { return fmt.Sprintf("exit status %d", int(e)) 
 func Run(args []string, stdout, stderr io.Writer) int {
 	cfg := &Config{}
 	root := newRootCmd(cfg, stdout, stderr)
+	// Never nil: cobra reads os.Args[1:] when SetArgs gets nil, so a caller
+	// asking for "no arguments" would silently inherit the process's own.
+	if args == nil {
+		args = []string{}
+	}
 	root.SetArgs(args)
 	err := root.Execute()
 	if err == nil {

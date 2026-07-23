@@ -95,7 +95,10 @@ func (e *Engine) undoPreconditions(oc *OpClients) error {
 		for _, vm := range vms {
 			state, err := oc.Virt().DomainState(vm)
 			if err != nil {
-				continue
+				if virt.IsNotFound(err) {
+					continue
+				}
+				return fmt.Errorf("query VM %s (is libvirtd running?): %w", vm, err)
 			}
 			if virt.Live(state) {
 				return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", vm, state, vm)
@@ -103,7 +106,10 @@ func (e *Engine) undoPreconditions(oc *OpClients) error {
 			return fmt.Errorf("VM %s is still defined — remove it first: orthogonals vm undefine --vm-name %s --yes (or virsh undefine %s --nvram --tpm)", vm, vm, vm)
 		}
 	}
-	devs, _ := hw.ScanPCI(e.Root)
+	devs, err := hw.ScanPCI(e.Root)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	for _, d := range devs {
 		if d.Vendor == hw.VendorNVIDIA && d.Driver == "vfio-pci" {
 			return fmt.Errorf("GPU %s is bound to vfio-pci — reattach it to the host driver first: virsh nodedev-reattach pci_%s (or reboot)",
@@ -233,7 +239,11 @@ func (e *Engine) Undo(force, purge bool, confirm io.Reader) error {
 		return nil
 	}
 	if kept == 0 {
-		_ = os.Remove(ManifestPath(e.Root))
+		// Manifest goes first: deleting backups while the manifest survives
+		// would leave records whose Backup fields dangle.
+		if err := os.Remove(ManifestPath(e.Root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 		if err := os.RemoveAll(backupDir(e.Root)); err != nil {
 			return err
 		}

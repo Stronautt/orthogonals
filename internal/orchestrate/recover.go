@@ -12,18 +12,15 @@ import (
 
 // Recover re-enumerates the passthrough GPU via PCI remove + rescan after a botched handover.
 func Recover(root string, s sysd.Client, yes bool, out io.Writer) error {
-	res, err := hw.Detect(root)
+	gpus, err := hw.ScanGPUs(root)
 	if err != nil {
 		return err
 	}
-	nvidia, err := res.GPUs.SoleNVIDIA()
+	nvidia, err := gpus.SoleNVIDIA()
 	if err != nil {
 		return err
 	}
-	devs := []string{nvidia.Address}
-	if nvidia.Audio != nil {
-		devs = append(devs, nvidia.Audio.Address)
-	}
+	devs := nvidia.Addresses()
 	if !yes {
 		fmt.Fprintf(out, "would unload the NVIDIA modules, re-enumerate %s via PCI remove + rescan, and reload the driver\n",
 			strings.Join(devs, " "))

@@ -2,7 +2,7 @@ Name:           orthogonals
 # Version comes from the Makefile: make rpm passes --define "pkgver X.Y.Z".
 Version:        %{pkgver}
 Release:        1%{?dist}
-Summary:        Command-line tool that turns a Linux desktop into a virtual machine host with native GPU passthrough — run Windows or other guest operating systems in a VM with a real, dedicated GPU at near-native performance.
+Summary:        Turn a Linux desktop into a GPU-passthrough virtual machine host
 License:        GPL-3.0-only
 URL:            https://github.com/stronautt/orthogonals
 Source0:        %{name}-%{version}.tar.gz
@@ -19,7 +19,8 @@ Requires:       swtpm-tools
 Requires:       dracut
 Requires:       policycoreutils
 Requires:       policycoreutils-python-utils
-Requires:       libnotify
+# the hook runtime execs notify-send for desktop notifications
+Requires:       /usr/bin/notify-send
 # dGPU launch UX: GNOME's "Launch using Discrete Graphics Card"
 Requires:       switcheroo-control
 # version comes from the Makefile (artifacts.LookingGlassVersion); must match the host
@@ -27,6 +28,12 @@ Requires:       looking-glass-client = %{lgver}
 
 %description
 Same machine, orthogonal axes: Windows at full GPU speed, Linux never pauses.
+
+orthogonals turns a Fedora desktop with an Intel iGPU and one NVIDIA dGPU
+into a Looking Glass Windows 11 VM host: it detects the hardware topology,
+runs preflight checks, applies the VFIO host configuration, defines and
+installs the guest, and verifies the result — with every host mutation
+journaled so undo restores the machine byte-identically.
 
 %prep
 %autosetup
@@ -51,3 +58,9 @@ install -d %{buildroot}%{_datadir}/fish/vendor_completions.d
 %{_datadir}/bash-completion/completions/orthogonals
 %{_datadir}/zsh/site-functions/_orthogonals
 %{_datadir}/fish/vendor_completions.d/orthogonals.fish
+
+# Versions come from git tags; per-release history lives in the GitHub
+# release notes, not here.
+%changelog
+* Thu Jul 23 2026 Pavlo Hrytsenko <pashagricenko@gmail.com> - %{pkgver}-1
+- Built from the release tag; see the GitHub release notes for changes.

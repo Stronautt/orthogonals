@@ -128,19 +128,19 @@ func TestParseCPUList(t *testing.T) {
 		{in: "1-x", wantErr: true},
 	}
 	for _, tt := range tests {
-		got, err := parseCPUList(tt.in)
+		got, err := ParseCPUList(tt.in)
 		if tt.wantErr {
 			if err == nil {
-				t.Errorf("parseCPUList(%q): want error", tt.in)
+				t.Errorf("ParseCPUList(%q): want error", tt.in)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseCPUList(%q): %v", tt.in, err)
+			t.Errorf("ParseCPUList(%q): %v", tt.in, err)
 			continue
 		}
 		if !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("parseCPUList(%q) = %v, want %v", tt.in, got, tt.want)
+			t.Errorf("ParseCPUList(%q) = %v, want %v", tt.in, got, tt.want)
 		}
 	}
 }

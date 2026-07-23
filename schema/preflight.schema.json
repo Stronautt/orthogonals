@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/stronautt/orthogonals/schema/preflight.schema.json",
+  "title": "orthogonals preflight --json",
+  "description": "Host readiness verdicts. The process exit code follows the overall status: 0 pass, 2 warn, 1 fail.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "checks"],
+  "properties": {
+    "status": {
+      "description": "The most severe status among the checks.",
+      "$ref": "#/$defs/status"
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "message"],
+        "properties": {
+          "name": {
+            "description": "Stable check identifier, safe to match on.",
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "status": { "$ref": "#/$defs/status" },
+          "message": {
+            "description": "Human-readable finding. Not a stable contract; match on name.",
+            "type": "string"
+          },
+          "remedy": {
+            "description": "What to do about it; present only when the status is not pass.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "status": { "type": "string", "enum": ["pass", "warn", "fail"] }
+  }
+}

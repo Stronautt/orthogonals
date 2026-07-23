@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
@@ -448,6 +449,23 @@ func TestNvidiaHolders(t *testing.T) {
 	}
 }
 
+// TestNvidiaHoldersIgnoresTheWorkingDirectory pins the leading slash on the
+// /proc join. filepath.Join drops an empty root, so a bare "proc" is relative:
+// with no --root the scan would read whatever ./proc happened to be, find
+// nothing, and wave the handover through. Every other test here passes an
+// absolute temp root, which makes the join absolute either way.
+func TestNvidiaHoldersIgnoresTheWorkingDirectory(t *testing.T) {
+	decoy := t.TempDir()
+	seedHolder(t, decoy, 1, "decoy")
+	t.Chdir(decoy)
+
+	for _, h := range nvidiaHolders("") {
+		if h.Comm == "decoy" {
+			t.Fatal("nvidiaHolders read ./proc instead of /proc — a relative join makes the holder gate depend on the caller's working directory")
+		}
+	}
+}
+
 func TestGovernorRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	for _, cpu := range []string{"cpu0", "cpu1"} {
@@ -551,6 +569,90 @@ func TestReserveHugepagesReadError(t *testing.T) {
 	}
 	if len(*notes) != 1 {
 		t.Errorf("want one desktop notification, got %v", *notes)
+	}
+}
+
+// requireRealHugepages skips unless this process can move the running kernel's
+// 2M pool, and guarantees the pool goes back however the test ends. Writing
+// nr_hugepages needs root, so `make test-vm` is where these run live.
+func requireRealHugepages(t *testing.T) uint64 {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("moving the real hugepage pool needs root — covered by the VM tier (make test-vm)")
+	}
+	prior, err := readUint(nrHugepages2MPath)
+	if err != nil {
+		t.Skipf("no 2M hugepage pool on this kernel: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(nrHugepages2MPath, []byte(strconv.FormatUint(prior, 10)+"\n"), 0o644)
+		_ = os.Remove(hugepageSaveFile)
+	})
+	return prior
+}
+
+// TestReserveHugepagesAgainstTheRealPool exercises what a --root prefix cannot:
+// nr_hugepages does not store what is written to it. The kernel allocates what
+// it can and reads back the total it reached, which is why reserveHugepages
+// loops on the readback instead of trusting the write.
+func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
+	prior := requireRealHugepages(t)
+	const ramMiB = 128
+	const want = ramMiB / hugepageSizeMiB
+
+	if err := reserveHugepages("/", "user", ramMiB); err != nil {
+		t.Fatalf("reserve %d MiB from the live pool: %v", ramMiB, err)
+	}
+	got, err := readUint(nrHugepages2MPath)
+	if err != nil {
+		t.Fatalf("read the live pool: %v", err)
+	}
+	if got != prior+want {
+		t.Errorf("nr_hugepages = %d, want %d (prior %d + %d)", got, prior+want, prior, want)
+	}
+	if saved := strings.TrimSpace(read(t, hugepageSaveFile)); saved != strconv.FormatUint(prior, 10) {
+		t.Errorf("saved prior = %q, want %d", saved, prior)
+	}
+
+	freeHugepages("/")
+	if got, err = readUint(nrHugepages2MPath); err != nil || got != prior {
+		t.Errorf("nr_hugepages after free = %d (err %v), want restored %d", got, err, prior)
+	}
+	if _, err := os.Stat(hugepageSaveFile); !os.IsNotExist(err) {
+		t.Error("the marker must be removed after free")
+	}
+}
+
+// TestReserveHugepagesShortfallAgainstTheRealPool reaches the rollback path by
+// letting the kernel refuse; the synthetic version has to chmod the file
+// unwritable to get there.
+func TestReserveHugepagesShortfallAgainstTheRealPool(t *testing.T) {
+	prior := requireRealHugepages(t)
+	notes := stubNotify(t)
+	// Twice the host's total RAM cannot be satisfied. The pool allocator gives
+	// up when a page cannot be had rather than reclaiming to death, and the
+	// rollback releases whatever it did take.
+	ramMiB := hw.MeminfoKiB("/", "MemTotal:") / 1024 * 2
+	if ramMiB == 0 {
+		t.Fatal("cannot read MemTotal from the live /proc/meminfo")
+	}
+
+	err := reserveHugepages("/", "user", ramMiB)
+	if err == nil {
+		t.Fatalf("reserving %d MiB of hugepages must fail on a host with half that RAM", ramMiB)
+	}
+	if !strings.Contains(err.Error(), "fragmented") {
+		t.Errorf("error must explain the cause to a user, got: %v", err)
+	}
+	if len(*notes) != 1 {
+		t.Errorf("want one desktop notification, got %v", *notes)
+	}
+	got, readErr := readUint(nrHugepages2MPath)
+	if readErr != nil || got != prior {
+		t.Errorf("nr_hugepages = %d (err %v), want rolled back to %d", got, readErr, prior)
+	}
+	if _, statErr := os.Stat(hugepageSaveFile); !os.IsNotExist(statErr) {
+		t.Error("a failed reservation must roll back its marker")
 	}
 }
 

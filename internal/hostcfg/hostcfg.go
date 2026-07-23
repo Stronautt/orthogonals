@@ -24,8 +24,10 @@ var templateFS embed.FS
 type Profile struct {
 	User    string
 	Binding string
-	// CPUVendor selects the IOMMU kernel args ("intel"/"amd"/"").
-	CPUVendor string
+	// IOMMUTable ("DMAR"/"IVRS"/"") selects the IOMMU kernel args; CPUVendor
+	// ("intel"/"amd"/"") is the fallback for firmware that exposes no table.
+	IOMMUTable string
+	CPUVendor  string
 	// Laptop gates the RTD3 power-management artifacts and units.
 	Laptop           bool
 	VFIOIDs          []string
@@ -44,13 +46,10 @@ func NewProfile(r *hw.Result, user, binding string, defaultNetActive bool) (Prof
 	if err != nil {
 		return Profile{}, err
 	}
-	ids := []string{gpu.VendorDeviceID()}
-	if gpu.Audio != nil {
-		ids = append(ids, gpu.Audio.VendorDeviceID())
-	}
-	return Profile{User: user, Binding: binding, CPUVendor: r.CPU.Vendor,
+	return Profile{User: user, Binding: binding,
+		IOMMUTable: r.Platform.IOMMUTable, CPUVendor: r.CPU.Vendor,
 		Laptop:  hw.IsLaptopChassis(r.Platform.ChassisType),
-		VFIOIDs: ids, DefaultNetActive: defaultNetActive}, nil
+		VFIOIDs: gpu.VendorDeviceIDs(), DefaultNetActive: defaultNetActive}, nil
 }
 
 // BindingDynamic and BindingStatic are the --binding modes.
@@ -76,9 +75,22 @@ const (
 	SwitcherooStepID = "enable-switcheroo-control"
 )
 
-// iommuKernelArgs is the IOMMU passthrough kernel args for a CPU vendor; unknown keeps the Intel default.
-func iommuKernelArgs(cpuVendor string) string {
-	if cpuVendor == hw.CPUVendorAMD {
+// IOMMUIsAMD reports whether the platform's IOMMU is AMD-Vi. The firmware's
+// ACPI table names the technology directly; the CPU vendor answers only for
+// firmware that exposes no table yet — the preflight-remedy case, before the
+// BIOS switch is flipped. Unknown keeps the Intel default.
+func IOMMUIsAMD(iommuTable, cpuVendor string) bool {
+	if iommuTable != "" {
+		return iommuTable == hw.IOMMUTableIVRS
+	}
+	return cpuVendor == hw.CPUVendorAMD
+}
+
+// IOMMUKernelArgs is the IOMMU passthrough kernel args for a platform. The
+// single platform→karg mapping — preflight quotes it as the remedy, so a
+// private copy there could drift and lie.
+func IOMMUKernelArgs(iommuTable, cpuVendor string) string {
+	if IOMMUIsAMD(iommuTable, cpuVendor) {
 		return "iommu=pt"
 	}
 	return "intel_iommu=on iommu=pt"
@@ -86,7 +98,7 @@ func iommuKernelArgs(cpuVendor string) string {
 
 // KernelArgs is the exact karg string apply adds.
 func KernelArgs(p Profile) string {
-	args := iommuKernelArgs(p.CPUVendor)
+	args := IOMMUKernelArgs(p.IOMMUTable, p.CPUVendor)
 	if p.Binding == BindingStatic {
 		return args + " " + VFIOIDsPrefix + strings.Join(p.VFIOIDs, ",")
 	}
@@ -138,7 +150,7 @@ type tplSpec struct {
 // artifactSpecs maps embedded templates to install paths, in apply order.
 var artifactSpecs = []tplSpec{
 	{"vfio.conf", "/etc/dracut.conf.d/vfio.conf", "dracut-vfio-conf", 0o644},
-	// TODO(refactor): assumes Fedora's modular libvirt (virtqemud), not monolithic libvirtd.
+	// Assumes Fedora's modular libvirt (virtqemud), not monolithic libvirtd.
 	{"virtqemud.conf", "/etc/libvirt/virtqemud.conf", "libvirt-socket-auth", 0o644},
 	{"virtqemud-socket.conf", "/etc/systemd/system/virtqemud.socket.d/orthogonals.conf", "libvirt-socket-perms", 0o644},
 	{"61-mutter-ignore-nvidia.rules", "/etc/udev/rules.d/61-mutter-ignore-nvidia.rules", "udev-mutter-ignore", 0o644},
@@ -154,14 +166,13 @@ var laptopArtifactSpecs = []tplSpec{
 	{"80-orthogonals-nvidia-pm.rules", "/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules", "udev-nvidia-pm", 0o644},
 }
 
+// templates holds every embedded artifact template, parsed once.
+var templates = template.Must(template.ParseFS(templateFS, "templates/*"))
+
 // renderTemplate executes one embedded template against data.
 func renderTemplate(name string, data any) ([]byte, error) {
-	tpl, err := template.ParseFS(templateFS, "templates/"+name)
-	if err != nil {
-		return nil, err
-	}
 	var buf bytes.Buffer
-	if err := tpl.Execute(&buf, data); err != nil {
+	if err := templates.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, fmt.Errorf("render %s: %w", name, err)
 	}
 	return buf.Bytes(), nil
@@ -193,10 +204,13 @@ func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 	// ponytail: hardcodes /home/<user>/Desktop; xdg-user-dir DESKTOP if localized dirs matter.
 	link := "/home/" + user + "/Desktop/" + vmName + ".orthogonals.desktop"
 	list = append(list, steps.Step{
-		ID: DesktopLinkID(vmName), Kind: steps.KindRunCmd,
-		Cmd: []string{"runuser", "-u", user, "--", "sh", "-c",
-			"mkdir -p /home/" + user + "/Desktop && ln -sfn " + desktopEntryPath(vmName) + " " + link +
-				" && DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus gio set " + link + " metadata::trusted true"},
+		ID: DesktopLinkID(vmName), Kind: steps.KindOp,
+		Op: steps.OpDesktopLink,
+		Args: map[string]string{
+			"user":  user,
+			"entry": desktopEntryPath(vmName),
+			"link":  link,
+		},
 		UndoOp:      steps.OpRemoveFile,
 		UndoArgs:    map[string]string{"path": link},
 		CreatesPath: link,

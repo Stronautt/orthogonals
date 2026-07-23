@@ -2,6 +2,7 @@ package hostcfg
 
 import (
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,11 +178,13 @@ func TestVMStepsGolden(t *testing.T) {
 	}
 	const entryPath = "/usr/share/applications/win11.orthogonals.desktop"
 	const linkPath = "/home/testuser/Desktop/win11.orthogonals.desktop"
-	wantCmd := "runuser -u testuser -- sh -c " +
-		"mkdir -p /home/testuser/Desktop && ln -sfn " + entryPath + " " + linkPath +
-		" && DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus gio set " + linkPath + " metadata::trusted true"
-	if got := strings.Join(link.Cmd, " "); got != wantCmd {
-		t.Errorf("link cmd = %q\nwant       %q", got, wantCmd)
+	if link.Kind != steps.KindOp || link.Op != steps.OpDesktopLink {
+		t.Errorf("link step = %s/%s, want an op step (%s)", link.Kind, link.Op, steps.OpDesktopLink)
+	}
+	// The args are the whole contract: undo replays them from a fresh process.
+	wantArgs := map[string]string{"user": "testuser", "entry": entryPath, "link": linkPath}
+	if !maps.Equal(link.Args, wantArgs) {
+		t.Errorf("link args = %v, want %v", link.Args, wantArgs)
 	}
 	if link.UndoOp != steps.OpRemoveFile || link.UndoArgs["path"] != linkPath {
 		t.Errorf("link undo = %s %v", link.UndoOp, link.UndoArgs)
@@ -297,9 +300,16 @@ func TestKernelArgs(t *testing.T) {
 		profile Profile
 		want    string
 	}{
-		{"intel dynamic", Profile{CPUVendor: hw.CPUVendorIntel, Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
-		{"amd dynamic drops intel_iommu", Profile{CPUVendor: hw.CPUVendorAMD, Binding: BindingDynamic}, "iommu=pt"},
-		{"unknown vendor keeps intel default", Profile{CPUVendor: "", Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
+		{"dmar table", Profile{IOMMUTable: hw.IOMMUTableDMAR, Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
+		{"ivrs table drops intel_iommu", Profile{IOMMUTable: hw.IOMMUTableIVRS, Binding: BindingDynamic}, "iommu=pt"},
+		{
+			"table outranks cpu vendor",
+			Profile{IOMMUTable: hw.IOMMUTableDMAR, CPUVendor: hw.CPUVendorAMD, Binding: BindingDynamic},
+			"intel_iommu=on iommu=pt",
+		},
+		{"no table falls back to intel vendor", Profile{CPUVendor: hw.CPUVendorIntel, Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
+		{"no table falls back to amd vendor", Profile{CPUVendor: hw.CPUVendorAMD, Binding: BindingDynamic}, "iommu=pt"},
+		{"nothing known keeps intel default", Profile{Binding: BindingDynamic}, "intel_iommu=on iommu=pt"},
 		{
 			"intel static appends vfio ids",
 			Profile{CPUVendor: hw.CPUVendorIntel, Binding: BindingStatic, VFIOIDs: []string{"10de:2206", "10de:1aef"}},

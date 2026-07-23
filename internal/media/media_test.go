@@ -224,7 +224,10 @@ func TestProvisionContent(t *testing.T) {
 			t.Errorf("provision.ps1 is missing %q", want)
 		}
 	}
-	for _, d := range artifacts.ProvisionPayloads() {
+	for _, d := range artifacts.Downloads() {
+		if !artifacts.OnProvisionISO(d) {
+			continue
+		}
 		if !strings.Contains(s, d.File) {
 			t.Errorf("provision.ps1 never references payload %s", d.File)
 		}
@@ -532,7 +535,10 @@ func TestBuildISO(t *testing.T) {
 	}
 	payloadDir := t.TempDir()
 	var payloads []string
-	for _, d := range artifacts.ProvisionPayloads() {
+	for _, d := range artifacts.Downloads() {
+		if !artifacts.OnProvisionISO(d) {
+			continue
+		}
 		p := filepath.Join(payloadDir, d.File)
 		if err := os.WriteFile(p, []byte(d.Name), 0o644); err != nil {
 			t.Fatal(err)

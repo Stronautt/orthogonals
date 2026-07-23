@@ -83,6 +83,26 @@ type DGPU struct {
 	Audio *PCIDevice `json:"audio,omitempty"`
 }
 
+// Addresses is the GPU's PCI address plus its audio sibling's, if any — the
+// device set a passthrough handover moves as one unit.
+func (d DGPU) Addresses() []string {
+	addrs := []string{d.Address}
+	if d.Audio != nil {
+		addrs = append(addrs, d.Audio.Address)
+	}
+	return addrs
+}
+
+// VendorDeviceIDs is the vendor:device pair of the GPU plus its audio
+// sibling's, if any — what vfio-pci binds to.
+func (d DGPU) VendorDeviceIDs() []string {
+	ids := []string{d.VendorDeviceID()}
+	if d.Audio != nil {
+		ids = append(ids, d.Audio.VendorDeviceID())
+	}
+	return ids
+}
+
 // GPUs is the classified GPU topology preflight gates on.
 type GPUs struct {
 	IGPU  *PCIDevice `json:"igpu,omitempty"`
@@ -179,7 +199,6 @@ func classifyGPUs(devices []PCIDevice) GPUs {
 		if !strings.HasPrefix(d.Class, ClassDisplay) {
 			continue
 		}
-		d := d
 		if igpuAddr != "" && d.Address == igpuAddr {
 			g.IGPU = &d
 			continue

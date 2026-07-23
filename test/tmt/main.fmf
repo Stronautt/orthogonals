@@ -1,0 +1,94 @@
+summary: Host-mutation tests, shared by every plan
+
+# The tier tag names what a test needs underneath — plans filter on it:
+#   3 — anywhere a --root prefix is enough (containers included)
+#   4 — a real kernel, a real libvirtd, and a real reboot
+#   5 — hardware CI cannot rent: an emulated IOMMU, or your own desk
+
+/lifecycle:
+    summary: apply, re-apply, undo — byte-identical
+    description: |
+        The central promise: undo restores the tree the apply found. Runs over
+        every fixture preflight lets through, so the guarantee is asserted
+        across the topology matrix rather than on one reference host.
+    test: ./lifecycle.sh
+    duration: 15m
+    tier: 3
+
+/refusal:
+    summary: apply refuses a failed host, writes nothing
+    description: |
+        A refused apply must be inert. Covers the fixtures that fail preflight
+        for distinct reasons — dirty IOMMU group, no iGPU, duplicate GPU IDs,
+        pre-existing vfio config, no reset support.
+    test: ./refusal.sh
+    duration: 10m
+    tier: 3
+
+/fault:
+    summary: a killed apply still undoes cleanly
+    description: |
+        SIGKILLs the binary after each line it emits and requires undo to put
+        the tree back. This is what proves the journal is write-ahead.
+    test: ./fault.sh
+    duration: 15m
+    tier: 3
+
+/reboot:
+    summary: the up pipeline across two real reboots
+    description: |
+        The only tier where the BLS edit reaches the running kernel, dracut
+        regenerates a real initramfs, and the domain lands in a live libvirtd.
+        Uses tmt-reboot, so the state machine is asserted at its actual reboot
+        boundary rather than simulated with a written /proc/cmdline.
+    test: ./reboot.sh
+    duration: 45m
+    tier: 4
+
+/hugepages:
+    summary: the hook's hugepage pool, against a real kernel
+    description: |
+        Under a --root prefix nr_hugepages is an ordinary file that reads back
+        what was written, so the retry-on-readback loop and the shortfall
+        rollback are unreachable. Here the kernel allocates physical pages and
+        reports what it actually managed — the difference between a user
+        getting an explanation and getting an opaque QEMU out-of-memory.
+    test: ./hugepages.sh
+    duration: 10m
+    tier: 4
+
+/media:
+    summary: real loop ioctls against a real ISO
+    description: |
+        LOOP_CTL_GET_FREE, LOOP_CONFIGURE, and the udf-then-iso9660 mount
+        fallback need CAP_SYS_ADMIN in the initial user namespace, so unit
+        tests swap the whole mount seam for a directory. This is the only
+        place the ISO writer's output meets a real kernel filesystem driver.
+    test: ./media.sh
+    duration: 10m
+    tier: 4
+
+/vfio:
+    summary: the IOMMU and the vfio-pci bind, for real
+    description: |
+        The only tier where the kernel rather than a fixture answers. Its guest
+        has an emulated IOMMU, so intel_iommu=on written by apply actually
+        populates /sys/kernel/iommu_groups, and the qemu hook really evicts a
+        device to vfio-pci and hands it to libvirtd. Identity is the one thing
+        still synthetic — three per-file bind mounts over vendor, device and
+        class, leaving every attribute the hook operates on real.
+    test: ./vfio.sh
+    duration: 60m
+    tier: 5
+
+/desk:
+    summary: the fixtures, checked against real hardware
+    description: |
+        Read-only detect, preflight, and status against the machine this runs
+        on. Every golden in the suite derives from hwtest.Roots, which is
+        hand-written; this is the only thing that ever asks whether those
+        fixtures resemble a real host. Never runs in CI — there is no rentable
+        machine with the target topology.
+    test: ./desk.sh
+    duration: 5m
+    tier: 5

@@ -8,22 +8,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rogpeppe/go-internal/testscript"
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 	"github.com/stronautt/orthogonals/internal/virt"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// TestMain swaps the libvirt and systemd seams for package-wide fakes.
+// TestMain swaps the libvirt and systemd seams for package-wide fakes. The
+// swaps precede testscript.Main so a script's command subprocess inherits
+// them; Main exits the process itself.
 func TestMain(m *testing.M) {
 	newVirt = func() virt.Client { return &virttest.Fake{} }
 	newSysd = func() sysd.Client { return &sysdtest.Fake{} }
+	notify.Send = func(notify.Notification) {}
 	executablePath = func() (string, error) { return "/usr/bin/orthogonals", nil }
 	hooks.LogWriter = io.Discard
-	os.Exit(m.Run())
+	testscript.Main(m, map[string]func(){
+		"orthogonals": func() { os.Exit(Run(os.Args[1:], os.Stdout, os.Stderr)) },
+	})
 }
 
 // fakeVirt routes the package's libvirt seam at the given fake for one test.
@@ -121,6 +128,20 @@ func TestNoCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Usage:") {
 		t.Fatalf("stderr should contain usage, got: %q", stderr)
+	}
+}
+
+// TestNoCommandIgnoresTheProcessArguments pins Run's nil-args guard: cobra
+// falls back to os.Args[1:] when SetArgs is handed nil, so a caller asking for
+// "no arguments" would dispatch on whatever the process was started with.
+func TestNoCommandIgnoresTheProcessArguments(t *testing.T) {
+	old := os.Args
+	os.Args = []string{"orthogonals", "--definitely-not-a-flag"}
+	t.Cleanup(func() { os.Args = old })
+
+	code, _, stderr := run(t)
+	if code != 2 || !strings.Contains(stderr, "Usage:") {
+		t.Fatalf("Run(nil) consulted os.Args: exit %d, stderr %q", code, stderr)
 	}
 }
 

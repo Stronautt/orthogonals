@@ -41,18 +41,18 @@ func TestIOMMUAddressWidth(t *testing.T) {
 	})
 }
 
-func TestIOMMUTablePresent(t *testing.T) {
-	for _, table := range []string{"DMAR", "IVRS"} {
+func TestIOMMUTable(t *testing.T) {
+	for _, table := range []string{IOMMUTableDMAR, IOMMUTableIVRS} {
 		t.Run(table, func(t *testing.T) {
 			root := t.TempDir()
 			hwtest.WriteFile(t, root, "sys/firmware/acpi/tables/"+table, "")
-			if !iommuTablePresent(root) {
-				t.Errorf("iommuTablePresent = false, want true with the %s table", table)
+			if got := iommuTable(root); got != table {
+				t.Errorf("iommuTable = %q, want %q", got, table)
 			}
 		})
 	}
-	if iommuTablePresent(t.TempDir()) {
-		t.Error("iommuTablePresent on empty root = true, want false")
+	if got := iommuTable(t.TempDir()); got != "" {
+		t.Errorf("iommuTable on empty root = %q, want empty", got)
 	}
 }
 

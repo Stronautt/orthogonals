@@ -51,16 +51,24 @@ func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Wri
 			return fmt.Errorf("add %s: %w", src, err)
 		}
 	}
-	f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Build beside the target and rename: the domain XML mounts outPath, and a
+	// crash mid-write must not leave a torn ISO there for the next vm launch.
+	tmp := outPath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	if err := w.WriteTo(f, VolumeLabel); err != nil {
 		_ = f.Close()
-		_ = os.Remove(outPath)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, outPath); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	fmt.Fprintf(out, "wrote %s\n", outPath)

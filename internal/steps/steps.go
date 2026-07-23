@@ -162,13 +162,11 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 	inputDrift := false
 	if rec := m.find(s.ID); rec != nil {
 		if rec.Op != s.Op || !maps.Equal(rec.OpArgs, s.Args) {
-			return fmt.Errorf("journaled op differs from the current settings — undo first (orthogonals undo, or vm undefine for VM steps)\nwas: %s\nnow: %s",
-				opLine(rec.Op, rec.OpArgs), opLine(s.Op, s.Args))
+			return fmt.Errorf("journaled op differs from the current settings — %s\nwas: %s\nnow: %s",
+				undoFirst, opLine(rec.Op, rec.OpArgs), opLine(s.Op, s.Args))
 		}
-		if len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input) {
-			inputDrift = true
-		} else {
-			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+		var done bool
+		if inputDrift, done = e.journaledStepState(s, rec); done {
 			return nil
 		}
 	}
@@ -180,18 +178,67 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 		}
 		return nil
 	}
-	if entry.dials && e.skipUnderRoot(oc) {
-		fmt.Fprintf(e.Out, "%s: skipped under --root (needs live libvirt/systemd — covered by test-vm)\n", s.ID)
-	} else if err := entry.fn(oc, e.Root, e.Out, s.Args); err != nil {
-		return err
-	}
 	r := Record{ID: s.ID, Kind: KindOp, Data: s.Data, Reboot: s.Reboot,
 		Op: s.Op, OpArgs: s.Args, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
 	if len(s.Input) > 0 {
 		r.InputSHA256 = sha256hex(s.Input)
 	}
+	if err := e.journal(m, r); err != nil {
+		return err
+	}
+	if entry.dials && e.skipUnderRoot(oc) {
+		fmt.Fprintf(e.Out, "%s: skipped under --root (needs live libvirt/systemd — covered by test-vm)\n", s.ID)
+		return nil
+	}
+	return e.rollbackOnError(m, s.ID, entry.fn(oc, e.Root, e.Out, s.Args))
+}
+
+// journaledStepState decides what to do with a step already in the manifest:
+// re-run it because its declared input drifted, re-run it because the product
+// it creates has gone missing, or leave it alone. Shared by op and run_cmd so
+// the two kinds cannot drift apart. CreatesPath resolves against --root:
+// statting the bare path would consult the real filesystem instead.
+func (e *Engine) journaledStepState(s Step, rec *Record) (inputDrift, done bool) {
+	switch {
+	case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
+		return true, false
+	case s.CreatesPath != "":
+		if _, err := os.Stat(filepath.Join(e.Root, s.CreatesPath)); err == nil {
+			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+			return false, true
+		}
+		fmt.Fprintf(e.Out, "%s: %s is gone — reapplying\n", s.ID, s.CreatesPath)
+		return false, false
+	default:
+		fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+		return false, true
+	}
+}
+
+// journal writes a record before its mutation runs, so a process killed
+// mid-step still leaves undo something to reverse.
+func (e *Engine) journal(m *Manifest, r Record) error {
 	m.put(r)
 	return m.save(e.Root)
+}
+
+// undoFirst is the shared refusal suffix for a journaled step that no longer
+// matches the current settings — one wording, so a change cannot leave a stale copy.
+const undoFirst = "undo first (orthogonals undo, or vm undefine for VM steps)"
+
+// rollbackOnError drops a write-ahead record whose mutation failed, so the step
+// is retried rather than mistaken for one already applied. A failed rollback
+// save is surfaced too: silently keeping the record would journal a mutation
+// that never ran, and undo would later execute its undo command against nothing.
+func (e *Engine) rollbackOnError(m *Manifest, id string, err error) error {
+	if err == nil {
+		return nil
+	}
+	m.drop(id)
+	if saveErr := m.save(e.Root); saveErr != nil {
+		return errors.Join(err, fmt.Errorf("dropping failed step %s from journal: %w", id, saveErr))
+	}
+	return err
 }
 
 func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
@@ -211,8 +258,8 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	}
 	rec := m.find(s.ID)
 	if rec != nil && rec.Path != s.Path {
-		return fmt.Errorf("journaled at %s but now targets %s — settings changed since apply; undo first (orthogonals undo, or vm undefine for VM steps)",
-			rec.Path, s.Path)
+		return fmt.Errorf("journaled at %s but now targets %s — settings changed since apply; %s",
+			rec.Path, s.Path, undoFirst)
 	}
 	same := exists && bytes.Equal(cur, s.Content) && curMode == s.Mode.Perm()
 	if same && rec != nil && rec.NewSHA256 == sha256hex(s.Content) {
@@ -264,15 +311,28 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	return nil
 }
 
-// writeFile lands content at full, creating parent dirs.
+// writeFile lands content at full, creating parent dirs. Temp-and-rename in
+// the target dir: a crash mid-write must never leave a torn config (a
+// half-written qemu shim breaks every GPU handover), and a torn file would
+// also fail undo's changed-since-apply hash gate.
 func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restorecon bool) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(full, content, mode); err != nil {
+	tmp := full + ".tmp"
+	if err := writeSync(tmp, content, mode); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	if err := os.Chmod(full, mode); err != nil {
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, full); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := syncDir(filepath.Dir(full)); err != nil {
 		return err
 	}
 	if restorecon {
@@ -285,20 +345,11 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 	inputDrift := false
 	if rec := m.find(s.ID); rec != nil {
 		if !slices.Equal(rec.Cmd, s.Cmd) {
-			return fmt.Errorf("journaled command differs from the current settings — undo first (orthogonals undo, or vm undefine for VM steps)\nwas: %s\nnow: %s",
-				strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
+			return fmt.Errorf("journaled command differs from the current settings — %s\nwas: %s\nnow: %s",
+				undoFirst, strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
 		}
-		switch {
-		case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
-			inputDrift = true
-		case s.CreatesPath != "":
-			if _, err := os.Stat(s.CreatesPath); err == nil {
-				fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
-				return nil
-			}
-			fmt.Fprintf(e.Out, "%s: %s is gone — reapplying\n", s.ID, s.CreatesPath)
-		default:
-			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
+		var done bool
+		if inputDrift, done = e.journaledStepState(s, rec); done {
 			return nil
 		}
 	}
@@ -310,16 +361,15 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 		}
 		return nil
 	}
-	if err := runCmd(e.Out, s.Cmd...); err != nil {
-		return err
-	}
 	r := Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot,
 		Cmd: s.Cmd, UndoCmd: s.UndoCmd, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
 	if len(s.Input) > 0 {
 		r.InputSHA256 = sha256hex(s.Input)
 	}
-	m.put(r)
-	return m.save(e.Root)
+	if err := e.journal(m, r); err != nil {
+		return err
+	}
+	return e.rollbackOnError(m, s.ID, runCmd(e.Out, s.Cmd...))
 }
 
 func (e *Engine) applyEnableUnit(m *Manifest, s Step, oc *OpClients) error {
@@ -363,11 +413,11 @@ func (e *Engine) applyEnableUnit(m *Manifest, s Step, oc *OpClients) error {
 		fmt.Fprintf(e.Out, "%s: unit not installed, nothing to disable\n", s.Unit)
 		return nil
 	}
-	if err := setUnit(); err != nil {
+	r := Record{ID: s.ID, Kind: KindEnableUnit, Data: s.Data, Reboot: s.Reboot, Unit: s.Unit, Enable: s.Enable, PriorState: prior}
+	if err := e.journal(m, r); err != nil {
 		return err
 	}
-	m.put(Record{ID: s.ID, Kind: KindEnableUnit, Data: s.Data, Reboot: s.Reboot, Unit: s.Unit, Enable: s.Enable, PriorState: prior})
-	return m.save(e.Root)
+	return e.rollbackOnError(m, s.ID, setUnit())
 }
 
 // runCmd echoes argv to out and runs it.

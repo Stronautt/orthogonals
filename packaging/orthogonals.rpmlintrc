@@ -1,0 +1,28 @@
+# rpmlint filters for findings that are inherent to this package, not bugs.
+# ci.yml gates on rpmlint with this file; anything not listed here fails CI.
+
+# CGO_ENABLED=0 static builds are a project invariant (CLAUDE.md): no cgo,
+# so the binary is static and non-PIE by construction.
+addFilter(r'statically-linked-binary')
+addFilter(r'position-independent-executable-suggested')
+
+# The dictionary flags only terms of art (passthrough, iGPU, dGPU,
+# preflight, journaled) — all noise for this domain.
+addFilter(r'spelling-error')
+
+# The changelog version is stamped at build time from the Makefile's
+# --define, the same way Version: is — the expansion is the point.
+addFilter(r'macro-in-%changelog')
+
+# The tarball is produced by `make srpm` (git archive), never downloaded.
+addFilter(r'invalid-url Source0:')
+
+# pkgver/lgver are --define'd by the Makefile; the raw spec lint cannot see
+# them. Any other unexpanded macro still fails.
+addFilter(r'Possible unexpanded macro in.*%\{(pkgver|lgver)\}')
+
+# No man page yet; cobra can generate one — add when the package leaves COPR.
+addFilter(r'no-manual-page-for-binary')
+
+# Tests run in the CI tiers (unit through VFIO), not inside rpmbuild.
+addFilter(r'no-%check-section')

@@ -36,8 +36,8 @@ func TestDetectReference(t *testing.T) {
 	if r.Platform.IOMMUAddressWidth != 39 {
 		t.Errorf("IOMMUAddressWidth = %d, want 39", r.Platform.IOMMUAddressWidth)
 	}
-	if !r.Platform.IOMMUTable {
-		t.Error("IOMMUTable = false, want true (reference root has the ACPI DMAR table)")
+	if r.Platform.IOMMUTable != IOMMUTableDMAR {
+		t.Errorf("IOMMUTable = %q, want DMAR (reference root has the ACPI DMAR table)", r.Platform.IOMMUTable)
 	}
 }
 
@@ -100,8 +100,8 @@ func TestDetectLaptopAMDFixture(t *testing.T) {
 	if _, err := r.GPUs.SoleNVIDIA(); err != nil {
 		t.Errorf("SoleNVIDIA: %v", err)
 	}
-	if !r.Platform.IOMMUTable {
-		t.Error("IOMMUTable false, want true (IVRS)")
+	if r.Platform.IOMMUTable != IOMMUTableIVRS {
+		t.Errorf("IOMMUTable = %q, want IVRS", r.Platform.IOMMUTable)
 	}
 	if r.Platform.IOMMUAddressWidth != 48 {
 		t.Errorf("IOMMU width = %d, want 48 (AMD-Vi)", r.Platform.IOMMUAddressWidth)

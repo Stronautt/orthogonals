@@ -1,8 +1,7 @@
-ENGINE ?= $(shell command -v podman || command -v docker)
 VERSION ?= $(shell cat VERSION)
 LDFLAGS = -X github.com/stronautt/orthogonals/internal/cli.Version=$(VERSION)
 
-.PHONY: build test lint test-integration test-vm rpm srpm srpm-lg lg-bump lg-checkout lg-lock
+.PHONY: build test lint test-integration test-vm test-vfio test-desk coverage rpm srpm srpm-lg lg-bump lg-checkout lg-lock
 
 # LG_VERSION is the single Looking Glass toggle (the looking-glass.version
 # lockfile, embedded by artifacts.go); LG_RPMVER is its RPM form (0~ sorts the
@@ -60,22 +59,19 @@ srpm-lg:
 		--define "_sourcedir $(CURDIR)/dist" \
 		--define "_srcrpmdir $(CURDIR)/dist"
 
-# Bump the Looking Glass release: `make lg-bump LG=B8` writes the version
-# lockfile, moves the submodule, and regenerates the host-SHA lockfile. Omit LG=
-# to re-sync the current version. Review the diff, then commit.
+# `make lg-bump LG=B8` writes the version lockfile, moves the submodule, and
+# regenerates the host-SHA lockfile. Omit LG= to re-sync the current version.
 lg-bump:
 	@if [ -n "$(LG)" ]; then printf '%s\n' "$(LG)" > internal/artifacts/looking-glass.version; fi
 	$(MAKE) lg-checkout
 	$(MAKE) lg-lock
 	@echo "Looking Glass at $$(cat internal/artifacts/looking-glass.version) — review & commit"
 
-# Move the submodule to the pinned version.
 lg-checkout:
 	git -C $(LG_SRC) fetch --tags --quiet
 	git -C $(LG_SRC) checkout --quiet $(LG_VERSION)
 
-# Regenerate the host-zip SHA256 lockfile from the download for the pinned
-# version. curl -f aborts on failure, so a bad download never writes a bad pin.
+# curl -f aborts on failure, so a bad download never writes a bad pin.
 lg-lock:
 	mkdir -p dist
 	curl -fsSL -o dist/lg-host.zip "https://looking-glass.io/artifact/$(LG_VERSION)/host"
@@ -88,24 +84,59 @@ build:
 
 test:
 	go vet ./...
+	# test/desk is behind the desk build tag, so a plain `go vet ./...` never compiles it.
+	go vet -tags desk ./test/desk
 	go test ./...
 
 lint:
 	golangci-lint run
 
-# Integration tier: full detect → preflight → apply --yes → undo cycle in a
-# clean fedora:44 container against a synthetic --root tree + fake binaries.
+# Outside the repo: tmt refuses a run workdir inside its own fmf root.
+TMT_RUN = /var/tmp/orthogonals-tmt
 test-integration:
-	test -n "$(ENGINE)" || { echo "podman or docker required" >&2; exit 1; }
-	CGO_ENABLED=0 GOOS=linux go build -o test/integration/orthogonals .
-	rm -rf test/integration/fixture-root test/integration/fixture-root-laptop test/integration/fixture-root-laptop-amd
-	go run ./test/fixture test/integration/fixture-root reference
-	go run ./test/fixture test/integration/fixture-root-laptop laptop
-	go run ./test/fixture test/integration/fixture-root-laptop-amd laptop-amd
-	$(ENGINE) build -t orthogonals-integration -f test/integration/Containerfile test/integration
-	$(ENGINE) run --rm orthogonals-integration
+	@command -v tmt >/dev/null || { echo "tmt required: dnf install tmt tmt+provision-container" >&2; exit 1; }
+	rm -rf $(TMT_RUN)-container
+	tmt run --all --id $(TMT_RUN)-container plan --name /plans/container
 
-# System tier (local only, needs libvirt): real apply → reboot → assert →
-# undo → assert pristine, on a throwaway Fedora Cloud VM.
 test-vm:
-	bash test/vm/run-test.sh
+	@command -v tmt >/dev/null || { echo "tmt required: dnf install tmt tmt+provision-virtual" >&2; exit 1; }
+	rm -rf $(TMT_RUN)-vm
+	tmt run --all --id $(TMT_RUN)-vm plan --name /plans/vm
+
+# tmt cannot provision this guest (testcloud has no way to ask for an emulated
+# IOMMU), so test/vfiohost boots it and tmt connects to the address.
+VFIO_KEY = /var/tmp/orthogonals-vfio/id_ed25519
+test-vfio:
+	@command -v tmt >/dev/null || { echo "tmt required: dnf install tmt" >&2; exit 1; }
+	rm -rf $(TMT_RUN)-vfio
+	guest=$$(go run ./test/vfiohost up) && \
+	  tmt run --all --id $(TMT_RUN)-vfio plan --name /plans/vfio \
+	    provision --how connect --guest "$$guest" --user root --key $(VFIO_KEY); \
+	  status=$$?; go run ./test/vfiohost down; exit $$status
+
+# The only check that the hand-written hwtest fixtures still match real
+# hardware — no CI runner has the target GPU topology.
+test-desk:
+	@command -v tmt >/dev/null || { echo "tmt required: dnf install tmt" >&2; exit 1; }
+	rm -rf $(TMT_RUN)-desk
+	# --feeling-safe is tmt's guard on `provision: how: local`, which runs the
+	# test on this machine rather than a throwaway guest; the plan only reads
+	# (detect, preflight, status) and never applies.
+	tmt --feeling-safe run --all --id $(TMT_RUN)-desk plan --name /plans/desk
+
+# Merges the unit profile with the real binary's from any $(TMT_RUN)-* runs.
+# A bare per-package -coverprofile undercounts, because it cannot see the
+# *test helper packages being exercised from other packages' tests.
+COVER = $(CURDIR)/dist/coverage
+coverage:
+	rm -rf $(COVER) && mkdir -p $(COVER)/unit $(COVER)/tier
+	go test ./... -coverpkg=./internal/... -args -test.gocoverdir=$(COVER)/unit >/dev/null
+	@find $(TMT_RUN)-container $(TMT_RUN)-vm $(TMT_RUN)-vfio -type d -name coverage 2>/dev/null \
+		-exec cp -a '{}/.' $(COVER)/tier/ ';' || true
+	@if [ -n "$$(ls -A $(COVER)/tier 2>/dev/null)" ]; then \
+		go tool covdata textfmt -i=$(COVER)/unit,$(COVER)/tier -o=$(COVER)/merged.txt; \
+	else \
+		echo "note: no tier coverage found — run make test-integration first"; \
+		go tool covdata textfmt -i=$(COVER)/unit -o=$(COVER)/merged.txt; \
+	fi
+	@go tool cover -func=$(COVER)/merged.txt | tail -1

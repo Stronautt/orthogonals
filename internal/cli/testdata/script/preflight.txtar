@@ -1,0 +1,26 @@
+# preflight grades the host without touching it. The reference fixture warns
+# (39-bit IOMMU, Secure Boot, inactive default net), so it exits 2.
+
+fixture $WORK/root
+faketools
+snapshot $WORK/root before.txt
+
+wantexit 2 orthogonals preflight --root $WORK/root
+stdout 'WARN'
+stdout 'address-width'
+stdout 'chassis: desktop'
+
+# JSON carries the same verdicts in machine form
+wantexit 2 orthogonals preflight --root $WORK/root --json
+stdout '"name": "address-width"'
+stdout '"status"'
+
+# preflight is read-only
+snapshot $WORK/root after.txt
+cmp before.txt after.txt
+
+# a laptop chassis is recognized, and a MUXless dGPU asks for --gpu-rom
+fixture $WORK/laptop laptop
+wantexit 2 orthogonals preflight --root $WORK/laptop
+stdout 'laptop'
+stdout '--gpu-rom'

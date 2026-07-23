@@ -82,14 +82,3 @@ func Downloads() []Download {
 
 // OnProvisionISO reports whether a download belongs on the provision ISO.
 func OnProvisionISO(d Download) bool { return d.Name != VirtioWin.Name }
-
-// ProvisionPayloads is the subset of Downloads that lands on the provision ISO.
-func ProvisionPayloads() []Download {
-	var out []Download
-	for _, d := range Downloads() {
-		if OnProvisionISO(d) {
-			out = append(out, d)
-		}
-	}
-	return out
-}

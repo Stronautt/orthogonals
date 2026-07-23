@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 )
@@ -47,6 +48,47 @@ func sharedHostFiles(cpuVendorID string) []file {
 	return files
 }
 
+// VT-d CAP register values; bits 16-21 hold MGAW, the address width minus one.
+const (
+	capMGAW39 = "d2008c40660462\n"
+	capMGAW48 = "d2008c406f0462\n"
+)
+
+// secureBootOff is the SecureBoot efivar with the flag byte cleared.
+const secureBootOff = "\x06\x00\x00\x00\x00"
+
+// intelDesktop is the VT-d, ACPI, and chassis trio every Intel desktop fixture
+// shares; cap selects the IOMMU address width.
+func intelDesktop(cap string) []file {
+	return []file{
+		{"sys/class/iommu/dmar0/intel-iommu/cap", cap},
+		{"sys/firmware/acpi/tables/DMAR", ""},
+		{"sys/class/dmi/id/chassis_type", "3\n"},
+	}
+}
+
+// referenceGPUs is the PoC desktop's iGPU + NVIDIA dGPU + HDMI audio trio.
+func referenceGPUs() []Dev {
+	return []Dev{
+		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
+		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
+		// No Reset: an HDA audio function publishes no sysfs reset file.
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1},
+	}
+}
+
+// referenceDisplay is the reference desktop's boot_vga and DRM connector layout.
+func referenceDisplay() []file {
+	return []file{
+		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
+		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
+		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
+	}
+}
+
 // buildHost writes the PCI devices, shared files, and host-specific files under root.
 func buildHost(root, cpuVendorID string, devs []Dev, specific []file) error {
 	for _, d := range devs {
@@ -64,21 +106,8 @@ func buildHost(root, cpuVendorID string, devs []Dev, specific []file) error {
 
 // BuildReferenceRoot writes the PoC reference desktop (i5-13600K + RTX 3080) under root.
 func BuildReferenceRoot(root string) error {
-	return buildHost(root, "GenuineIntel", []Dev{
-		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
-		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
-		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
-	}, []file{
-		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
-		{"sys/firmware/acpi/tables/DMAR", ""},
-		{"sys/class/dmi/id/chassis_type", "3\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
-		{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "0\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-DP-1/status", "connected\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/card0/card0-HDMI-A-1/status", "disconnected\n"},
-		{"sys/bus/pci/devices/0000:00:02.0/drm/renderD128/dev", "226:128\n"},
-		{"sys/bus/pci/devices/0000:01:00.0/drm/card1/card1-DP-1/status", "disconnected\n"},
-	})
+	return buildHost(root, "GenuineIntel", referenceGPUs(),
+		append(intelDesktop(capMGAW39), referenceDisplay()...))
 }
 
 // BuildLaptopRoot writes an Intel + NVIDIA notebook: eDP-1 on the iGPU, a MUXless
@@ -87,7 +116,7 @@ func BuildLaptopRoot(root string) error {
 	return buildHost(root, "GenuineIntel", []Dev{
 		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
 		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030200", Driver: "nvidia", Group: 1, Reset: true},
-		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1},
 	}, []file{
 		{"sys/class/iommu/dmar0/intel-iommu/cap", "d2008c40660462\n"},
 		{"sys/firmware/acpi/tables/DMAR", ""},
@@ -110,7 +139,7 @@ func BuildLaptopAMDRoot(root string) error {
 	return buildHost(root, "AuthenticAMD", []Dev{
 		{Addr: "0000:05:00.0", Vendor: "0x1002", Device: "0x1638", Class: "0x030000", Driver: "amdgpu", Group: 0, Reset: true},
 		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
-		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1},
 	}, []file{
 		{"sys/class/iommu/ivhd0/name", "ivhd0\n"},
 		{"sys/firmware/acpi/tables/IVRS", ""},
@@ -125,6 +154,110 @@ func BuildLaptopAMDRoot(root string) error {
 		{"sys/bus/pci/devices/0000:01:00.1/power/control", "auto\n"},
 		{"sys/bus/pci/devices/0000:01:00.1/power/runtime_status", "suspended\n"},
 	})
+}
+
+// BuildDirtyGroupRoot writes a reference desktop whose dGPU shares its IOMMU
+// group with an unrelated NIC — the whole-group rule preflight must refuse.
+func BuildDirtyGroupRoot(root string) error {
+	devs := append(referenceGPUs(),
+		Dev{Addr: "0000:02:00.0", Vendor: "0x8086", Device: "0x15f3", Class: "0x020000", Driver: "igc", Group: 1})
+	return buildHost(root, "GenuineIntel", devs,
+		append(intelDesktop(capMGAW39), referenceDisplay()...))
+}
+
+// BuildNoIGPURoot writes a host whose only GPU is the NVIDIA dGPU: it cannot
+// both drive the desktop and be passed through.
+func BuildNoIGPURoot(root string) error {
+	return buildHost(root, "GenuineIntel", []Dev{
+		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
+		{Addr: "0000:01:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 1},
+	}, append(intelDesktop(capMGAW39),
+		file{"sys/bus/pci/devices/0000:01:00.0/boot_vga", "1\n"},
+		file{"sys/bus/pci/devices/0000:01:00.0/drm/card0/card0-DP-1/status", "connected\n"},
+	))
+}
+
+// BuildDualNVIDIARoot writes an iGPU plus two identical RTX 3080s: static
+// vfio-pci.ids binding cannot tell them apart.
+func BuildDualNVIDIARoot(root string) error {
+	devs := append(referenceGPUs(),
+		Dev{Addr: "0000:02:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 2, Reset: true},
+		Dev{Addr: "0000:02:00.1", Vendor: "0x10de", Device: "0x1aef", Class: "0x040300", Driver: "snd_hda_intel", Group: 2})
+	return buildHost(root, "GenuineIntel", devs,
+		append(intelDesktop(capMGAW39),
+			append(referenceDisplay(),
+				file{"sys/bus/pci/devices/0000:02:00.0/boot_vga", "0\n"})...))
+}
+
+// BuildForeignVFIORoot writes a reference desktop carrying vfio configuration
+// orthogonals did not write and has no manifest to claim.
+func BuildForeignVFIORoot(root string) error {
+	return buildHost(root, "GenuineIntel", referenceGPUs(),
+		append(intelDesktop(capMGAW39),
+			append(referenceDisplay(),
+				file{"etc/modprobe.d/vfio-preexisting.conf", "options vfio-pci ids=10de:2206,10de:1aef\n"})...))
+}
+
+// BuildNoAudioRoot writes a reference desktop whose dGPU has no HDMI audio
+// function, so the passthrough set is the GPU alone.
+func BuildNoAudioRoot(root string) error {
+	return buildHost(root, "GenuineIntel", referenceGPUs()[:2],
+		append(intelDesktop(capMGAW39), referenceDisplay()...))
+}
+
+// BuildNoResetRoot writes a reference desktop whose dGPU exposes no sysfs reset
+// file, so it cannot be handed back and forth.
+func BuildNoResetRoot(root string) error {
+	devs := referenceGPUs()
+	devs[1].Reset = false
+	return buildHost(root, "GenuineIntel", devs,
+		append(intelDesktop(capMGAW39), referenceDisplay()...))
+}
+
+// BuildWideIOMMURoot writes a 48-bit-IOMMU desktop with Secure Boot off and the
+// default network up, clearing the address-width, secure-boot, and
+// default-network warnings the reference host raises.
+func BuildWideIOMMURoot(root string) error {
+	return buildHost(root, "GenuineIntel", referenceGPUs(),
+		append(intelDesktop(capMGAW48),
+			append(referenceDisplay(),
+				file{"sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", secureBootOff},
+				file{"var/run/libvirt/network/default.xml", "<network><name>default</name></network>\n"})...))
+}
+
+// BuildBridgeRoot writes a reference desktop whose dGPU sits behind a PCIe
+// bridge sharing its IOMMU group — a bridge is not a stranger.
+func BuildBridgeRoot(root string) error {
+	devs := append(referenceGPUs(),
+		Dev{Addr: "0000:00:01.0", Vendor: "0x8086", Device: "0xa70d", Class: "0x060400", Driver: "pcieport", Group: 1})
+	return buildHost(root, "GenuineIntel", devs,
+		append(intelDesktop(capMGAW39), referenceDisplay()...))
+}
+
+// Roots is every synthetic host by name — the single source of the fixture
+// topologies for tests, the fixture command, and the tmt tests.
+var Roots = map[string]func(string) error{
+	"reference":    BuildReferenceRoot,
+	"laptop":       BuildLaptopRoot,
+	"laptop-amd":   BuildLaptopAMDRoot,
+	"dirty-group":  BuildDirtyGroupRoot,
+	"no-igpu":      BuildNoIGPURoot,
+	"dual-nvidia":  BuildDualNVIDIARoot,
+	"foreign-vfio": BuildForeignVFIORoot,
+	"no-audio":     BuildNoAudioRoot,
+	"no-reset":     BuildNoResetRoot,
+	"wide-iommu":   BuildWideIOMMURoot,
+	"bridge":       BuildBridgeRoot,
+}
+
+// RootNames lists every fixture in Roots, sorted.
+func RootNames() []string {
+	names := make([]string, 0, len(Roots))
+	for n := range Roots {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ReferenceRoot is BuildReferenceRoot in a temp dir.

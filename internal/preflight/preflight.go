@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
@@ -76,7 +77,7 @@ func Analyze(r *hw.Result, f Facts) []Check {
 
 // checkBLS gates on readable Boot Loader Spec entries.
 func checkBLS(f Facts) Check {
-	const name = "boot entries"
+	const name = "boot-entries"
 	if f.BLSError != "" {
 		return Check{name, Fail, f.BLSError,
 			"convert to Boot Loader Spec (grub2-switch-to-blscfg) so kernel args can be managed per entry"}
@@ -114,8 +115,8 @@ func checkIOMMU(r *hw.Result) Check {
 	if r.Platform.IOMMUAddressWidth > 0 {
 		return Check{name, Pass, fmt.Sprintf("IOMMU active, host address width %d bits", r.Platform.IOMMUAddressWidth), ""}
 	}
-	tech, karg, bios := iommuTech(r.CPU.Vendor)
-	if r.Platform.IOMMUTable {
+	tech, karg, bios := iommuTech(r.Platform.IOMMUTable, r.CPU.Vendor)
+	if r.Platform.IOMMUTable != "" {
 		return Check{name, Warn, "IOMMU is not active, but the firmware exposes " + tech,
 			fmt.Sprintf("no action needed — apply adds %s (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group", karg)}
 	}
@@ -138,13 +139,17 @@ func firmwareIOMMUHint(attrs []hw.FirmwareAttr) string {
 	return hint + fmt.Sprintf(") — set it via /sys/class/firmware-attributes/%s/attributes/%s/current_value and reboot", a.Driver, a.Name)
 }
 
-// iommuTech names the vendor's IOMMU technology, kernel args, and BIOS remedy; unknown gets Intel.
-func iommuTech(cpuVendor string) (tech, karg, bios string) {
-	if cpuVendor == hw.CPUVendorAMD {
-		return "AMD-Vi (ACPI IVRS table present)", "iommu=pt",
+// iommuTech names the platform's IOMMU technology, kernel args, and BIOS
+// remedy: by the ACPI table when the firmware exposes one, by CPU vendor
+// otherwise. The karg comes from hostcfg so the remedy quotes exactly what
+// apply would add.
+func iommuTech(iommuTable, cpuVendor string) (tech, karg, bios string) {
+	karg = hostcfg.IOMMUKernelArgs(iommuTable, cpuVendor)
+	if hostcfg.IOMMUIsAMD(iommuTable, cpuVendor) {
+		return "AMD-Vi (ACPI IVRS table present)", karg,
 			"enable AMD-Vi / IOMMU in the BIOS/UEFI setup"
 	}
-	return "VT-d (ACPI DMAR table present)", "intel_iommu=on iommu=pt",
+	return "VT-d (ACPI DMAR table present)", karg,
 		"enable VT-d (Intel Virtualization Technology for Directed I/O) in the BIOS/UEFI setup"
 }
 

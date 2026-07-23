@@ -6,10 +6,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/sysd"
@@ -27,7 +30,12 @@ const (
 	OpCreateVolume   = "create-volume"
 	OpKernelArgsAdd  = "kernel-args-add"
 	OpKernelArgsRem  = "kernel-args-remove"
+	OpDesktopLink    = "desktop-link"
 )
+
+// DesktopTrustNote is printed when the shortcut could not be marked trusted.
+// Stable text: test/tmt asserts on it to prove the path was taken.
+const DesktopTrustNote = "desktop shortcut not marked trusted (no desktop session yet) — GNOME asks once on first launch"
 
 // OpClients hands live libvirt/systemd clients to op functions.
 type OpClients struct {
@@ -84,6 +92,95 @@ var ops = map[string]opEntry{
 	OpCreateVolume:   {opCreateVolume, true},
 	OpKernelArgsAdd:  {opKernelArgsAdd, false},
 	OpKernelArgsRem:  {opKernelArgsRem, false},
+	OpDesktopLink:    {opDesktopLink, false},
+}
+
+// opDesktopLink puts the VM shortcut on the desktop user's ~/Desktop and then,
+// best effort, marks it trusted. The symlink fails loudly; the trust flag needs
+// the desktop user's session bus, which does not exist until that user has
+// logged in, so it must not abort a define run from a TTY or over ssh.
+func opDesktopLink(_ *OpClients, root string, out io.Writer, args map[string]string) error {
+	entry, link, owner := args["entry"], args["link"], args["user"]
+	if entry == "" || link == "" || owner == "" {
+		return errors.New("desktop-link needs user, entry, and link")
+	}
+
+	dir := filepath.Join(root, filepath.Dir(link))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	full := filepath.Join(root, link)
+	if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// The target stays unprefixed: the shortcut has to resolve on the host, not
+	// inside a test's --root tree.
+	if err := os.Symlink(entry, full); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "linked %s\n", link)
+
+	// Under --root the tree is synthetic and may name a user that does not
+	// exist, so report rather than refuse.
+	uid, gid, err := lookupUser(owner)
+	if err != nil {
+		if root == "" {
+			return err
+		}
+		fmt.Fprintf(out, "%s: %v — ownership not set under --root\n", link, err)
+		return nil
+	}
+	if err := os.Chown(dir, uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	if err := os.Lchown(full, uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	markTrusted(out, full, uid, gid)
+	return nil
+}
+
+// lookupUser resolves a desktop user to its numeric ids. CGO_ENABLED=0 makes
+// os/user parse /etc/passwd directly, so this stays pure Go.
+func lookupUser(name string) (uid, gid int, err error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, 0, fmt.Errorf("desktop user %q: %w", name, err)
+	}
+	// 31-bit parse: the ids must survive both the int conversions here
+	// (Lchown) and markTrusted's uint32 credential conversions, so cap at
+	// the smaller signed range.
+	uid64, err := strconv.ParseUint(u.Uid, 10, 31)
+	if err != nil {
+		return 0, 0, fmt.Errorf("desktop user %q has an unusable uid %q", name, u.Uid)
+	}
+	gid64, err := strconv.ParseUint(u.Gid, 10, 31)
+	if err != nil {
+		return 0, 0, fmt.Errorf("desktop user %q has an unusable gid %q", name, u.Gid)
+	}
+	return int(uid64), int(gid64), nil
+}
+
+// markTrusted runs gio as the desktop user against their own session bus. gio
+// is the vendor API for GNOME's file metadata, so this stays an exec. It
+// returns no error: a missing trust flag is cosmetic.
+var markTrusted = func(out io.Writer, link string, uid, gid int) {
+	bus := fmt.Sprintf("/run/user/%d/bus", uid)
+	st, err := os.Stat(bus)
+	if err != nil || st.Mode()&fs.ModeSocket == 0 {
+		fmt.Fprintln(out, DesktopTrustNote)
+		return
+	}
+	cmd := exec.Command("gio", "set", link, "metadata::trusted", "true")
+	cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path="+bus)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
+	}
+	if b, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(out, "%s: %s\n", DesktopTrustNote, strings.TrimSpace(string(b)))
+		return
+	}
+	fmt.Fprintf(out, "marked %s trusted\n", link)
 }
 
 // opLine renders "op k=v …" with sorted keys.

@@ -1,0 +1,42 @@
+# Host state after `vm undefine --purge` + `undo`, once the reboot has cleared
+# the kernel arguments. Every resource applied.yaml asserts present is asserted
+# absent here — a gossfile that passes in both states asserts nothing.
+#
+# Package presence is deliberately not re-checked: the RPM's dependencies stay
+# installed after an undo, which is correct.
+file:
+  /proc/cmdline:
+    exists: true
+    contains:
+      - "!intel_iommu"
+      - "!iommu=pt"
+  /etc/dracut.conf.d/vfio.conf:
+    exists: false
+  /etc/libvirt/hooks/qemu:
+    exists: false
+  /etc/tmpfiles.d/looking-glass.conf:
+    exists: false
+  /etc/udev/rules.d/61-mutter-ignore-nvidia.rules:
+    exists: false
+  /etc/environment.d/50-orthogonals-igpu.conf:
+    exists: false
+  # No kept records, so the journal and its backups are gone too.
+  /var/lib/orthogonals/manifest.json:
+    exists: false
+  /var/lib/orthogonals/backup:
+    exists: false
+  /etc/orthogonals/vms/{{.Vars.vm}}.xml:
+    exists: false
+
+command:
+  grubby --info=ALL:
+    exit-status: 0
+    stdout:
+      - "!intel_iommu=on"
+  semanage fcontext -l:
+    exit-status: 0
+    stdout:
+      - "!looking-glass"
+  # The domain is gone from libvirtd, so dumpxml fails.
+  virsh --connect qemu:///system dumpxml {{.Vars.vm}}:
+    exit-status: 1

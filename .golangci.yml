@@ -1,7 +1,36 @@
 version: "2"
 
+run:
+  # Without the desk build tag here the linter never compiles test/desk and it
+  # rots unnoticed.
+  build-tags:
+    - desk
+
 linters:
+  enable:
+    - gosec
   settings:
+    gosec:
+      # A host-mutation CLI: it execs journaled argv and vendor binaries
+      # (G204), reads and writes paths composed from settings under --root
+      # (G304, G703), and installs world-readable configs, 0755 dirs, and
+      # executable shims with exactly those modes (G301, G302, G306). The
+      # flagged narrowing conversions (G115) are kernel/libvirt ABI fields
+      # whose ranges the callers bound, and the Walk callbacks (G122) only
+      # traverse root-owned state dirs or test temp trees — no attacker gets
+      # a symlink into either. Nothing here serves HTTP — the only server in
+      # the tree is a test's fake download host (G705). Still active:
+      # hardcoded credentials, weak crypto, blocklisted imports.
+      excludes:
+        - G115
+        - G122
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
+        - G703
+        - G705
     errcheck:
       # Terminal output to stdout/stderr — an unwritable terminal has no
       # meaningful recovery for a CLI.

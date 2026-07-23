@@ -1,0 +1,26 @@
+# Every usage error exits 2 and explains itself on stderr; none of them
+# mutate anything.
+
+# no subcommand prints usage
+wantexit 2 orthogonals
+stderr 'Usage:'
+
+# unknown subcommand names itself
+wantexit 2 orthogonals frobnicate
+stderr 'unknown command'
+stderr 'frobnicate'
+
+# unknown flag
+wantexit 2 orthogonals detect --not-a-flag
+stderr 'unknown flag'
+
+# apply needs a user it can name
+fixture $WORK/root
+faketools
+wantexit 1 orthogonals apply --root $WORK/root --user '' --yes
+stderr 'desktop user is required'
+
+# a malformed user is rejected before anything is written
+wantexit 1 orthogonals apply --root $WORK/root --user 'bad user!' --yes
+stderr 'bad user'
+! exists $WORK/root/var/lib/orthogonals/manifest.json

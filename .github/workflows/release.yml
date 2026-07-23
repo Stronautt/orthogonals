@@ -1,0 +1,115 @@
+name: Release
+
+# A tag runs the full ci.yml gate in this same run (workflow_call), then
+# builds in COPR and publishes with metrics attached. workflow_dispatch is
+# the dry run: everything except COPR and the publish itself, so the
+# plumbing can be proven without burning a version tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  publish:
+    name: Publish
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: fedora:44
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Install build tools
+        run: dnf install -y git golang rpm-build copr-cli gh
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Verify tag matches VERSION
+        if: github.event_name == 'push'
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
+
+      - name: Build SRPMs
+        run: |
+          git config --global --add safe.directory '*'
+          make srpm
+          make srpm-lg
+
+      - name: Build in COPR
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          COPR_API_CONFIG: ${{ secrets.COPR_API_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          echo "$COPR_API_CONFIG" > ~/.config/copr
+          # non-blocking: it only needs to land in the repo for the runtime dep
+          copr-cli build --nowait orthogonals dist/looking-glass-client-*.src.rpm
+          copr-cli build orthogonals dist/orthogonals-*.src.rpm \
+            | tee copr-build.log
+          BUILD_ID=$(grep -oP 'Created builds:\s*\K\d+' copr-build.log)
+          copr-cli download-build --dest dist/copr "$BUILD_ID"
+
+      - name: Download coverage from the gate
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage
+          path: coverage
+
+      - name: Assemble checksums and release notes
+        run: |
+          cov=$(go tool cover -func=coverage/merged.txt | tail -1 | grep -o '[0-9.]*%')
+          mapfile -t rpms < <(find dist/copr -name 'orthogonals-*.rpm' ! -name '*debug*' ! -name '*.src.rpm' 2>/dev/null | sort)
+          # no installable rpm on a tag build → fail, never publish an empty release
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then test "${#rpms[@]}" -gt 0; fi
+          mkdir -p out
+          if [ "${#rpms[@]}" -gt 0 ]; then cp "${rpms[@]}" out/; fi
+          cp dist/orthogonals-*.src.rpm out/
+          (cd out && sha256sum -- *.rpm) > checksums.txt
+          {
+            echo "## Metrics"
+            echo "| metric | value |"
+            echo "|---|---|"
+            echo "| coverage (unit + container tier, gated ≥80%) | $cov |"
+            echo "| Looking Glass client | $(cat internal/artifacts/looking-glass.version) |"
+            echo "| toolchain | $(go version | awk '{print $3}') |"
+            for r in out/*.rpm; do
+              echo "| $(basename "$r") | $(du -h "$r" | cut -f1) |"
+            done
+            echo
+            echo "### SHA-256"
+            echo '```'
+            cat checksums.txt
+            echo '```'
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Verifiable by anyone:
+      #   gh attestation verify <rpm> --repo Stronautt/orthogonals
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: checksums.txt
+
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            out/*.rpm checksums.txt coverage/coverage.html \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes

@@ -8,8 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
+
+// stubNotify captures desktop notifications instead of running notify-send.
+func stubNotify(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := notify.Send
+	notify.Send = func(n notify.Notification) { got = append(got, n.Body) }
+	t.Cleanup(func() { notify.Send = old })
+	return &got
+}
 
 // captureExec records execProcess argv instead of exec'ing.
 func captureExec(t *testing.T) *[]string {
@@ -110,7 +121,7 @@ func TestVMLaunchDisplayTimeout(t *testing.T) {
 func TestVMLaunchSuppressesHookNotify(t *testing.T) {
 	fakeVirt(t, &virttest.Fake{State: "shut off", StartErr: errors.New("gpu-detach: GPU handover failed")})
 	captureExec(t)
-	dir := fakeBinDir(t, []string{"notify-send"})
+	notes := stubNotify(t)
 	root := launchRoot(t, "")
 	code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch")
 	if code != 1 {
@@ -119,15 +130,15 @@ func TestVMLaunchSuppressesHookNotify(t *testing.T) {
 	if !strings.Contains(stderr, "gpu-detach:") {
 		t.Errorf("hook failure not surfaced:\n%s", stderr)
 	}
-	if got := binLog(t, dir, "notify-send"); got != "" {
-		t.Errorf("launch double-notified on a hook failure: %s", got)
+	if len(*notes) != 0 {
+		t.Errorf("launch double-notified on a hook failure: %v", *notes)
 	}
 }
 
 func TestVMLaunchNotifiesOnFailure(t *testing.T) {
 	fakeVirt(t, &virttest.Fake{})
 	captureExec(t)
-	dir := fakeBinDir(t, []string{"notify-send"})
+	notes := stubNotify(t)
 	root := launchRoot(t, "")
 	code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch")
 	if code != 1 {
@@ -136,7 +147,7 @@ func TestVMLaunchNotifiesOnFailure(t *testing.T) {
 	if !strings.Contains(stderr, "no such VM") {
 		t.Errorf("missing not-found error:\n%s", stderr)
 	}
-	if got := binLog(t, dir, "notify-send"); !strings.Contains(got, "no such VM") {
-		t.Errorf("no desktop notification on failure: %q", got)
+	if !strings.Contains(strings.Join(*notes, "\n"), "no such VM") {
+		t.Errorf("no desktop notification on failure: %v", *notes)
 	}
 }
