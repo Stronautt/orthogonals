@@ -12,7 +12,7 @@ import (
 
 // RequiredTools are host binaries later stages shell out to.
 var RequiredTools = []string{
-	"dracut", "semanage", "restorecon", "nvidia-smi",
+	"dracut", "semanage", "restorecon", "nvidia-smi", "systemd-tmpfiles",
 }
 
 // Platform holds host facts that gate or shape the passthrough setup.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -133,7 +134,7 @@ func TestLaptopArtifactsGolden(t *testing.T) {
 
 func TestLaptopStepsAddPowerManagement(t *testing.T) {
 	ids := func(p Profile) map[string]bool {
-		list, err := Steps(p, nil)
+		list, err := Steps(p, bls.Args{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,8 +166,20 @@ func TestVMStepsGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("got %d steps, want 2 (desktop entry + link)", len(list))
+	if len(list) != 4 {
+		t.Fatalf("got %d steps, want 4 (desktop entry + link + SPICE rundir conf + create)", len(list))
+	}
+	runConf := list[2]
+	if runConf.ID != "vm-rundir-conf-win11" || runConf.Path != "/etc/tmpfiles.d/orthogonals-win11.conf" {
+		t.Errorf("rundir conf = %s %s", runConf.ID, runConf.Path)
+	}
+	// This mode is the only thing keeping other users off the guest console.
+	if want := "d /run/orthogonals/win11 0730 testuser qemu -"; !strings.Contains(string(runConf.Content), want) {
+		t.Errorf("rundir conf missing %q:\n%s", want, runConf.Content)
+	}
+	if create := list[3]; create.ID != "vm-rundir-create-win11" ||
+		create.CreatesPath != "/run/orthogonals/win11" {
+		t.Errorf("rundir create = %s %s", create.ID, create.CreatesPath)
 	}
 	entry := list[0]
 	if entry.ID != "desktop-entry-win11" || entry.Path != "/usr/share/applications/win11.orthogonals.desktop" || entry.Mode != 0o755 {
@@ -276,7 +289,7 @@ func TestLibvirtAuthenticatesOnTheSocketNotPolkit(t *testing.T) {
 			t.Errorf("socket drop-in missing %q — an unauthenticated 0666 socket is world-writable:\n%s", want, sock)
 		}
 	}
-	list, err := Steps(referenceProfile(t, "dynamic"), nil)
+	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,15 +367,35 @@ func TestAddedKargsKeepsPreexistingTokens(t *testing.T) {
 
 func TestKernelArgsStepOmitsUndoWhenAllPreexisting(t *testing.T) {
 	args := "intel_iommu=on iommu=pt"
-	added := kernelArgsStep(args, nil)
+	added := kernelArgsStep(args, bls.Args{Missing: strings.Fields(args)})
 	if added.Op != steps.OpKernelArgsAdd || added.Args["args"] != args {
 		t.Errorf("add step = %+v", added)
 	}
 	if added.UndoOp != steps.OpKernelArgsRem || added.UndoArgs["args"] != args {
 		t.Errorf("undo = %s %v, want remove-all", added.UndoOp, added.UndoArgs)
 	}
-	if s := kernelArgsStep(args, strings.Fields(args)); s.UndoOp != "" {
+	if !added.Recheck {
+		t.Error("a token no target carries must recheck the journaled step")
+	}
+	s := kernelArgsStep(args, bls.Args{Present: strings.Fields(args)})
+	if s.UndoOp != "" {
 		t.Errorf("undo should be empty when all preexisting, got %s", s.UndoOp)
+	}
+	if s.Recheck {
+		t.Error("a boot config already carrying every token must not recheck")
+	}
+}
+
+// a token the entries have but /etc/kernel/cmdline lacks is still the step's
+// work: it is present (do not undo it) and missing (write it) at once.
+func TestKernelArgsStepRechecksPartialBootConfig(t *testing.T) {
+	args := "intel_iommu=on iommu=pt"
+	s := kernelArgsStep(args, bls.Args{Present: strings.Fields(args), Missing: []string{"iommu=pt"}})
+	if !s.Recheck {
+		t.Error("a token missing from one target must recheck the journaled step")
+	}
+	if s.UndoOp != "" {
+		t.Errorf("undo = %s, want none — the host already carried both tokens", s.UndoOp)
 	}
 }
 
@@ -394,7 +427,7 @@ func stepByID(t *testing.T, list []steps.Step, id string) steps.Step {
 }
 
 func TestSteps(t *testing.T) {
-	list, err := Steps(referenceProfile(t, "dynamic"), nil)
+	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,6 +468,17 @@ func TestSteps(t *testing.T) {
 	}
 	if got := strings.Join(se.UndoCmd, " "); got != "semanage fcontext -d /dev/shm/looking-glass" {
 		t.Errorf("semanage undo = %q", got)
+	}
+
+	// qemu_var_run_t, not svirt_var_run_t: no Fedora policy defines the latter
+	// and semanage refuses an undefined type mid-apply. test/desk checks it
+	// against the running policy.
+	spice := stepByID(t, list, "selinux-spice-fcontext")
+	if got := strings.Join(spice.Cmd, " "); got != `semanage fcontext -a -t qemu_var_run_t /run/orthogonals(/.*)?` {
+		t.Errorf("spice fcontext cmd = %q", got)
+	}
+	if got := strings.Join(spice.UndoCmd, " "); got != `semanage fcontext -d /run/orthogonals(/.*)?` {
+		t.Errorf("spice fcontext undo = %q", got)
 	}
 
 	for id, enable := range map[string]bool{
@@ -480,7 +524,7 @@ func TestSteps(t *testing.T) {
 func TestStepsNetActiveAndStatic(t *testing.T) {
 	p := referenceProfile(t, "static")
 	p.DefaultNetActive = true
-	list, err := Steps(p, nil)
+	list, err := Steps(p, bls.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}

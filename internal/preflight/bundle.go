@@ -55,9 +55,9 @@ func WriteBundle(w io.Writer, root string, detect *hw.Result) error {
 			if err != nil {
 				data = []byte(fmt.Sprintf("[unreadable: %v]\n", err))
 			}
-			if strings.HasSuffix(d.Name(), ".xml") {
-				data = guestMetaRE.ReplaceAll(data, []byte("<orthogonals:$1>[redacted]</orthogonals:$1>"))
-			}
+			// Every bundled file, not just *.xml: gating on a filename ships
+			// the credential in the clear the day it appears elsewhere.
+			data = guestMetaRE.ReplaceAll(data, []byte("<orthogonals:$1>[redacted]</orthogonals:$1>"))
 			rel, _ := filepath.Rel(base, path)
 			entries = append(entries, bundleEntry{filepath.Join("configs", dir, rel), data})
 			return nil

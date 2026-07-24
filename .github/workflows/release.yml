@@ -71,7 +71,8 @@ jobs:
 
       - name: Assemble checksums and release notes
         run: |
-          cov=$(go tool cover -func=coverage/merged.txt | tail -1 | grep -o '[0-9.]*%')
+          # Same statement sum the gate uses; the gate's artifact is merged.txt.
+          cov="$(make --no-print-directory coverage-pct COVER="$PWD/coverage")%"
           mapfile -t rpms < <(find dist/copr -name 'orthogonals-*.rpm' ! -name '*debug*' ! -name '*.src.rpm' 2>/dev/null | sort)
           # no installable rpm on a tag build → fail, never publish an empty release
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then test "${#rpms[@]}" -gt 0; fi

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,10 @@ import (
 
 // stallTimeout bounds how long a download may deliver no bytes.
 var stallTimeout = 60 * time.Second
+
+// maxDownloadBytes stops a bad mirror filling the disk before the checksum can
+// reject it. Every pin is under 1 GiB. A var so tests can shrink it.
+var maxDownloadBytes int64 = 4 << 30
 
 // stallResetReader pushes the watchdog forward on every successful read.
 type stallResetReader struct {
@@ -125,7 +130,15 @@ func hashCopy(dest string, r io.Reader) (string, error) {
 		return "", err
 	}
 	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), r)
+	// One byte past the cap: io.EOF at the cap would read as a complete body,
+	// and the checksum would blame the mirror for our own truncation.
+	n, err := io.CopyN(io.MultiWriter(f, h), r, maxDownloadBytes+1)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+	if err == nil && n > maxDownloadBytes {
+		err = fmt.Errorf("body is larger than the %d-byte download limit", maxDownloadBytes)
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

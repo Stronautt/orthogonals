@@ -1,45 +1,92 @@
-// Package bls reads and edits Boot Loader Specification entries (/boot/loader/entries/*.conf).
+// Package bls reads and edits the host's boot configuration: the Boot Loader
+// Specification entries (/boot/loader/entries/*.conf) that boot today, and
+// /etc/kernel/cmdline, which kernel-install copies into the entry it generates
+// for the next kernel.
 package bls
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
 // EntriesPath is the BLS entries directory.
 const EntriesPath = "/boot/loader/entries"
 
+// KernelCmdlinePath is what kernel-install reads when it writes a new entry's
+// options line. An arg missing from it survives only until the next kernel
+// update regenerates the entries (see /usr/lib/kernel/install.d/90-loaderentry.install).
+const KernelCmdlinePath = "/etc/kernel/cmdline"
+
 // Dir is the entries directory under root.
 func Dir(root string) string { return filepath.Join(root, EntriesPath) }
 
-// Tokens is the union of options-line tokens across every entry, in first-seen order.
-func Tokens(root string) ([]string, error) {
+// Args is what the boot config already says about a wanted arg set. The two
+// halves answer different questions and a token can be in both: Present decides
+// what apply may claim it added (and so may undo), Missing decides whether apply
+// still has writing to do.
+type Args struct {
+	// Present is the wanted tokens at least one target already carries.
+	Present []string
+	// Missing is the wanted tokens at least one target lacks.
+	Missing []string
+}
+
+// Wanted reports the state of args across every boot-config target.
+func Wanted(root, args string) (Args, error) {
+	sets, err := tokenSets(root)
+	if err != nil {
+		return Args{}, err
+	}
+	var a Args
+	for _, t := range strings.Fields(args) {
+		if slices.ContainsFunc(sets, func(s []string) bool { return slices.Contains(s, t) }) {
+			a.Present = append(a.Present, t)
+		}
+		if slices.ContainsFunc(sets, func(s []string) bool { return !slices.Contains(s, t) }) {
+			a.Missing = append(a.Missing, t)
+		}
+	}
+	return a, nil
+}
+
+// Readable reports whether the host's boot config can be read and edited at
+// all — a non-BLS or root-only /boot/loader/entries takes no kernel args.
+func Readable(root string) error {
+	_, err := tokenSets(root)
+	return err
+}
+
+// tokenSets is the options tokens of every target edit writes to.
+func tokenSets(root string) ([][]string, error) {
 	files, err := entryFiles(root)
 	if err != nil {
 		return nil, err
 	}
-	var tokens []string
-	seen := map[string]bool{}
+	var sets [][]string
 	for _, f := range files {
 		toks, err := entryOptions(f)
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range toks {
-			if !seen[t] {
-				seen[t] = true
-				tokens = append(tokens, t)
-			}
-		}
+		sets = append(sets, toks)
 	}
-	return tokens, nil
+	toks, ok, err := kernelCmdline(root)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		sets = append(sets, toks)
+	}
+	return sets, nil
 }
 
-// AddArgs appends the tokens in args not already present to every entry's options line.
+// AddArgs appends the tokens in args not already present to every entry's
+// options line and to /etc/kernel/cmdline.
 func AddArgs(root, args string) error {
 	add := strings.Fields(args)
 	return edit(root, func(cur []string) []string {
@@ -52,7 +99,8 @@ func AddArgs(root, args string) error {
 	})
 }
 
-// RemoveArgs deletes the exact tokens in args from every entry's options line.
+// RemoveArgs deletes the exact tokens in args from every entry's options line
+// and from /etc/kernel/cmdline.
 func RemoveArgs(root, args string) error {
 	drop := strings.Fields(args)
 	return edit(root, func(cur []string) []string {
@@ -63,14 +111,22 @@ func RemoveArgs(root, args string) error {
 // entryFiles lists the *.conf entries under root, sorted.
 func entryFiles(root string) ([]string, error) {
 	dir := Dir(root)
-	files, err := filepath.Glob(filepath.Join(dir, "*.conf"))
-	if err != nil {
+	// os.ReadDir, not filepath.Glob: Glob reports no matches for a directory it
+	// cannot read, so an unprivileged caller would be told this is not a BLS
+	// host — /boot/loader/entries is 0700 root on Fedora.
+	ents, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
+	}
+	var files []string
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".conf") {
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
 	}
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no BLS entries in %s — not a Boot Loader Spec host (run `grub2-switch-to-blscfg` to convert a legacy grub config)", dir)
 	}
-	sort.Strings(files)
 	return files, nil
 }
 
@@ -87,7 +143,9 @@ func entryOptions(path string) ([]string, error) {
 	return toks, kerneloptsGuard(path, toks)
 }
 
-// edit maps every entry's options line through transform and writes it back.
+// edit maps every target's options through transform and writes it back: the
+// entries that boot today, and /etc/kernel/cmdline so the next kernel's
+// generated entry keeps the args.
 func edit(root string, transform func([]string) []string) error {
 	files, err := entryFiles(root)
 	if err != nil {
@@ -98,7 +156,69 @@ func edit(root string, transform func([]string) []string) error {
 			return err
 		}
 	}
-	return nil
+	return editCmdline(root, transform)
+}
+
+// kernelCmdline reads /etc/kernel/cmdline's tokens; ok is false when the host
+// has no such file, which leaves kernel-install falling back to /proc/cmdline —
+// already carrying the args once the host has booted with them.
+func kernelCmdline(root string) ([]string, bool, error) {
+	b, err := os.ReadFile(filepath.Join(root, KernelCmdlinePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	toks, _ := cmdlineTokens(strings.Split(string(b), "\n"))
+	return toks, true, nil
+}
+
+// cmdlineTokens collects the tokens of every non-comment line and the index of
+// the first of them; kernel-install joins those lines into one options line.
+func cmdlineTokens(lines []string) ([]string, int) {
+	var toks []string
+	first := -1
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		toks = append(toks, strings.Fields(t)...)
+		if first < 0 {
+			first = i
+		}
+	}
+	return toks, first
+}
+
+// editCmdline rewrites /etc/kernel/cmdline in place, leaving comment lines
+// alone and collapsing the args onto the first line they occupied.
+func editCmdline(root string, transform func([]string) []string) error {
+	path := filepath.Join(root, KernelCmdlinePath)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	toks, first := cmdlineTokens(lines)
+	if first < 0 {
+		return nil
+	}
+	for i := first + 1; i < len(lines); i++ {
+		if t := strings.TrimSpace(lines[i]); t != "" && !strings.HasPrefix(t, "#") {
+			lines[i] = ""
+		}
+	}
+	lines[first] = strings.Join(transform(toks), " ")
+	return writeIfChanged(path, b, []byte(strings.Join(lines, "\n")), info.Mode())
 }
 
 func editOne(path string, transform func([]string) []string) error {
@@ -127,7 +247,16 @@ func editOne(path string, transform func([]string) []string) error {
 	if !found {
 		return fmt.Errorf("%s has no options line", path)
 	}
-	return writeAtomic(path, []byte(strings.Join(lines, "\n")), info.Mode())
+	return writeIfChanged(path, b, []byte(strings.Join(lines, "\n")), info.Mode())
+}
+
+// writeIfChanged skips the rewrite when transform was a no-op: apply re-checks
+// the boot config on every run, and /boot does not need the churn.
+func writeIfChanged(path string, was, now []byte, mode os.FileMode) error {
+	if string(now) == string(was) {
+		return nil
+	}
+	return writeAtomic(path, now, mode)
 }
 
 // optionsTokens returns the tokens of the first options line.

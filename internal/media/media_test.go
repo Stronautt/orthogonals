@@ -102,10 +102,15 @@ func TestProvisionTrustsTheVDDPublisher(t *testing.T) {
 	if !strings.Contains(s, "Add-TrustedPublisher $cat.FullName") {
 		t.Error("provision.ps1 installs the VDD without trusting its publisher — that hangs on a modal prompt")
 	}
-	for _, store := range []string{"TrustedPublisher", "Root", "LocalMachine"} {
+	for _, store := range []string{"TrustedPublisher", "LocalMachine"} {
 		if !strings.Contains(s, store) {
 			t.Errorf("provision.ps1 does not populate the %s certificate store", store)
 		}
+	}
+	// Root is a certificate authority for the whole guest, trusted for
+	// everything the signer could issue. Silent driver install does not need it.
+	if strings.Contains(s, "'Root'") {
+		t.Error("provision.ps1 adds the VDD signer to the guest's Root store")
 	}
 }
 
@@ -455,6 +460,34 @@ func TestFetchStalledConnectionFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(CacheDir(root), "thing.bin.part")); !os.IsNotExist(err) {
 		t.Error(".part file survived a stalled download")
+	}
+}
+
+// TestFetchOversizedResponseFails: an endless body must be named as such.
+// Left to the checksum, a truncation of ours reads as a tampered download.
+func TestFetchOversizedResponseFails(t *testing.T) {
+	old := maxDownloadBytes
+	maxDownloadBytes = 64
+	t.Cleanup(func() { maxDownloadBytes = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for range 100 {
+			_, _ = w.Write(make([]byte, 64))
+		}
+	}))
+	defer srv.Close()
+	d := artifacts.Download{Name: "thing", Version: "1.0", URL: srv.URL, SHA256: sum([]byte("whatever")), File: "thing.bin"}
+
+	root := t.TempDir()
+	_, err := Fetch(root, d, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "download limit") {
+		t.Fatalf("err = %v, want a download-limit error", err)
+	}
+	if strings.Contains(err.Error(), "SHA256") {
+		t.Errorf("the size cap was reported as a checksum mismatch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(CacheDir(root), "thing.bin.part")); !os.IsNotExist(err) {
+		t.Error(".part file survived an oversized download")
 	}
 }
 

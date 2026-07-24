@@ -9,12 +9,13 @@ import (
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
 // vmFakeBins are every binary the vm step list still shells out to.
-var vmFakeBins = []string{"semanage", "restorecon"}
+var vmFakeBins = []string{"semanage", "restorecon", "systemd-tmpfiles"}
 
 // countCalls counts fake-client calls whose verb prefix matches.
 func countCalls(calls []string, prefix string) int {
@@ -268,6 +269,44 @@ func TestVMUndefine(t *testing.T) {
 	}
 }
 
+// TestVMUndefineRemovesProvisionISOWithoutPurge: the ISO holds the password in
+// cleartext and is regenerable, so it goes with the definition. --purge is for
+// the disk image, which is not.
+func TestVMUndefineRemovesProvisionISOWithoutPurge(t *testing.T) {
+	fakeVMPath(t)
+	root := hwtest.ReferenceRoot(t)
+	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
+		t.Fatalf("define failed: %s", stderr)
+	}
+	iso := media.ISOPath(root, "win11")
+	if err := os.MkdirAll(filepath.Dir(iso), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iso, []byte("provision"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeVirt(t, &virttest.Fake{})
+
+	if code, stdout, _ := run(t, "vm", "--root", root, "undefine"); code != 0 ||
+		!strings.Contains(stdout, "would remove the provision ISO") {
+		t.Fatalf("dry run: code=%d stdout=%q", code, stdout)
+	}
+	if _, err := os.Stat(iso); err != nil {
+		t.Fatalf("dry run deleted the ISO: %v", err)
+	}
+
+	code, stdout, stderr := run(t, "vm", "--root", root, "--yes", "undefine")
+	if code != 0 {
+		t.Fatalf("exit %d\nstderr: %s", code, stderr)
+	}
+	if _, err := os.Stat(iso); !os.IsNotExist(err) {
+		t.Errorf("undefine left the provision ISO on disk: %v", err)
+	}
+	if !strings.Contains(stdout, "removed the provision ISO") {
+		t.Errorf("removal not reported:\n%s", stdout)
+	}
+}
+
 func TestVMUndefinePurgeRemovesEverything(t *testing.T) {
 	dir := fakeVMPath(t)
 	_ = dir
@@ -401,6 +440,31 @@ func TestVMBadArgs(t *testing.T) {
 			code, _, _ := run(t, tc.args...)
 			if code != tc.want {
 				t.Fatalf("exit %d, want %d", code, tc.want)
+			}
+		})
+	}
+}
+
+// TestVMNameValidatedOnEverySubcommand: --vm-name reaches ISOPath, the
+// registry and journal step ids from every subcommand, not just define. The
+// message matters too — a name rejected downstream fails for another reason.
+func TestVMNameValidatedOnEverySubcommand(t *testing.T) {
+	root := hwtest.ReferenceRoot(t)
+	const hostile = "../../etc/passwd"
+	cases := map[string][]string{
+		"launch":   {"vm", "--root", root, "--vm-name", hostile, "launch"},
+		"undefine": {"vm", "--root", root, "--vm-name", hostile, "undefine"},
+		"media":    {"media", "--root", root, "--vm-name", hostile, "--win11-iso", "/isos/w.iso"},
+		"verify":   {"verify", "--root", root, "--vm-name", hostile},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			code, _, stderr := run(t, args...)
+			if code == 0 {
+				t.Fatalf("%s accepted %q", name, hostile)
+			}
+			if !strings.Contains(stderr, "bad VM name") {
+				t.Errorf("%s refused %q for the wrong reason: %q", name, hostile, stderr)
 			}
 		})
 	}

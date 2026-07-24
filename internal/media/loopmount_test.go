@@ -1,6 +1,8 @@
 package media
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +33,37 @@ func testISO(t *testing.T, files []Artifact) string {
 		t.Fatalf("BuildISO: %v", err)
 	}
 	return path
+}
+
+// loopDevices counts attached loop devices; the backing_file attribute only
+// exists while one is bound.
+func loopDevices(t *testing.T) int {
+	t.Helper()
+	bound, err := filepath.Glob("/sys/block/loop*/loop/backing_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(bound)
+}
+
+// TestMountISOCorruptImageLeaksNothing: ValidateWin11ISO loop-mounts whatever
+// --win11-iso named, so an unreadable file is ordinary input. It must not
+// strand a loop device — the host has a bounded number and nothing frees one.
+func TestMountISOCorruptImageLeaksNothing(t *testing.T) {
+	requireLoopMount(t)
+	bad := filepath.Join(t.TempDir(), "corrupt.iso")
+	// Big enough that the kernel actually attempts a superblock read.
+	if err := os.WriteFile(bad, bytes.Repeat([]byte("not an iso"), 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before := loopDevices(t)
+	if _, err := ValidateWin11ISO(bad, io.Discard); err == nil {
+		t.Fatal("a corrupt image was accepted as a Windows ISO")
+	}
+	if after := loopDevices(t); after != before {
+		t.Errorf("attached loop devices went %d -> %d — the failed mount leaked one", before, after)
+	}
 }
 
 // TestMountISOWithoutPrivilegeExplainsWhy pins the unprivileged failure, which

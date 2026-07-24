@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
@@ -78,7 +79,10 @@ func Analyze(r *hw.Result, f Facts) []Check {
 // checkBLS gates on readable Boot Loader Spec entries.
 func checkBLS(f Facts) Check {
 	const name = "boot-entries"
-	if f.BLSError != "" {
+	switch {
+	case f.BLSUnreadable:
+		return Check{name, Pass, "skipped (" + bls.EntriesPath + " is root-only — re-run preflight as root to check it)", ""}
+	case f.BLSError != "":
 		return Check{name, Fail, f.BLSError,
 			"convert to Boot Loader Spec (grub2-switch-to-blscfg) so kernel args can be managed per entry"}
 	}

@@ -31,7 +31,7 @@ func TestRemoveProvisionISODeletes(t *testing.T) {
 	root := t.TempDir()
 	iso := writeISO(t, root)
 	var out bytes.Buffer
-	removeProvisionISO(root, "win11", &out)
+	removeProvisionISO(media.ISOPath(root, "win11"), true, &out)
 	if _, err := os.Stat(iso); !os.IsNotExist(err) {
 		t.Error("ISO left on disk")
 	}
@@ -42,7 +42,7 @@ func TestRemoveProvisionISODeletes(t *testing.T) {
 
 func TestRemoveProvisionISOAbsentIsSilent(t *testing.T) {
 	var out bytes.Buffer
-	removeProvisionISO(t.TempDir(), "win11", &out)
+	removeProvisionISO(media.ISOPath(t.TempDir(), "win11"), true, &out)
 	if out.Len() != 0 {
 		t.Errorf("absent ISO should be silent, got %q", out.String())
 	}
@@ -55,7 +55,7 @@ func TestRemoveProvisionISORemoveError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	removeProvisionISO(root, "win11", &out)
+	removeProvisionISO(media.ISOPath(root, "win11"), true, &out)
 	if !strings.Contains(out.String(), "could not remove") {
 		t.Errorf("output = %q, want a remove-error notice", out.String())
 	}
@@ -263,6 +263,27 @@ func TestUpCompletedInstallConverges(t *testing.T) {
 	}
 	if got := domain.CurrentStage(root, "gamer"); got != domain.StageFinal {
 		t.Errorf("converged stage = %s, want final", got)
+	}
+
+	// A converge before the reboot apply asked for stops at the boundary: the
+	// domain is rendered off a detect that needs a live IOMMU.
+	if err := os.RemoveAll(filepath.Join(root, "/sys/class/iommu")); err != nil {
+		t.Fatal(err)
+	}
+	defines := len(slices.DeleteFunc(slices.Clone(f.Calls), func(c string) bool { return c != "define" }))
+	code, out, errOut = runUpCLI(t, root, "--yes", "--vm-name", "gamer")
+	if code != 0 {
+		t.Fatalf("exit %d, want a clean stop at the reboot boundary\n%s%s", code, out, errOut)
+	}
+	// One line, not a second banner: apply has already printed the reboot one.
+	if !strings.Contains(out, "VM gamer not converged: the kernel arguments are not live yet") {
+		t.Errorf("converge without a live IOMMU must say to reboot:\n%s", out)
+	}
+	if strings.Count(out, "REBOOT REQUIRED") > 1 {
+		t.Errorf("the reboot instruction must be printed once:\n%s", out)
+	}
+	if got := len(slices.DeleteFunc(slices.Clone(f.Calls), func(c string) bool { return c != "define" })); got != defines {
+		t.Errorf("define reached libvirt %d times, want %d — nothing to define before the reboot", got, defines)
 	}
 }
 

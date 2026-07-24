@@ -9,6 +9,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -77,10 +78,10 @@ func snapshot(t *rapid.T, root string) string {
 }
 
 // seedPreexisting adds a subset of the profile's kernel args to every boot
-// entry and returns it, standing in for a host that already carried them.
-// kernelArgsStep undoes only what it actually added, so undo must leave these
-// in place — the case a nil preexisting list never reaches.
-func seedPreexisting(t *rapid.T, root string, p Profile) []string {
+// entry and to /etc/kernel/cmdline — a host that already carried them carries
+// them in both, since kernel-install writes one from the other. kernelArgsStep
+// undoes only what it actually added, so undo must leave these in place.
+func seedPreexisting(t *rapid.T, root string, p Profile) {
 	t.Helper()
 	args := strings.Fields(KernelArgs(p))
 	keep := make([]string, 0, len(args))
@@ -90,7 +91,7 @@ func seedPreexisting(t *rapid.T, root string, p Profile) []string {
 		}
 	}
 	if len(keep) == 0 {
-		return nil
+		return
 	}
 	entries, err := filepath.Glob(filepath.Join(root, "boot/loader/entries/*.conf"))
 	if err != nil || len(entries) == 0 {
@@ -106,7 +107,14 @@ func seedPreexisting(t *rapid.T, root string, p Profile) []string {
 			t.Fatalf("%v", err)
 		}
 	}
-	return keep
+	cmdline := filepath.Join(root, bls.KernelCmdlinePath)
+	b, err := os.ReadFile(cmdline)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := os.WriteFile(cmdline, []byte(strings.Join(keep, " ")+" "+string(b)), 0o644); err != nil {
+		t.Fatalf("%v", err)
+	}
 }
 
 // TestApplyUndoRestoresTree is the project's central promise: for any profile,
@@ -117,10 +125,14 @@ func TestApplyUndoRestoresTree(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		p := genProfile(rt)
 		root := propRoot(rt)
-		preexisting := seedPreexisting(rt, root, p)
+		seedPreexisting(rt, root, p)
 		before := snapshot(rt, root)
 
-		list, err := Steps(p, preexisting)
+		boot, err := bls.Wanted(root, KernelArgs(p))
+		if err != nil {
+			rt.Fatalf("read boot config: %v", err)
+		}
+		list, err := Steps(p, boot)
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}
@@ -145,7 +157,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		p := genProfile(rt)
 		root := propRoot(rt)
 
-		list, err := Steps(p, nil)
+		list, err := Steps(p, bls.Args{})
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}
@@ -183,7 +195,7 @@ func TestDryRunIsInert(t *testing.T) {
 		root := propRoot(rt)
 		before := snapshot(rt, root)
 
-		list, err := Steps(p, nil)
+		list, err := Steps(p, bls.Args{})
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}

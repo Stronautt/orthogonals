@@ -68,6 +68,30 @@ summary: Host-mutation tests, shared by every plan
     duration: 10m
     tier: 4
 
+/inhibit:
+    summary: the logind sleep lock, against a real system bus
+    description: |
+        internal/hooks/inhibit.go has no unit coverage at all and cannot have
+        any: under a --root prefix there is no system bus to take a lock from.
+        The failure it guards is silent — the hook stops holding the
+        inhibitor, nothing reports anything, and the host suspends while a
+        guest owns the GPU.
+    test: ./inhibit.sh
+    duration: 5m
+    tier: 4
+
+/privdrop:
+    summary: the notification credential switch, executed for real
+    description: |
+        notify.Send drops from root to the desktop user before spawning the
+        notification client. Every unit run does that with its own account,
+        where uid equals euid and the branch is skipped, so the code that
+        hands a child to another user runs nowhere else. Needs root and a
+        second account, both of which this plan has.
+    test: ./privdrop.sh
+    duration: 5m
+    tier: 4
+
 /vfio:
     summary: the IOMMU and the vfio-pci bind, for real
     description: |

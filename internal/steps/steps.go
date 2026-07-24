@@ -48,6 +48,11 @@ type Step struct {
 	CreatesPath string
 	// Input is the content the command or op consumes; a hash mismatch re-runs the step.
 	Input []byte
+	// Recheck re-runs a journaled step the host can lose behind orthogonals'
+	// back — a kernel update regenerates the BLS entries, dropping the kernel
+	// args apply added. The caller sets it from live state, so the step must be
+	// idempotent and the journal is no proof its effect is still there.
+	Recheck bool
 
 	// KindEnableUnit
 	Unit   string
@@ -121,6 +126,13 @@ func (e *Engine) applyOne(m *Manifest, s Step, oc *OpClients) error {
 	if s.ID == "" {
 		return errors.New("step has no id")
 	}
+	// A step that changed kind between releases diverges like any other, but the
+	// per-kind checks below read the field their own kind uses and would print an
+	// empty "was:" — the record holds the other kind's fields.
+	if rec := m.find(s.ID); rec != nil && rec.Kind != s.Kind {
+		return fmt.Errorf("journaled as %s, now %s — %s\nwas: %s\nnow: %s",
+			rec.Kind, s.Kind, undoFirst(s.ID), recordLine(rec), stepLine(s))
+	}
 	switch s.Kind {
 	case KindWriteFile:
 		if !filepath.IsAbs(s.Path) {
@@ -163,7 +175,7 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 	if rec := m.find(s.ID); rec != nil {
 		if rec.Op != s.Op || !maps.Equal(rec.OpArgs, s.Args) {
 			return fmt.Errorf("journaled op differs from the current settings — %s\nwas: %s\nnow: %s",
-				undoFirst, opLine(rec.Op, rec.OpArgs), opLine(s.Op, s.Args))
+				undoFirst(s.ID), opLine(rec.Op, rec.OpArgs), opLine(s.Op, s.Args))
 		}
 		var done bool
 		if inputDrift, done = e.journaledStepState(s, rec); done {
@@ -180,6 +192,11 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 	}
 	r := Record{ID: s.ID, Kind: KindOp, Data: s.Data, Reboot: s.Reboot,
 		Op: s.Op, OpArgs: s.Args, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
+	// A re-run derives its undo from a host the first run already changed, so it
+	// would ask for less than was added: the journaled undo is the original one.
+	if rec := m.find(s.ID); rec != nil && rec.UndoOp != "" {
+		r.UndoOp, r.UndoArgs = rec.UndoOp, rec.UndoArgs
+	}
 	if len(s.Input) > 0 {
 		r.InputSHA256 = sha256hex(s.Input)
 	}
@@ -202,6 +219,9 @@ func (e *Engine) journaledStepState(s Step, rec *Record) (inputDrift, done bool)
 	switch {
 	case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
 		return true, false
+	case s.Recheck:
+		fmt.Fprintf(e.Out, "%s: journaled but not live on the host — reapplying\n", s.ID)
+		return false, false
 	case s.CreatesPath != "":
 		if _, err := os.Stat(filepath.Join(e.Root, s.CreatesPath)); err == nil {
 			fmt.Fprintf(e.Out, "%s: already applied\n", s.ID)
@@ -223,8 +243,11 @@ func (e *Engine) journal(m *Manifest, r Record) error {
 }
 
 // undoFirst is the shared refusal suffix for a journaled step that no longer
-// matches the current settings — one wording, so a change cannot leave a stale copy.
-const undoFirst = "undo first (orthogonals undo, or vm undefine for VM steps)"
+// matches the current settings — one wording, so a change cannot leave a stale
+// copy, and the id so the remedy is a command, not a search.
+func undoFirst(id string) string {
+	return "undo first: `orthogonals undo --step " + id + " --yes` for this step, `orthogonals undo` or `vm undefine` for the whole set"
+}
 
 // rollbackOnError drops a write-ahead record whose mutation failed, so the step
 // is retried rather than mistaken for one already applied. A failed rollback
@@ -259,7 +282,7 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	rec := m.find(s.ID)
 	if rec != nil && rec.Path != s.Path {
 		return fmt.Errorf("journaled at %s but now targets %s — settings changed since apply; %s",
-			rec.Path, s.Path, undoFirst)
+			rec.Path, s.Path, undoFirst(s.ID))
 	}
 	same := exists && bytes.Equal(cur, s.Content) && curMode == s.Mode.Perm()
 	if same && rec != nil && rec.NewSHA256 == sha256hex(s.Content) {
@@ -346,7 +369,7 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 	if rec := m.find(s.ID); rec != nil {
 		if !slices.Equal(rec.Cmd, s.Cmd) {
 			return fmt.Errorf("journaled command differs from the current settings — %s\nwas: %s\nnow: %s",
-				undoFirst, strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
+				undoFirst(s.ID), strings.Join(rec.Cmd, " "), strings.Join(s.Cmd, " "))
 		}
 		var done bool
 		if inputDrift, done = e.journaledStepState(s, rec); done {

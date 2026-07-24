@@ -39,6 +39,10 @@ func sharedHostFiles(cpuVendorID string) []file {
 			"title Fedora Linux (6.15.0) 44\nversion 6.15.0\nlinux /vmlinuz-6.15.0\ninitrd /initramfs-6.15.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
 		{"boot/loader/entries/fedora-6.14.0.conf",
 			"title Fedora Linux (6.14.0) 44\nversion 6.14.0\nlinux /vmlinuz-6.14.0\ninitrd /initramfs-6.14.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
+		// kernel-install copies this into the entry it generates for a new
+		// kernel, so kernel args apply does not write here last only until the
+		// next kernel update.
+		{"etc/kernel/cmdline", "root=UUID=aaaa ro rhgb quiet\n"},
 	}
 	coreIDs := []int{0, 0, 4, 4, 8, 8, 12, 12, 16, 16, 20, 20, 24, 25, 26, 27, 28, 29, 30, 31}
 	for cpu, id := range coreIDs {

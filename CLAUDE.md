@@ -58,7 +58,12 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   distro/vendor seams. `internal/virt` and `internal/sysd` are the narrow
   client surfaces for libvirt and systemd — no virsh/systemctl exec, no
   output parsing. `internal/bls` edits `/boot/loader/entries` directly (the
-  native replacement for grubby). **Anything the standard library can do is
+  native replacement for grubby) **and `/etc/kernel/cmdline` with it** —
+  kernel-install writes a new kernel's entry from that file, so args that stop
+  at the entries are dropped by the next `dnf upgrade kernel` and the host
+  boots with no IOMMU. Its `Wanted` splits the two questions an edit needs:
+  tokens some target already carries (never undo those) and tokens some target
+  lacks (still to write). **Anything the standard library can do is
   done in Go, never shelled out to** — the `~/Desktop` shortcut is an op
   (`steps.OpDesktopLink`) using `MkdirAll`/`Symlink`/`Lchown`, not a
   `runuser … sh -c` script. exec remains only where the binary IS the vendor
@@ -74,6 +79,18 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   libvirtd, not users; it journals nothing, so `--yes` does not gate it.
   Per-VM launch is `orthogonals vm launch` over `internal/virt` (no shell
   launcher; the desktop entry execs the binary).
+- **SPICE listens on a unix socket, never a TCP port** — an address listen has
+  no password, so any local user could attach to an auto-logon Administrator
+  console. The domain renders
+  `<listen type='socket' socket='/run/orthogonals/<vm>/spice.sock'/>`. The
+  per-VM directory (`0730 <user>:qemu`, a tmpfiles.d fragment `vm define`
+  writes) is the access control: QEMU binds the socket world-readable, so its
+  own mode restricts nothing. The `started/begin` hook chowns it to 0600 on top
+  of that, and is log-only for the same reason. `parseSpiceDisplay` returns the
+  path with port `"0"` — the zero is how Looking Glass is told `-c` names a
+  socket. SELinux type is `qemu_var_run_t`, the policy's type for
+  `/var/lib/libvirt/qemu`; `svirt_var_run_t` does not exist, and `test/desk`
+  checks it against the running policy.
 - **Every host mutation routes through the apply engine** (`internal/steps`):
   journaled to `/var/lib/orthogonals/manifest.json` with original bytes
   backed up, so `undo` restores byte-identically. The journal is
@@ -87,10 +104,19 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   run_cmd (argv), enable_unit, and **op** — a named entry in the compiled-in
   ops registry (`internal/steps/ops.go`) with JSON args journaled like argv,
   so undo works from a fresh process. A journaled step whose
-  command/op/path diverges from the current settings is refused (undo
-  first), never silently skipped or rebound; a step that declares `Input`
+  command/op/path — or whose **kind**, when a release moves a step from
+  run_cmd to op — diverges from the current settings is refused, never
+  silently skipped or rebound. The refusal names both sides by their own
+  kind (a record read through the new kind's fields prints an empty "was:")
+  and quotes `undo --step <id>`, which reverses that one step and leaves the
+  rest of the manifest applied; a step that declares `Input`
   content re-runs when that content drifts (how the define-domain op
-  converges on a new render). Under `--root` with no injected clients,
+  converges on a new render). **The journal is not proof the host still
+  carries the change**: a step whose effect something else can undo (a kernel
+  update regenerating the BLS entries) sets `Recheck` from live state and
+  re-runs — and a re-run keeps the *journaled* undo, since deriving one from a
+  host the first run already changed would ask for less than was added. Under
+  `--root` with no injected clients,
   daemon-touching steps journal and print "skipped under --root" — the
   container tier's contract; `make test-vm` covers them live.
 - The domain's pipeline position is a Stage (install → novideo → final)
@@ -126,9 +152,18 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   `Engine.Sysd` or cli's `newVirt`/`newSysd` vars; and package-level func
   vars for syscall/notify boundaries the hook runtime crosses
   (`hooks.DeleteModule`, `hooks.deviceDriver`, `notify.Send`,
+  `notify.lookupUser`, `steps.pathOwner`,
   `cli.execProcess`/`executablePath`) — swap with `t.Cleanup` restore, never
   `t.Parallel` while swapped. A unit test must NEVER dial the developer
   machine's real libvirt or systemd, nor issue a real `delete_module`.
+  Where a privileged path cannot be reached from a unit run at all, the
+  *decision* is split into a pure function and tested there
+  (`notify.credential`, `steps.trustCmd`) and a tier proves the kernel honours
+  it (`test/tmt/privdrop.sh`, `test/tmt/inhibit.sh`). Dropping to the desktop
+  user is the credential **and** the environment: sudo hands the op root's
+  `HOME`, getenv takes the first match, so `steps.desktopEnv` replaces the
+  inherited `HOME`/`XDG_*`/`DBUS_SESSION_BUS_ADDRESS` instead of appending —
+  otherwise gvfs writes its metadata tree under `/root` as a user who cannot.
 - `internal/hw/hwtest` provides `ReferenceRoot` (a PoC-mirroring fixture
   host) and sysfs builders. **`hwtest.Roots` is the fixture registry** — the
   single source of every synthetic topology, consumed by `test/fixture`, the
@@ -166,14 +201,24 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   choice keys on the firmware's ACPI IOMMU table (DMAR/IVRS), with CPU vendor
   only the no-table fallback preflight quotes as the remedy. The inner TCG
   test domain still needs no nesting of its own.
-- Coverage gate: 80%+. `make coverage` merges the unit profile with the real
-  binary's, as driven by whichever tiers have run — **88.6%** with container,
-  VM, and VFIO. Two measurement traps: a bare per-package `-coverprofile`
-  reports ~75% because it cannot see the `*test` helper packages being
-  exercised from other packages' tests (hence `-coverpkg=./internal/...`), and
-  unit tests alone cap out around 83% because `internal/virt` and
-  `internal/sysd` need a live daemon. The host tiers are what lift those, so a
-  coverage number quoted without saying which tiers ran is meaningless.
+- Coverage gate: 80%+, read from `make coverage-pct` — **never**
+  `go tool cover -func | tail -1`. `make coverage` merges the unit profile with
+  the real binary's, as driven by whichever tiers have run — **88.6%** with
+  container, VM, and VFIO; 83.1% with container alone. Four measurement traps:
+  a bare per-package `-coverprofile` reports ~75% because it cannot see the
+  `*test` helper packages being exercised from other packages' tests (hence
+  `-coverpkg=./internal/...`); unit tests alone cap out around 83% because
+  `internal/virt` and `internal/sysd` need a live daemon; `go tool cover -func`
+  accumulates over `FuncDecl`s only, so every package-level
+  `var x = func(…)` seam is missing from its listing *and its total* — and two
+  of those seams are the privilege-dropping exec paths (`notify.Send`,
+  `steps.markTrusted`), hence the statement sum in `coverage-pct`; and a tier
+  directory left from an older binary merges cleanly but contributes blocks
+  describing source this tree no longer has, landing in the denominator and
+  nowhere else (worth several points, silently — `make coverage` now warns when
+  more than one build's covmeta is present). The host tiers are what lift the
+  daemon packages, so a coverage number quoted without saying which tiers ran
+  is meaningless.
   `internal/virt` (53%) is the remaining floor — the paths only a live Windows
   guest reaches (agent commands, SPICE display, key injection).
   **Coverage is not why the VFIO tier exists.** `internal/hooks` was at 86.6%

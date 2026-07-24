@@ -75,6 +75,12 @@ func NewProfile(user, password, locale string, width, height int) (Profile, erro
 	if width <= 0 || height <= 0 {
 		return Profile{}, fmt.Errorf("bad resolution %dx%d", width, height)
 	}
+	// domain.NewProfile's ceiling: without it IVSHMEMMiB's doubling loop
+	// overflows uint64 and never terminates.
+	if width > domain.MaxDimension || height > domain.MaxDimension {
+		return Profile{}, fmt.Errorf("resolution %dx%d exceeds the %d-pixel per-axis maximum",
+			width, height, domain.MaxDimension)
+	}
 	return Profile{
 		GuestUser: user, GuestPassword: password, Locale: locale,
 		Width: width, Height: height, Modes: guestModes(width, height),

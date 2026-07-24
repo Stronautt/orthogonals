@@ -25,6 +25,8 @@ Requires:       /usr/bin/notify-send
 Requires:       switcheroo-control
 # version comes from the Makefile (artifacts.LookingGlassVersion); must match the host
 Requires:       looking-glass-client = %{lgver}
+# owns /usr/share/icons/hicolor, where the notification icon is looked up
+Requires:       hicolor-icon-theme
 
 %description
 Same machine, orthogonal axes: Windows at full GPU speed, Linux never pauses.
@@ -50,6 +52,8 @@ install -d %{buildroot}%{_datadir}/zsh/site-functions
 ./orthogonals completion zsh > %{buildroot}%{_datadir}/zsh/site-functions/_orthogonals
 install -d %{buildroot}%{_datadir}/fish/vendor_completions.d
 ./orthogonals completion fish > %{buildroot}%{_datadir}/fish/vendor_completions.d/orthogonals.fish
+# the `-i orthogonals` notify-send icon; VM-lifecycle notes use stock `computer`
+install -Dm0644 docs/favicon.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/orthogonals.svg
 
 %files
 %license LICENSE
@@ -58,6 +62,7 @@ install -d %{buildroot}%{_datadir}/fish/vendor_completions.d
 %{_datadir}/bash-completion/completions/orthogonals
 %{_datadir}/zsh/site-functions/_orthogonals
 %{_datadir}/fish/vendor_completions.d/orthogonals.fish
+%{_datadir}/icons/hicolor/scalable/apps/orthogonals.svg
 
 # Versions come from git tags; per-release history lives in the GitHub
 # release notes, not here.

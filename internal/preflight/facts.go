@@ -1,6 +1,8 @@
 package preflight
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +28,9 @@ type Facts struct {
 	LibvirtReachable    bool     `json:"libvirt_reachable"`
 	// BLSError is the error message from reading /boot/loader/entries.
 	BLSError string `json:"bls_error,omitempty"`
+	// BLSUnreadable marks that directory as root-only (0700 on Fedora): an
+	// unprivileged preflight cannot judge the boot entries either way.
+	BLSUnreadable bool `json:"bls_unreadable,omitempty"`
 }
 
 // GatherFacts reads the live host (prefixed by root, the test seam).
@@ -47,7 +52,9 @@ func GatherFacts(root string) Facts {
 	if f.SwitcherooEnabled {
 		f.SwitcherooNVIDIA = switcherooListsNVIDIA(root)
 	}
-	if _, err := bls.Tokens(root); err != nil {
+	if err := bls.Readable(root); errors.Is(err, fs.ErrPermission) {
+		f.BLSUnreadable = true
+	} else if err != nil {
 		f.BLSError = err.Error()
 	}
 	return f

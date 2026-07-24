@@ -1,7 +1,7 @@
 VERSION ?= $(shell cat VERSION)
 LDFLAGS = -X github.com/stronautt/orthogonals/internal/cli.Version=$(VERSION)
 
-.PHONY: build test lint test-integration test-vm test-vfio test-desk coverage rpm srpm srpm-lg lg-bump lg-checkout lg-lock
+.PHONY: build test lint test-integration test-vm test-vfio test-desk coverage coverage-pct rpm srpm srpm-lg lg-bump lg-checkout lg-lock
 
 # LG_VERSION is the single Looking Glass toggle (the looking-glass.version
 # lockfile, embedded by artifacts.go); LG_RPMVER is its RPM form (0~ sorts the
@@ -139,4 +139,24 @@ coverage:
 		echo "note: no tier coverage found — run make test-integration first"; \
 		go tool covdata textfmt -i=$(COVER)/unit -o=$(COVER)/merged.txt; \
 	fi
-	@go tool cover -func=$(COVER)/merged.txt | tail -1
+	@# Tier data from another build merges cleanly, but its blocks describe
+	@# source this tree no longer has and land in the denominator only — several
+	@# points, silently. Two shapes: more than one build, or one that predates
+	@# the sources (a comment is enough, it moves every block after it).
+	@meta=$$(find $(COVER)/tier -name 'covmeta.*' 2>/dev/null | head -1); \
+	if [ -n "$$meta" ]; then \
+		builds=$$(find $(COVER)/tier -name 'covmeta.*' | wc -l); \
+		newer=$$(find main.go internal test -name '*.go' -newer "$$meta" -print -quit); \
+		if [ "$$builds" -gt 1 ] || [ -n "$$newer" ]; then \
+			echo "warning: tier coverage was built from different sources ($$builds build(s)$${newer:+, $$newer is newer})."; \
+			echo "         rm -rf $(TMT_RUN)-* and re-run the tiers for a meaningful number."; \
+		fi; \
+	fi
+	@printf 'total: (statements) %s%%\n' "$$($(MAKE) --no-print-directory coverage-pct)"
+
+# The gated number. NOT `go tool cover -func`: it walks FuncDecls only, so
+# package-level `var x = func(…)` seams — including both privilege-dropping
+# exec paths — are absent from its total.
+coverage-pct:
+	@awk '!/^mode:/ { n = $$(NF-1); t += n; if ($$NF + 0 > 0) c += n } \
+		END { if (t == 0) { print "0.0"; exit } printf "%.1f\n", 100 * c / t }' $(COVER)/merged.txt

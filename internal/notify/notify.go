@@ -2,6 +2,7 @@
 package notify
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -19,6 +20,37 @@ type Notification struct {
 	User              string
 }
 
+// lookupUser is the passwd seam.
+var lookupUser = user.Lookup
+
+// credential resolves the bus address and the credentials to drop to. A nil
+// SysProcAttr means "already that user": switching to your own uid needs
+// privileges the caller may not have. The hook calls this as root, so it is
+// what keeps the notification from being sent with root's credentials.
+func credential(name string, euid int) (*syscall.SysProcAttr, string, error) {
+	u, err := lookupUser(name)
+	if err != nil {
+		return nil, "", err
+	}
+	// 31-bit parse: the ids are converted to both int and uint32 below, so the
+	// smaller signed range is the one that has to hold.
+	uid, err := strconv.ParseUint(u.Uid, 10, 31)
+	if err != nil {
+		return nil, "", fmt.Errorf("user %q has an unusable uid %q", name, u.Uid)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 31)
+	if err != nil {
+		return nil, "", fmt.Errorf("user %q has an unusable gid %q", name, u.Gid)
+	}
+	bus := "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/" + u.Uid + "/bus"
+	if int(uid) == euid {
+		return nil, bus, nil
+	}
+	return &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
+	}, bus, nil
+}
+
 // Send delivers n via notify-send.
 var Send = func(n Notification) {
 	urgency, expire := "normal", autoHideMS
@@ -27,20 +59,12 @@ var Send = func(n Notification) {
 	}
 	cmd := exec.Command("notify-send", "-u", urgency, "-t", expire, "-i", n.Icon, n.Title, n.Body)
 	if n.User != "" {
-		u, err := user.Lookup(n.User)
+		cred, bus, err := credential(n.User, os.Geteuid())
 		if err != nil {
 			return
 		}
-		cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"+u.Uid+"/bus")
-		// 31-bit parse: the ids get converted to both int and uint32 below.
-		uid, uidErr := strconv.ParseUint(u.Uid, 10, 31)
-		gid, gidErr := strconv.ParseUint(u.Gid, 10, 31)
-		if uidErr != nil || gidErr != nil {
-			return
-		}
-		if int(uid) != os.Geteuid() {
-			cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
-		}
+		cmd.Env = append(os.Environ(), bus)
+		cmd.SysProcAttr = cred
 	}
 	_ = cmd.Run()
 }

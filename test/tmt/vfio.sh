@@ -255,6 +255,9 @@ case "$COUNT" in
   <devices>
     <controller type='pci' index='1' model='pcie-root-port'/>
     <controller type='pci' index='2' model='pcie-root-port'/>
+    <graphics type='spice'>
+      <listen type='socket' socket='/run/orthogonals/$VM_NAME/spice.sock'/>
+    </graphics>
     <hostdev mode='subsystem' type='pci' managed='no'>
       <source><address domain='0x0000' bus='$bus' slot='0x00' function='0x0'/></source>
     </hostdev>
@@ -283,6 +286,19 @@ XML
 	[ "$(cat /sys/fs/selinux/enforce)" = 1 ] ||
 		fail "SELinux is not enforcing — this step proves less than it claims"
 	pass "libvirtd ran the shim and claimed /dev/vfio/$gpu_group under enforcing SELinux"
+
+	# The one place libvirt's started/begin hook can be observed firing. If it
+	# does not, the socket stays qemu-owned inside a 0730 directory — still
+	# unreachable by others, but its own mode stops saying so.
+	sock=/run/orthogonals/$VM_NAME/spice.sock
+	[ -S "$sock" ] || fail "QEMU did not bind the SPICE socket at $sock"
+	sock_mode=$(stat -c '%a' "$sock")
+	sock_owner=$(stat -c '%U' "$sock")
+	[ "$sock_mode" = 600 ] ||
+		fail "SPICE socket mode is $sock_mode, want 600 — the started/begin hook did not narrow it"
+	[ "$sock_owner" = "$USER_NAME" ] ||
+		fail "SPICE socket is owned by $sock_owner, want $USER_NAME"
+	pass "the started hook handed $sock to $USER_NAME (0600)"
 
 	virsh --connect qemu:///system destroy "$VM_NAME" >/dev/null || true
 	overlay_identity

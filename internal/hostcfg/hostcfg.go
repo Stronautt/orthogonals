@@ -13,6 +13,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/steps"
 )
@@ -116,13 +117,17 @@ func addedKargs(args string, preexisting []string) string {
 	return strings.Join(added, " ")
 }
 
-// kernelArgsStep adds args to every BLS entry, undoing only what it added.
-func kernelArgsStep(args string, preexisting []string) steps.Step {
+// kernelArgsStep adds args to every boot-config target, undoing only what it
+// added. A token any target lacks rechecks the journaled step: kernel-install
+// regenerates the entries from /etc/kernel/cmdline on every kernel update, so
+// "already applied" is not "still there".
+func kernelArgsStep(args string, boot bls.Args) steps.Step {
 	s := steps.Step{
 		ID: KernelArgsStepID, Kind: steps.KindOp, Reboot: true,
 		Op: steps.OpKernelArgsAdd, Args: map[string]string{"args": args},
+		Recheck: len(boot.Missing) > 0,
 	}
-	if added := addedKargs(args, preexisting); added != "" {
+	if added := addedKargs(args, boot.Present); added != "" {
 		s.UndoOp = steps.OpKernelArgsRem
 		s.UndoArgs = map[string]string{"args": added}
 	}
@@ -132,6 +137,13 @@ func kernelArgsStep(args string, preexisting []string) steps.Step {
 // DesktopEntryID and DesktopLinkID are per-VM journal step IDs.
 func DesktopEntryID(vm string) string { return "desktop-entry-" + vm }
 func DesktopLinkID(vm string) string  { return "desktop-link-" + vm }
+
+// RunDirConfID and RunDirCreateID are the per-VM SPICE socket directory steps.
+func RunDirConfID(vm string) string   { return "vm-rundir-conf-" + vm }
+func RunDirCreateID(vm string) string { return "vm-rundir-create-" + vm }
+
+// runDirConfPath is the per-VM tmpfiles.d fragment.
+func runDirConfPath(vm string) string { return "/etc/tmpfiles.d/orthogonals-" + vm + ".conf" }
 
 // Artifact is one rendered configuration file ready for a WriteFile step.
 type Artifact struct {
@@ -192,8 +204,12 @@ func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 	if err := steps.CheckExecPath(exe); err != nil {
 		return nil, err
 	}
-	data := struct{ VMName, DisplayName, Exe string }{vmName, displayName, exe}
+	data := struct{ VMName, DisplayName, Exe, User string }{vmName, displayName, exe, user}
 	content, err := renderTemplate("vm-looking-glass.desktop", data)
+	if err != nil {
+		return nil, err
+	}
+	runDir, err := renderTemplate("vm-rundir.conf", data)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +231,19 @@ func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 		UndoArgs:    map[string]string{"path": link},
 		CreatesPath: link,
 	})
-	return list, nil
+	return append(list,
+		steps.Step{
+			ID: RunDirConfID(vmName), Kind: steps.KindWriteFile,
+			Path: runDirConfPath(vmName), Content: runDir, Mode: 0o644,
+		},
+		// CreatesPath is in /run: re-runs once per boot, never otherwise.
+		steps.Step{
+			ID: RunDirCreateID(vmName), Kind: steps.KindRunCmd,
+			Cmd:         []string{"systemd-tmpfiles", "--create", runDirConfPath(vmName)},
+			Input:       runDir,
+			CreatesPath: steps.VMRunDir(vmName),
+		},
+	), nil
 }
 
 // desktopEntryPath carries the .orthogonals marker to avoid distro-entry collisions.
@@ -312,8 +340,10 @@ func renderArtifacts(p Profile) ([]Artifact, error) {
 	return out, nil
 }
 
-// Steps assembles the ordered host-configuration step list.
-func Steps(p Profile, preexisting []string) ([]steps.Step, error) {
+// Steps assembles the ordered host-configuration step list. boot is the live
+// state of the kernel args across the boot config; the zero value reads as a
+// host that carries none of them.
+func Steps(p Profile, boot bls.Args) ([]steps.Step, error) {
 	arts, err := renderArtifacts(p)
 	if err != nil {
 		return nil, err
@@ -331,7 +361,7 @@ func Steps(p Profile, preexisting []string) ([]steps.Step, error) {
 			ID: "libvirt-socket-reload", Kind: steps.KindOp,
 			Op: steps.OpSocketReload, UndoOp: steps.OpSocketReload,
 		},
-		kernelArgsStep(args, preexisting),
+		kernelArgsStep(args, boot),
 		steps.Step{
 			ID: "dracut-regenerate", Kind: steps.KindRunCmd, Reboot: true,
 			Cmd:     []string{"dracut", "-f", "--regenerate-all"},
@@ -345,6 +375,23 @@ func Steps(p Profile, preexisting []string) ([]steps.Step, error) {
 		steps.Step{
 			ID: "lg-shm-restorecon", Kind: steps.KindRunCmd,
 			Cmd: []string{"restorecon", "-i", "/dev/shm/looking-glass"},
+		},
+		// qemu_var_run_t is the policy's type for /var/lib/libvirt/qemu, where
+		// libvirt drops its own SPICE sockets; svirt_var_run_t does not exist.
+		// The rule, not a restorecon, is what survives /run being volatile.
+		steps.Step{
+			ID: "selinux-spice-fcontext", Kind: steps.KindRunCmd,
+			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "qemu_var_run_t", steps.RunDirPath + "(/.*)?"},
+			UndoCmd: []string{"semanage", "fcontext", "-d", steps.RunDirPath + "(/.*)?"},
+		},
+		// tmpfiles.d owns these from the next boot; this covers the install run.
+		steps.Step{
+			ID: "tmpfiles-create", Kind: steps.KindRunCmd,
+			Cmd: []string{"systemd-tmpfiles", "--create", "/etc/tmpfiles.d/looking-glass.conf"},
+		},
+		steps.Step{
+			ID: "spice-rundir-restorecon", Kind: steps.KindRunCmd,
+			Cmd: []string{"restorecon", "-R", "-i", steps.RunDirPath},
 		},
 		steps.Step{
 			ID: "user-libvirt-group", Kind: steps.KindRunCmd,

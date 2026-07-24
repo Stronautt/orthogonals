@@ -64,6 +64,25 @@ case "$COUNT" in
 	grep -q '"0x2206"' "$WORK/out" || fail "detect does not see the bind-mounted RTX 3080"
 	run 2 preflight
 
+	# Under /var/tmp, not $WORK: $WORK is in /tmp, where the older temp-path
+	# guard in cli.executablePath fires first and proves nothing about the
+	# ownership walk.
+	untrusted=/var/tmp/orthogonals-untrusted
+	rm -rf "$untrusted"
+	mkdir -p "$untrusted"
+	chmod 0777 "$untrusted"
+	cp "$BIN" "$untrusted/orthogonals"
+	if PATH="$RUN_PATH" "$untrusted/orthogonals" apply --yes --user "$USER_NAME" \
+		>"$WORK/untrusted.out" 2>&1; then
+		fail "apply accepted a binary on a world-writable path"
+	fi
+	grep -q "install orthogonals first" "$WORK/untrusted.out" ||
+		fail "apply refused the untrusted binary for the wrong reason: $(cat "$WORK/untrusted.out")"
+	[ -e /etc/libvirt/hooks/qemu ] &&
+		fail "the refused apply still installed the hook shim"
+	rm -rf "$untrusted"
+	pass "apply refuses a hook shim pointing at a writable binary"
+
 	# up refuses without --win11-iso before the media stage (cli/up.go), and CI
 	# has no Windows ISO: a placeholder carries the pipeline as far as it can go.
 	touch "$WORK/placeholder.iso"
@@ -124,6 +143,16 @@ case "$COUNT" in
 	fake_sysfs
 	touch "$WORK/placeholder.iso"
 
+	# Any host that has run virt-manager owns /var/lib/libvirt/images through a
+	# `default` pool, and libvirt refuses a second pool over a directory an
+	# existing one covers. A cloud guest has no pools at all, so without this
+	# the volume step is only ever tested on the easy path.
+	virsh --connect qemu:///system pool-define-as tier-images dir \
+		--target /var/lib/libvirt/images >/dev/null ||
+		fail "could not define a pool over the default disk directory"
+	virsh --connect qemu:///system pool-start tier-images >/dev/null ||
+		fail "could not start the pool over the default disk directory"
+
 	# VerifyBoot now reads a real /proc/cmdline; DefineVM
 	# reaches a live libvirtd. BuildMedia then stops on the placeholder ISO,
 	# which is the expected terminus, so the exit status is not 0.
@@ -132,6 +161,11 @@ case "$COUNT" in
 	sed 's/^/  | /' "$WORK/out"
 	[ "$rc" != 0 ] || fail "up succeeded despite a placeholder Windows ISO"
 	grep -qi 'guest media' "$WORK/out" || fail "up did not fail in the media stage; it failed earlier"
+
+	virsh --connect qemu:///system vol-list tier-images >"$WORK/vols.txt"
+	grep -q "$VM_NAME.qcow2" "$WORK/vols.txt" ||
+		fail "the disk was not created in the pool that owns its directory: $(cat "$WORK/vols.txt")"
+	pass "the disk went through the pool that already owned its directory"
 
 	[ "$(pipeline_state)" = vm-defined ] ||
 		fail "pipeline state is $(pipeline_state), want vm-defined — the reboot did not advance it"

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
+	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/orchestrate"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -74,6 +75,27 @@ func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stder
 		if err := runApply(cfg, applyO, stdout, stderr); err != nil {
 			return err
 		}
+		// The domain profile is rendered off a detect that needs a live IOMMU, so
+		// converging one before the reboot apply just asked for dies on the host,
+		// not on anything about the VM.
+		res, err := hw.Detect(cfg.Root)
+		if err != nil {
+			return err
+		}
+		if res.Platform.IOMMUAddressWidth == 0 {
+			// apply has already banner'd the reboot when its kargs are not live, so
+			// this only names what stopped. Kargs live and still no IOMMU is a
+			// different fault — the firmware switch — and keeps the banner.
+			if orchestrate.KargsLive(cfg.Root) != nil {
+				fmt.Fprintf(stdout, "VM %s not converged: the kernel arguments are not live yet — reboot, then re-run `orthogonals up --yes`\n", name)
+				return nil
+			}
+			orchestrate.Banner(stdout,
+				"IOMMU OFF — the kernel arguments are live but no IOMMU is active",
+				"enable VT-d / AMD-Vi in firmware, then re-run `orthogonals up --yes`",
+				"(`orthogonals preflight` reports the full picture)")
+			return nil
+		}
 		if err := runVMDefine(cfg, vmO, stdout, stderr); err != nil {
 			return err
 		}
@@ -130,17 +152,22 @@ func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stder
 				if err := runVMDefine(cfg, final, stdout, stderr); err != nil {
 					return err
 				}
-				removeProvisionISO(cfg.Root, name, stdout)
+				removeProvisionISO(media.ISOPath(cfg.Root, name), cfg.Yes, stdout)
 				return nil
 			},
 		}}
 	return m.Run()
 }
 
-// removeProvisionISO removes a VM's provision ISO once the pipeline verified.
-func removeProvisionISO(root, vm string, stdout io.Writer) {
-	path := media.ISOPath(root, vm)
+// removeProvisionISO removes one provision ISO. autounattend.xml on it holds
+// the guest password in cleartext and the ISO is not journaled, so every path
+// that retires a VM clears it; `orthogonals media` rebuilds it on demand.
+func removeProvisionISO(path string, yes bool, stdout io.Writer) {
 	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	if !yes {
+		fmt.Fprintf(stdout, "would remove the provision ISO %s\n", path)
 		return
 	}
 	if err := os.Remove(path); err != nil {

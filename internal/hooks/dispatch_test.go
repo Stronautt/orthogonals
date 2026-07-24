@@ -1,12 +1,28 @@
 package hooks
 
 import (
+	"net"
+	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 )
+
+// currentUser is the one account these tests can chown to without privileges.
+func currentUser(t *testing.T) string {
+	t.Helper()
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Username
+}
 
 // registerVM registers a managed VM with the minimal XML the hook reads back
 // (the <memory> element the hugepage reservation sizes from).
@@ -36,6 +52,99 @@ func TestDispatchOneVMAtATime(t *testing.T) {
 	err := Dispatch(root, &sysdtest.Fake{}, "win11", "prepare", "begin", "tester", "/usr/bin/orthogonals")
 	if err == nil || !strings.Contains(err.Error(), "gaming is running") {
 		t.Fatalf("err = %v, want a one-VM-at-a-time refusal naming gaming", err)
+	}
+}
+
+// shortSpiceWait keeps the socket poll from stretching a test out.
+func shortSpiceWait(t *testing.T) {
+	t.Helper()
+	oldSettle, oldTimeout := SpiceSettle, SpiceTimeout
+	SpiceSettle, SpiceTimeout = time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { SpiceSettle, SpiceTimeout = oldSettle, oldTimeout })
+}
+
+// spiceSocket binds a real socket where QEMU would, with the mode it leaves.
+func spiceSocket(t *testing.T, root, vm string) string {
+	t.Helper()
+	path := filepath.Join(root, steps.SpiceSocketPath(vm))
+	if err := os.MkdirAll(filepath.Dir(path), 0o730); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	// QEMU leaves it group- and world-readable; the whole point is to narrow it.
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestDispatchStartedNarrowsTheSpiceSocket: QEMU leaves the socket
+// world-readable; the started hook is what makes its mode match the directory.
+func TestDispatchStartedNarrowsTheSpiceSocket(t *testing.T) {
+	root := hookRoot(t)
+	registerVM(t, root, "win11")
+	shortSpiceWait(t)
+	path := spiceSocket(t, root, "win11")
+
+	owner := currentUser(t)
+	if err := Dispatch(root, &sysdtest.Fake{}, "win11", "started", "begin", owner, "/usr/bin/orthogonals"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("socket mode = %04o, want 0600", fi.Mode().Perm())
+	}
+}
+
+// TestDispatchStartedSurvivesAMissingSocket: the VM is already running and the
+// directory still restricts it, so a miss is logged, never fatal.
+func TestDispatchStartedSurvivesAMissingSocket(t *testing.T) {
+	root := hookRoot(t)
+	registerVM(t, root, "win11")
+	shortSpiceWait(t)
+
+	if err := Dispatch(root, &sysdtest.Fake{}, "win11", "started", "begin", currentUser(t), "/usr/bin/orthogonals"); err != nil {
+		t.Fatalf("a missing socket must not fail the start: %v", err)
+	}
+	log, err := os.ReadFile(filepath.Join(root, LogPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "did not appear") {
+		t.Errorf("missing socket was not reported:\n%s", log)
+	}
+}
+
+// TestDispatchStartedLeavesANonSocketAlone: only the qemu account can put
+// something else at that path, and not trusting it is the point.
+func TestDispatchStartedLeavesANonSocketAlone(t *testing.T) {
+	root := hookRoot(t)
+	registerVM(t, root, "win11")
+	shortSpiceWait(t)
+	path := filepath.Join(root, steps.SpiceSocketPath("win11"))
+	if err := os.MkdirAll(filepath.Dir(path), 0o730); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a socket"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Dispatch(root, &sysdtest.Fake{}, "win11", "started", "begin", currentUser(t), "/usr/bin/orthogonals"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Errorf("a plain file was chmodded to %04o", fi.Mode().Perm())
 	}
 }
 
@@ -71,6 +180,25 @@ func TestDispatchPrepareFailureWraps(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "GPU handover to vfio-pci failed") ||
 		!strings.Contains(err.Error(), LogPath) {
 		t.Fatalf("err = %v, want a wrapped handover failure naming the log", err)
+	}
+}
+
+// TestDispatchPrepareFailsOnUnreadableGuestRAM: this arm fires after Detach has
+// already pulled the GPU off the host driver, so it has to say what went wrong
+// rather than let QEMU surface it as an opaque out-of-memory later.
+func TestDispatchPrepareFailsOnUnreadableGuestRAM(t *testing.T) {
+	root := hookRoot(t)
+	// Registered, so the hook answers for it — but with no <memory> to size the
+	// hugepage pool from.
+	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>")
+	stubNotify(t)
+	stubDeleteModule(t, nil)
+	stubDeviceDriver(t, driverFromOverride)
+	fakeBin(t, "modprobe", "")
+
+	err := Dispatch(root, &sysdtest.Fake{}, "win11", "prepare", "begin", "tester", "/usr/bin/orthogonals")
+	if err == nil || !strings.Contains(err.Error(), "hugepage reservation") {
+		t.Fatalf("err = %v, want a guest-RAM read failure naming the hugepage reservation", err)
 	}
 }
 

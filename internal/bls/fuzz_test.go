@@ -23,9 +23,10 @@ func entryRoot(t *testing.T, content string) (root, entry string) {
 	return root, entry
 }
 
-// FuzzTokens asserts reading arbitrary entry content never panics, and that a
-// returned token list is free of duplicates and whitespace.
-func FuzzTokens(f *testing.F) {
+// FuzzWanted asserts reading arbitrary entry content never panics, that parsed
+// tokens are free of whitespace, and that every wanted token comes back present,
+// missing, or both — never neither.
+func FuzzWanted(f *testing.F) {
 	f.Add("title Fedora\noptions root=UUID=aaaa ro quiet\n")
 	f.Add("options\n")
 	f.Add("options   \t  \n")
@@ -36,22 +37,29 @@ func FuzzTokens(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, content string) {
 		root, _ := entryRoot(t, content)
-		toks, err := Tokens(root)
+		sets, err := tokenSets(root)
 		if err != nil {
 			return
 		}
-		seen := map[string]bool{}
-		for _, tok := range toks {
-			if tok == "" {
-				t.Fatalf("empty token from %q", content)
+		for _, toks := range sets {
+			for _, tok := range toks {
+				if tok == "" {
+					t.Fatalf("empty token from %q", content)
+				}
+				if strings.ContainsAny(tok, " \t\n") {
+					t.Fatalf("token %q contains whitespace", tok)
+				}
 			}
-			if strings.ContainsAny(tok, " \t\n") {
-				t.Fatalf("token %q contains whitespace", tok)
+		}
+		const args = "intel_iommu=on iommu=pt"
+		w, err := Wanted(root, args)
+		if err != nil {
+			t.Fatalf("Wanted after tokenSets succeeded: %v", err)
+		}
+		for _, tok := range strings.Fields(args) {
+			if !slices.Contains(w.Present, tok) && !slices.Contains(w.Missing, tok) {
+				t.Fatalf("token %q is neither present nor missing", tok)
 			}
-			if seen[tok] {
-				t.Fatalf("duplicate token %q", tok)
-			}
-			seen[tok] = true
 		}
 	})
 }
@@ -117,14 +125,12 @@ func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 		if err := AddArgs(root, args); err != nil {
 			return
 		}
-		mid, err := Tokens(root)
+		mid, err := Wanted(root, args)
 		if err != nil {
-			t.Fatalf("Tokens after AddArgs: %v", err)
+			t.Fatalf("Wanted after AddArgs: %v", err)
 		}
-		for _, tok := range add {
-			if !slices.Contains(mid, tok) {
-				t.Fatalf("AddArgs(%q) did not add %q (got %v)", args, tok, mid)
-			}
+		if len(mid.Missing) > 0 {
+			t.Fatalf("AddArgs(%q) left %v off an entry", args, mid.Missing)
 		}
 
 		if err := RemoveArgs(root, args); err != nil {

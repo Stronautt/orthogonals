@@ -27,7 +27,7 @@ func currentUserName(t *testing.T) string {
 func noSessionBus(t *testing.T) {
 	t.Helper()
 	old := markTrusted
-	markTrusted = func(out io.Writer, _ string, _, _ int) {
+	markTrusted = func(out io.Writer, _, _ string, _, _ int) {
 		_, _ = io.WriteString(out, DesktopTrustNote+"\n")
 	}
 	t.Cleanup(func() { markTrusted = old })
@@ -113,12 +113,49 @@ func TestDesktopLinkFailsLoudlyOnRealBreakage(t *testing.T) {
 	}
 }
 
+// TestDesktopLinkRefusesASymlinkedDesktop: the user owns the shortcut
+// directory and can replace it with a symlink. os.Chown follows one, handing
+// them a root-owned directory — the op must refuse before it writes anything.
+func TestDesktopLinkRefusesASymlinkedDesktop(t *testing.T) {
+	noSessionBus(t)
+	root := t.TempDir()
+	owner := currentUserName(t)
+	link := "/home/" + owner + "/Desktop/win11.orthogonals.desktop"
+
+	victim := filepath.Join(root, "victim")
+	if err := os.Mkdir(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(root, filepath.Dir(link))
+	if err := os.MkdirAll(filepath.Dir(desktop), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, desktop); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	err := opDesktopLink(nil, root, &out, map[string]string{
+		"user": owner, "entry": "/usr/share/applications/win11.orthogonals.desktop", "link": link,
+	})
+	if err == nil {
+		t.Fatalf("op followed a symlinked shortcut directory:\n%s", out.String())
+	}
+	ents, rerr := os.ReadDir(victim)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(ents) != 0 {
+		t.Errorf("op wrote into the symlink target before refusing: %v", ents)
+	}
+}
+
 // TestLookupUserNamesTheUser keeps the on-host failure legible; opDesktopLink
 // returns this error verbatim when root is "".
 func TestLookupUserNamesTheUser(t *testing.T) {
-	_, _, err := lookupUser("no-such-user-for-orthogonals")
+	_, _, _, err := LookupUser("no-such-user-for-orthogonals")
 	if err == nil {
-		t.Fatal("lookupUser accepted a nonexistent account")
+		t.Fatal("LookupUser accepted a nonexistent account")
 	}
 	if !strings.Contains(err.Error(), "no-such-user-for-orthogonals") {
 		t.Errorf("error does not name the user: %v", err)
@@ -170,7 +207,7 @@ func TestDesktopLinkNeedsItsArguments(t *testing.T) {
 func TestMarkTrustedReportsAMissingBus(t *testing.T) {
 	var out strings.Builder
 	// A uid that cannot have a runtime directory.
-	markTrusted(&out, "/nonexistent/link.desktop", 999999, 999999)
+	markTrusted(&out, "/nonexistent/link.desktop", "/home/nobody", 999999, 999999)
 	if !strings.Contains(out.String(), DesktopTrustNote) {
 		t.Errorf("missing session bus was not reported:\n%s", out.String())
 	}

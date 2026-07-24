@@ -24,6 +24,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/orchestrate"
 	"github.com/stronautt/orthogonals/internal/preflight"
+	"github.com/stronautt/orthogonals/internal/steps"
 )
 
 // realRoot is the running machine. Every other test passes a --root prefix;
@@ -102,6 +103,22 @@ func TestPreflightContractHoldsOnRealHardware(t *testing.T) {
 		if c.Status != preflight.Pass {
 			t.Logf("  %s %s: %s", strings.ToUpper(string(c.Status)), c.Name, c.Message)
 		}
+	}
+}
+
+// TestSpiceSocketTypeIsUsableOnThisHost: semanage refuses a type the shipped
+// policy does not define, which would abort apply halfway through. Appearing
+// in file_contexts proves the type exists and is valid as a file context.
+// svirt_var_run_t, the obvious guess by analogy, is not defined anywhere.
+func TestSpiceSocketTypeIsUsableOnThisHost(t *testing.T) {
+	const fileContexts = "/etc/selinux/targeted/contexts/files/file_contexts"
+	b, err := os.ReadFile(fileContexts)
+	if err != nil {
+		t.Skipf("no targeted policy on this host: %v", err)
+	}
+	if !strings.Contains(string(b), "qemu_var_run_t") {
+		t.Errorf("%s never mentions qemu_var_run_t — apply's fcontext rule for %s would be refused",
+			fileContexts, steps.RunDirPath)
 	}
 }
 

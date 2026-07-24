@@ -88,6 +88,15 @@ func TestBundleCommand(t *testing.T) {
 	if _, err := gzip.NewReader(bytes.NewReader(data)); err != nil {
 		t.Errorf("output is not a gzip file: %v", err)
 	}
+	// The bundle carries journal output and /etc configuration, and is written
+	// as root into the operator's working directory.
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("bundle mode = %04o, want 0600", st.Mode().Perm())
+	}
 }
 
 func TestBundleDetectError(t *testing.T) {

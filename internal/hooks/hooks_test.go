@@ -1,12 +1,18 @@
 package hooks
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// synthetic is any non-empty --root: it turns off the ownership walk, which is
+// covered in internal/steps where its seam lives.
+const synthetic = "/synthetic-root"
+
 func TestShimStep(t *testing.T) {
-	s, err := ShimStep("tester", "/usr/bin/orthogonals")
+	s, err := ShimStep(synthetic, "tester", "/usr/bin/orthogonals")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,16 +32,28 @@ func TestShimStep(t *testing.T) {
 }
 
 func TestShimStepRefusals(t *testing.T) {
-	if _, err := ShimStep("", "/usr/bin/orthogonals"); err == nil {
+	if _, err := ShimStep(synthetic, "", "/usr/bin/orthogonals"); err == nil {
 		t.Error("empty user must be refused")
 	}
-	if _, err := ShimStep("tester", ""); err == nil {
+	if _, err := ShimStep(synthetic, "tester", ""); err == nil {
 		t.Error("empty exe must be refused")
 	}
-	if _, err := ShimStep("tester", "/opt/my app/orthogonals"); err == nil {
+	if _, err := ShimStep(synthetic, "tester", "/opt/my app/orthogonals"); err == nil {
 		t.Error("exe with a space must be refused, not shell-quoted")
 	}
-	if _, err := ShimStep("tester", "/usr/bin/orth;rm -rf /"); err == nil {
+	if _, err := ShimStep(synthetic, "tester", "/usr/bin/orth;rm -rf /"); err == nil {
 		t.Error("exe with shell metacharacters must be refused")
+	}
+}
+
+// TestShimStepRefusesAnUntrustedExeOnARealHost: libvirtd execs this shim as
+// root, so a binary a non-root user could replace must never reach the file.
+func TestShimStepRefusesAnUntrustedExeOnARealHost(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "orthogonals")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ShimStep("", "tester", exe); err == nil {
+		t.Errorf("shim accepted %s, which is not on a root-owned path", exe)
 	}
 }

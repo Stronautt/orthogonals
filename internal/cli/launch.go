@@ -33,7 +33,7 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 		msg := fmt.Sprintf(format, a...)
 		fmt.Fprintf(stderr, "orthogonals vm launch: %s\n", msg)
 		if !isTerminal(stderr) {
-			notify.Send(notify.Notification{Title: displayName, Icon: "computer", Body: msg})
+			notify.Send(notify.Notification{Title: displayName, Icon: "orthogonals", Body: msg})
 		}
 		return 1
 	}
@@ -67,7 +67,12 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	if err != nil {
 		return fail("looking-glass-client not found on PATH — install the looking-glass-client package")
 	}
-	fmt.Fprintf(stdout, "connecting to %s at %s:%s\n", name, host, port)
+	// port "0" is the client's unix-socket signal, so host is a path.
+	if port == "0" {
+		fmt.Fprintf(stdout, "connecting to %s over %s\n", name, host)
+	} else {
+		fmt.Fprintf(stdout, "connecting to %s at %s:%s\n", name, host, port)
+	}
 	if err := execProcess(lg, []string{"looking-glass-client", "-F", "-c", host, "-p", port}, os.Environ()); err != nil {
 		return fail("exec looking-glass-client: %v", err)
 	}

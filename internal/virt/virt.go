@@ -230,7 +230,9 @@ func (c *client) DomainDisplay(name string) (host, port string, err error) {
 	return parseSpiceDisplay(desc)
 }
 
-// parseSpiceDisplay pulls the SPICE host:port out of a live domain XML.
+// parseSpiceDisplay pulls the SPICE display out of a live domain XML. A socket
+// listen comes back as (path, "0"): port 0 is how the Looking Glass client is
+// told its host argument is a unix socket rather than an address.
 func parseSpiceDisplay(desc string) (host, port string, err error) {
 	var doc struct {
 		Graphics []struct {
@@ -238,7 +240,9 @@ func parseSpiceDisplay(desc string) (host, port string, err error) {
 			Port    string `xml:"port,attr"`
 			Listen  string `xml:"listen,attr"`
 			Listens []struct {
+				Type    string `xml:"type,attr"`
 				Address string `xml:"address,attr"`
+				Socket  string `xml:"socket,attr"`
 			} `xml:"listen"`
 		} `xml:"devices>graphics"`
 	}
@@ -248,6 +252,16 @@ func parseSpiceDisplay(desc string) (host, port string, err error) {
 	for _, g := range doc.Graphics {
 		if g.Type != "spice" {
 			continue
+		}
+		// Before the port: a socket listen carries none, and a stale one lingers.
+		for _, l := range g.Listens {
+			if l.Type != "socket" {
+				continue
+			}
+			if l.Socket == "" {
+				return "", "", ErrNoDisplay
+			}
+			return l.Socket, "0", nil
 		}
 		if g.Port == "" || g.Port == "-1" {
 			return "", "", ErrNoDisplay
@@ -323,18 +337,23 @@ func (c *client) EnsureNetworkActive(name string) error {
 	return nil
 }
 
-// CreateVolumeQCow2 creates the qcow2 through a transient dir pool over the target directory.
+// CreateVolumeQCow2 creates the qcow2 in whichever pool already owns the target
+// directory, and only otherwise through a transient dir pool over it. libvirt
+// refuses a second pool over a directory an existing one covers ("Storage
+// source conflict with pool"), so a disk under /var/lib/libvirt/images — the
+// `default` pool wherever virt-manager has been — must go through that pool.
 func (c *client) CreateVolumeQCow2(path string, sizeGiB int) error {
-	poolXML := fmt.Sprintf("<pool type='dir'><name>orthogonals-vol</name><target><path>%s</path></target></pool>",
-		xmlEscape(filepath.Dir(path)))
+	dir := filepath.Dir(path)
 	volXML := fmt.Sprintf("<volume><name>%s</name><capacity unit='GiB'>%d</capacity><target><format type='qcow2'/></target></volume>",
 		xmlEscape(filepath.Base(path)), sizeGiB)
 	err := c.do(func(l *libvirt.Libvirt) error {
-		pool, err := l.StoragePoolCreateXML(poolXML, 0)
+		pool, transient, err := volumePool(l, dir)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = l.StoragePoolDestroy(pool) }()
+		if transient {
+			defer func() { _ = l.StoragePoolDestroy(pool) }()
+		}
 		_, err = l.StorageVolCreateXML(pool, volXML, 0)
 		return err
 	})
@@ -342,6 +361,28 @@ func (c *client) CreateVolumeQCow2(path string, sizeGiB int) error {
 		return fmt.Errorf("create volume %s: %w", path, err)
 	}
 	return nil
+}
+
+// volumePool returns the pool that owns dir, or a transient one over it. A pool
+// that owns the directory but is not running is reported rather than started:
+// starting it is a host mutation, and this is called from a journaled step that
+// records nothing of the kind.
+func volumePool(l *libvirt.Libvirt, dir string) (pool libvirt.StoragePool, transient bool, err error) {
+	pool, err = l.StoragePoolLookupByTargetPath(dir)
+	if err != nil {
+		if !IsNotFound(err) {
+			return pool, false, err
+		}
+		poolXML := fmt.Sprintf("<pool type='dir'><name>orthogonals-vol</name><target><path>%s</path></target></pool>",
+			xmlEscape(dir))
+		pool, err = l.StoragePoolCreateXML(poolXML, 0)
+		return pool, true, err
+	}
+	if active, err := l.StoragePoolIsActive(pool); err == nil && active == 0 {
+		return pool, false, fmt.Errorf("storage pool %q owns %s but is not running — `virsh pool-start %s`, or point --disk elsewhere",
+			pool.Name, dir, pool.Name)
+	}
+	return pool, false, nil
 }
 
 var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "'", "&apos;", `"`, "&quot;")

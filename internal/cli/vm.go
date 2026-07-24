@@ -282,6 +282,7 @@ func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		return fmt.Errorf("VM %s is %s — shut it down first: virsh shutdown %s", name, state, name)
 	}
 	ids := []string{hostcfg.DesktopLinkID(name), hostcfg.DesktopEntryID(name),
+		hostcfg.RunDirCreateID(name), hostcfg.RunDirConfID(name),
 		domain.DefineStepID(name),
 		domain.ROMRestoreconID(name), domain.ROMFcontextID(name), domain.ROMFileID(name)}
 	if o.purge {
@@ -300,12 +301,13 @@ func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "VM %s is not orthogonals-defined, nothing to do\n", name)
 		return nil
 	}
+	// Not gated on --purge: the ISO is regenerable, unlike the disk image.
+	removeProvisionISO(media.ISOPath(cfg.Root, name), cfg.Yes, stdout)
 	if !cfg.Yes {
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to undefine")
 		return nil
 	}
 	if o.purge {
-		removeProvisionISO(cfg.Root, name, stdout)
 		saved, err := orchestrate.SavedVMName(cfg.Root)
 		if err != nil || saved == name || saved == "" {
 			_ = os.Remove(steps.StatePath(cfg.Root))
@@ -316,8 +318,13 @@ func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 }
 
 // vmNameOrSole returns flag when set, else the single managed VM name.
+// Validated here, not per caller: the name reaches ISOPath, the registry and
+// journal step ids from launch, undefine, media and verify alike.
 func vmNameOrSole(root, flag string) (string, error) {
 	if flag != "" {
+		if err := steps.CheckVMName(flag); err != nil {
+			return "", err
+		}
 		return flag, nil
 	}
 	return soleVMName(root)

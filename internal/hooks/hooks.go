@@ -26,12 +26,18 @@ var (
 func InstalledPaths() []string { return []string{dispatcherPath} }
 
 // ShimStep renders the libvirt qemu hook: a shell shim that execs the orthogonals binary.
-func ShimStep(user, exe string) (steps.Step, error) {
+func ShimStep(root, user, exe string) (steps.Step, error) {
 	if err := steps.CheckUser(user); err != nil {
 		return steps.Step{}, err
 	}
 	if err := steps.CheckExecPath(exe); err != nil {
 		return steps.Step{}, err
+	}
+	// Under --root the tree is synthetic and ownership says nothing.
+	if root == "" {
+		if err := steps.CheckExecTrusted(exe); err != nil {
+			return steps.Step{}, err
+		}
 	}
 	content := fmt.Sprintf("#!/bin/sh\n"+
 		"# orthogonals libvirt hook shim — managed by orthogonals apply\n"+

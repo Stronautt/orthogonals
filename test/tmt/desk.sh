@@ -22,7 +22,7 @@ export HOME
 
 go_tier desk -tags desk ./test/desk \
 	-- TestJSONContractOnRealHardware TestPreflightContractHoldsOnRealHardware \
-	TestFixtureAttributesExistOnRealHardware
+	TestFixtureAttributesExistOnRealHardware TestSpiceSocketTypeIsUsableOnThisHost
 
 echo
 echo "desk: the fixtures still match the hardware they claim to model"

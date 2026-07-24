@@ -17,9 +17,21 @@ import (
 // VolumeLabel is how the guest locates the provision CD.
 const VolumeLabel = "ORTHOGONALS"
 
+// isoSuffix names a provision ISO on disk.
+const isoSuffix = "-provision.iso"
+
 // ISOPath is where a VM's provision ISO lands.
 func ISOPath(root, vm string) string {
-	return filepath.Join(steps.StateDir(root), vm+"-provision.iso")
+	return filepath.Join(steps.StateDir(root), vm+isoSuffix)
+}
+
+// ProvisionISOs lists every provision ISO under root. They hold the guest
+// password in cleartext and are not journaled steps, so undo has to find them
+// by name — the VM registry that would otherwise name them is gone by then, and
+// `media` can build one for a VM that was never defined at all.
+func ProvisionISOs(root string) []string {
+	paths, _ := filepath.Glob(filepath.Join(steps.StateDir(root), "*"+isoSuffix))
+	return paths
 }
 
 // BuildISO writes the provision ISO natively.

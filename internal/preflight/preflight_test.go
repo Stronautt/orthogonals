@@ -294,6 +294,11 @@ func TestAnalyzers(t *testing.T) {
 			check:  "boot-entries", want: Fail, has: []string{"BLS entries"},
 		},
 		{
+			name:   "root-only boot entries skip rather than fail",
+			mutate: func(_ *hw.Result, f *Facts) { f.BLSUnreadable = true },
+			check:  "boot-entries", want: Pass, has: []string{"skipped", "as root"},
+		},
+		{
 			name:   "unreachable libvirt warns",
 			mutate: func(_ *hw.Result, f *Facts) { f.LibvirtReachable = false },
 			check:  "libvirt", want: Warn, has: []string{"virtqemud.socket"},

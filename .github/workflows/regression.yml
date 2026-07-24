@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [bls, domain, steps, hw]
+        package: [bls, domain, steps, hw, media]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -114,8 +114,8 @@ jobs:
         run: |
           make coverage
           go tool cover -html=dist/coverage/merged.txt -o dist/coverage/coverage.html
-          pct=$(go tool cover -func=dist/coverage/merged.txt | tail -1 | grep -o '[0-9.]*%')
-          echo "### Coverage — unit + vm tier: ${pct}" >> "$GITHUB_STEP_SUMMARY"
+          pct=$(make --no-print-directory coverage-pct)
+          echo "### Coverage — unit + vm tier: ${pct}%" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage profile
         if: always()
         uses: actions/upload-artifact@v7

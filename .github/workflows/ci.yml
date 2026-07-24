@@ -168,7 +168,8 @@ jobs:
       - name: Merged coverage (unit + the real binary under tmt)
         run: |
           make coverage
-          pct=$(go tool cover -func=dist/coverage/merged.txt | tail -1 | grep -o '[0-9.]*%' | tr -d '%')
+          # Not `go tool cover -func`: it omits package-level func-var seams.
+          pct=$(make --no-print-directory coverage-pct)
           go tool cover -html=dist/coverage/merged.txt -o dist/coverage/coverage.html
           echo "### Coverage — unit + container tier: ${pct}%" >> "$GITHUB_STEP_SUMMARY"
           # the documented floor, enforced on the merged profile

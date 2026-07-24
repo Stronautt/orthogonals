@@ -15,17 +15,23 @@ import (
 
 // VerifyBoot checks that the applied boot configuration is live on the running kernel.
 func VerifyBoot(root string) error {
-	want, err := manifestKernelArgs(root)
-	if err != nil {
-		return err
-	}
-	if err := kargsLive(root, want); err != nil {
+	if err := KargsLive(root); err != nil {
 		return err
 	}
 	if err := iommuActive(root); err != nil {
 		return err
 	}
 	return vfioModuleLoaded(root)
+}
+
+// KargsLive reports whether the kernel args apply journaled are on the running
+// kernel — the difference between "reboot pending" and "the firmware is off".
+func KargsLive(root string) error {
+	want, err := manifestKernelArgs(root)
+	if err != nil {
+		return err
+	}
+	return kargsLive(root, want)
 }
 
 // manifestKernelArgs recovers the kargs apply added from the journaled step.

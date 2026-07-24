@@ -49,7 +49,7 @@ fi
 # before sourcing this file: a fake dracut would pass while asserting nothing.
 FAKEBIN=$WORK/fakebin
 mkdir -p "$FAKEBIN"
-for name in dracut semanage restorecon bash nvidia-smi usermod systemctl; do
+for name in dracut semanage restorecon bash nvidia-smi usermod systemctl systemd-tmpfiles; do
 	printf '#!/bin/sh\necho "$*" >> "%s/%s.log"\nexit 0\n' "$FAKEBIN" "$name" >"$FAKEBIN/$name"
 	chmod 0755 "$FAKEBIN/$name"
 done

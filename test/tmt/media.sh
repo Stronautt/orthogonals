@@ -13,7 +13,8 @@ require_root "the media tier"
 
 step "loop-device round trip against a real ISO"
 go_tier media ./internal/media -run 'TestMountISO|TestValidateWin11ISOAgainstARealISO' \
-	-- TestMountISORoundTrip TestValidateWin11ISOAgainstARealISO
+	-- TestMountISORoundTrip TestValidateWin11ISOAgainstARealISO \
+	TestMountISOCorruptImageLeaksNothing
 
 echo
 echo "media: BuildISO output mounted and read back through the kernel"

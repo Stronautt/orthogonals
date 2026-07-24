@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -89,8 +88,8 @@ func TestApplyDryRunTouchesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("dry run wrote a manifest")
 	}
-	if toks, _ := bls.Tokens(root); slices.Contains(toks, "intel_iommu=on") {
-		t.Errorf("dry run edited the BLS entries: %v", toks)
+	if w, _ := bls.Wanted(root, "intel_iommu=on"); len(w.Present) > 0 {
+		t.Errorf("dry run edited the BLS entries: %v", w.Present)
 	}
 }
 
@@ -133,8 +132,8 @@ func TestApplyYesWritesEverything(t *testing.T) {
 		t.Errorf("tmpfiles entry not rendered for --user: %s", b)
 	}
 
-	if toks, _ := bls.Tokens(root); !slices.Contains(toks, "intel_iommu=on") || !slices.Contains(toks, "iommu=pt") {
-		t.Errorf("BLS entries missing IOMMU kargs after apply: %v", toks)
+	if w, _ := bls.Wanted(root, "intel_iommu=on iommu=pt"); len(w.Missing) > 0 {
+		t.Errorf("boot config missing IOMMU kargs after apply: %v", w.Missing)
 	}
 	if got := binLog(t, dir, "dracut"); !strings.Contains(got, "-f --regenerate-all") {
 		t.Errorf("dracut invocation = %q", got)
@@ -203,14 +202,55 @@ func TestApplyStaticBinding(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if toks, _ := bls.Tokens(root); !slices.Contains(toks, "vfio-pci.ids=10de:2206,10de:1aef") {
-		t.Errorf("static binding must add vfio-pci.ids to BLS entries: %v", toks)
+	if w, _ := bls.Wanted(root, "vfio-pci.ids=10de:2206,10de:1aef"); len(w.Missing) > 0 {
+		t.Errorf("static binding must add vfio-pci.ids to the boot config: %v", w.Missing)
 	}
 	if !strings.Contains(out, "vfio-pci.ids=10de:2206,10de:1aef") {
 		t.Errorf("escape hatch must list the static kargs:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(root, "/etc/libvirt/hooks/qemu")); err == nil {
 		t.Error("static binding must not install libvirt hooks")
+	}
+}
+
+// A kernel update regenerates the BLS entries from /etc/kernel/cmdline, so the
+// journaled kernel-args step is no proof the args are still on the host: apply
+// re-adds them, and undo still strips everything the first apply added.
+func TestApplyRepairsKargsLostToAKernelUpdate(t *testing.T) {
+	fakeApplyPath(t)
+	root := hwtest.ReferenceRoot(t)
+	if code, out := runApplyCLI(t, root, "--yes"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+
+	entries, err := filepath.Glob(filepath.Join(root, "boot/loader/entries/*.conf"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no boot entries: %v", err)
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stripped := strings.NewReplacer(" intel_iommu=on", "", " iommu=pt", "").Replace(string(b))
+		if err := os.WriteFile(e, []byte(stripped), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, out := runApplyCLI(t, root, "--yes")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if w, _ := bls.Wanted(root, "intel_iommu=on iommu=pt"); len(w.Missing) > 0 {
+		t.Errorf("apply left %v off the boot config — a journaled step is not a live one:\n%s", w.Missing, out)
+	}
+
+	if code, stdout, stderr := run(t, "undo", "--root", root, "--yes"); code != 0 {
+		t.Fatalf("undo exit %d\n%s%s", code, stdout, stderr)
+	}
+	if w, _ := bls.Wanted(root, "intel_iommu=on iommu=pt"); len(w.Present) > 0 {
+		t.Errorf("undo after a repair left %v on the boot config", w.Present)
 	}
 }
 
@@ -268,8 +308,8 @@ func TestApplyRefusesPreflightFail(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
-	if toks, _ := bls.Tokens(root); slices.Contains(toks, "intel_iommu=on") {
-		t.Errorf("refused apply still edited the BLS entries: %v", toks)
+	if w, _ := bls.Wanted(root, "intel_iommu=on"); len(w.Present) > 0 {
+		t.Errorf("refused apply still edited the BLS entries: %v", w.Present)
 	}
 	if _, err := os.Stat(filepath.Join(root, "var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("refused apply journaled steps")

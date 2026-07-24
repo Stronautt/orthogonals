@@ -609,8 +609,10 @@ stripped.
 
 ## Author
 
-orthogonals is written and maintained by
-Pavlo Hrytsenko <pavlo.o.hrytsenko@gmail.com>, 2026.
+<img src="docs/favicon.svg" width="128" align="left" hspace="24" alt="orthogonals">
+
+orthogonals is written and maintained by Pavlo Hrytsenko
+&lt;pavlo.o.hrytsenko@gmail.com&gt;, 2026.
 
 The project is licensed under the GNU General Public License v3.0; see
 [LICENSE](LICENSE).

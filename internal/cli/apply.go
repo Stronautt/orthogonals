@@ -61,11 +61,11 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	preexisting, err := bls.Tokens(cfg.Root)
+	boot, err := bls.Wanted(cfg.Root, hostcfg.KernelArgs(p))
 	if err != nil {
 		return err
 	}
-	list, err := hostcfg.Steps(p, preexisting)
+	list, err := hostcfg.Steps(p, boot)
 	if err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		shim, err := hooks.ShimStep(o.user, exe)
+		shim, err := hooks.ShimStep(cfg.Root, o.user, exe)
 		if err != nil {
 			return err
 		}

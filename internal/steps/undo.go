@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/virt"
@@ -65,6 +66,46 @@ func CheckExecPath(exe string) error {
 	return nil
 }
 
+// pathOwner reports a path's owning uid and permission bits; a test seam.
+var pathOwner = func(path string) (uid uint32, mode fs.FileMode, err error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("cannot read the ownership of %s", path)
+	}
+	return st.Uid, fi.Mode().Perm(), nil
+}
+
+// notInstalled is the shared remedy for an untrusted executable path.
+const notInstalled = "install orthogonals first (the COPR package, or make rpm) — a hook libvirtd runs as root must not name a path other users can write"
+
+// CheckExecTrusted refuses an executable a non-root user could replace:
+// libvirtd execs the shim's path as root on every VM start, so it and every
+// ancestor must be root-owned and closed to group and other.
+//
+// security: TOCTOU by construction — this gates the artifact when written, not
+// the exec. Callers pass a path already through filepath.EvalSymlinks.
+func CheckExecTrusted(exe string) error {
+	for p := exe; ; p = filepath.Dir(p) {
+		uid, mode, err := pathOwner(p)
+		if err != nil {
+			return err
+		}
+		if uid != 0 {
+			return fmt.Errorf("%s is owned by uid %d, not root — %s", p, uid, notInstalled)
+		}
+		if mode&0o022 != 0 {
+			return fmt.Errorf("%s is mode %04o, writable outside root — %s", p, mode, notInstalled)
+		}
+		if p == "/" {
+			return nil
+		}
+	}
+}
+
 // EtcDir is the orthogonals config directory.
 const EtcDir = "/etc/orthogonals"
 
@@ -76,6 +117,18 @@ func VMsDir(root string) string { return filepath.Join(root, VMsDirPath) }
 
 // LibvirtRunDir holds libvirt's live-domain state XML.
 const LibvirtRunDir = "/run/libvirt/qemu"
+
+// RunDirPath is recreated each boot by tmpfiles.d. QEMU binds the SPICE socket
+// under it as user qemu, so the per-VM directory mode is the access control;
+// libvirt's own per-domain directory is unreachable by the desktop user.
+const RunDirPath = "/run/orthogonals"
+
+// VMRunDir and SpiceSocketPath are host paths, unprefixed: resolved on the
+// real host, never under --root.
+func VMRunDir(vm string) string { return RunDirPath + "/" + vm }
+
+// SpiceSocketPath is the domain's SPICE listen socket.
+func SpiceSocketPath(vm string) string { return VMRunDir(vm) + "/spice.sock" }
 
 // VMNames lists every managed domain from the registry.
 func VMNames(root string) []string {

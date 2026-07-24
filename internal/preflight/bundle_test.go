@@ -121,6 +121,71 @@ func TestWriteBundleRedaction(t *testing.T) {
 }
 
 // A host without lspci/journalctl still produces a bundle, noting the gap.
+// TestWriteBundleRedactsOutsideXML: the bundle goes into bug reports, so
+// gating redaction on a .xml filename ships the credentials in the clear the
+// day they appear in any other bundled artifact.
+func TestWriteBundleRedactsOutsideXML(t *testing.T) {
+	root := t.TempDir()
+	const block = "<orthogonals:user>user</orthogonals:user>\n" +
+		"<orthogonals:password>" + secretPassword + "</orthogonals:password>\n"
+	// Three shapes that are not "a file named *.xml under the VM registry".
+	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml.bak", block)
+	hwtest.WriteFile(t, root, "etc/orthogonals/rendered.conf", block)
+	hwtest.WriteFile(t, root, "var/log/orthogonals/hooks.log",
+		"gpu-detach: rendered domain with "+block)
+
+	bin := t.TempDir()
+	fakeBin(t, bin, "lspci", "")
+	fakeBin(t, bin, "journalctl", "")
+	t.Setenv("PATH", bin)
+
+	var buf bytes.Buffer
+	if err := WriteBundle(&buf, root, refResult()); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range readTarGz(t, &buf) {
+		if strings.Contains(data, secretPassword) {
+			t.Errorf("%s carries the guest password in the clear:\n%s", name, data)
+		}
+	}
+}
+
+// TestWriteBundleRedactsAwkwardPasswords: the credential is XML-escaped into
+// the domain, so redaction must survive whatever that produced.
+func TestWriteBundleRedactsAwkwardPasswords(t *testing.T) {
+	// Named, not keyed by the password: t.TempDir() derives from the subtest
+	// name, so the password would reappear in every path the bundle quotes.
+	for _, tc := range []struct{ name, pw string }{
+		{"xml-escaped metacharacters", "p&lt;&amp;&gt;&#34;pass"}, // XMLEscape of p<&>"pass
+		{"dollar signs", "$1$notaregex"},                          // a naive replacement template would expand these
+		{"regex metacharacters", "a.*b"},
+		{"trailing whitespace", "hunter2 \t"},
+	} {
+		pw := tc.pw
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml",
+				"<domain><metadata><orthogonals:guest>\n"+
+					"<orthogonals:password>"+pw+"</orthogonals:password>\n"+
+					"</orthogonals:guest></metadata></domain>")
+			bin := t.TempDir()
+			fakeBin(t, bin, "lspci", "")
+			fakeBin(t, bin, "journalctl", "")
+			t.Setenv("PATH", bin)
+
+			var buf bytes.Buffer
+			if err := WriteBundle(&buf, root, refResult()); err != nil {
+				t.Fatal(err)
+			}
+			for name, data := range readTarGz(t, &buf) {
+				if strings.Contains(data, pw) {
+					t.Errorf("%s kept the password %q:\n%s", name, pw, data)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteBundleMissingTools(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	var buf bytes.Buffer

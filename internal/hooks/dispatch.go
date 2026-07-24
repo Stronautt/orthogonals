@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -49,6 +50,8 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 		if err := sd.StartTransientUnit(unit, []string{exe, "hook", "inhibit", vm}); err != nil {
 			log("sleep inhibitor not started: %v", err)
 		}
+	case "started/begin":
+		secureSpiceSocket(root, vm, user)
 	case "release/end":
 		_ = sd.StopUnit(inhibitUnit(vm))
 		unisolateCPUs(root, sd)
@@ -59,6 +62,54 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 		}
 	}
 	return nil
+}
+
+// SpiceSettle and SpiceTimeout bound the wait for QEMU to bind the socket.
+var (
+	SpiceSettle  = 50 * time.Millisecond
+	SpiceTimeout = 2 * time.Second
+)
+
+// secureSpiceSocket hands the SPICE socket to the desktop user. QEMU binds it
+// world-readable; the 0730 per-VM directory is the real gate, so this is
+// hardening on top of it — and log-only, because the VM is already running.
+func secureSpiceSocket(root, vm, user string) {
+	log := hookLog(root, "spice-socket")
+	rel := steps.SpiceSocketPath(vm)
+	path := filepath.Join(root, rel)
+
+	deadline := time.Now().Add(SpiceTimeout)
+	for {
+		fi, err := os.Lstat(path)
+		if err == nil {
+			// Only qemu could plant something else here; do not trust it.
+			if fi.Mode()&fs.ModeSocket == 0 {
+				log("%s is not a socket — left alone", rel)
+				return
+			}
+			break
+		}
+		if !time.Now().Before(deadline) {
+			log("%s did not appear within %s — the directory mode still restricts it", rel, SpiceTimeout)
+			return
+		}
+		time.Sleep(SpiceSettle)
+	}
+
+	uid, gid, _, err := steps.LookupUser(user)
+	if err != nil {
+		log("%v", err)
+		return
+	}
+	if err := os.Lchown(path, uid, gid); err != nil {
+		log("chown %s: %v", rel, err)
+		return
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		log("chmod %s: %v", rel, err)
+		return
+	}
+	log("%s handed to %s (0600)", rel, user)
 }
 
 // oneVMAtATime refuses the start while another managed domain holds the dGPU.

@@ -24,7 +24,7 @@ import (
 
 // vmNote builds a Windows-VM desktop notification bound for user's session.
 func vmNote(user, body string, urgent bool) notify.Notification {
-	return notify.Notification{Title: "Windows VM", Icon: "video-display", Urgent: urgent, User: user, Body: body}
+	return notify.Notification{Title: "Windows VM", Icon: "computer", Urgent: urgent, User: user, Body: body}
 }
 
 // Runtime seams swapped by tests.

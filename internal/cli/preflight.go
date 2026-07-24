@@ -74,7 +74,8 @@ func runBundle(cfg *Config, out string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(out)
+	// 0600: journal output and /etc configuration, written as root into the CWD.
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

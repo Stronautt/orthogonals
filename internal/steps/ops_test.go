@@ -3,6 +3,7 @@ package steps
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +11,55 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
+
+// TestTrustCmd: the op runs as root, so gio without a credential writes into a
+// user's home as root. markTrusted's other test only covers the no-bus return.
+func TestTrustCmd(t *testing.T) {
+	const link = "/home/alice/Desktop/win11.orthogonals.desktop"
+	cmd := trustCmd(link, "/run/user/1000/bus", "/home/alice", 1000, 1000)
+
+	if got := strings.Join(cmd.Args, " "); got != "gio set "+link+" metadata::trusted true" {
+		t.Errorf("argv = %q", got)
+	}
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Credential == nil {
+		t.Fatal("no credential — gio would run as root")
+	}
+	if c := cmd.SysProcAttr.Credential; c.Uid != 1000 || c.Gid != 1000 {
+		t.Errorf("credential = %d:%d, want 1000:1000", c.Uid, c.Gid)
+	}
+	if want := "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"; !slices.Contains(cmd.Env, want) {
+		t.Errorf("env missing %q", want)
+	}
+}
+
+// The credential alone is not enough: sudo hands the op root's HOME, and gio
+// then writes its gvfs metadata tree under /root — as a user who cannot.
+func TestTrustCmdRepointsTheEnvironmentAtTheUser(t *testing.T) {
+	inherited := []string{
+		"HOME=/root",
+		"XDG_RUNTIME_DIR=/run/user/0",
+		"XDG_DATA_HOME=/root/.local/share",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus",
+		"PATH=/usr/bin",
+	}
+	env := desktopEnv(inherited, "/home/alice", "/run/user/1000/bus", 1000)
+
+	for _, gone := range inherited[:4] {
+		if slices.Contains(env, gone) {
+			t.Errorf("env kept root's %q — getenv takes the first match, so appending loses", gone)
+		}
+	}
+	for _, want := range []string{
+		"HOME=/home/alice",
+		"XDG_RUNTIME_DIR=/run/user/1000",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+		"PATH=/usr/bin",
+	} {
+		if !slices.Contains(env, want) {
+			t.Errorf("env missing %q: %v", want, env)
+		}
+	}
+}
 
 func defineStep() Step {
 	return Step{

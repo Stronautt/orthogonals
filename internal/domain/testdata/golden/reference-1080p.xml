@@ -106,8 +106,11 @@
          tablet remains the absolute-pointer path for plain SPICE sessions -->
     <input type='mouse' bus='virtio'/>
     <input type='keyboard' bus='virtio'/>
-    <graphics type='spice' autoport='yes'>
-      <listen type='address'/>
+    <!-- Unix socket, not a TCP port: an address listen has no password, so any
+         local user could attach to an auto-logon Administrator console. The
+         0730 <user>:qemu directory it sits in is what restricts it. -->
+    <graphics type='spice'>
+      <listen type='socket' socket='/run/orthogonals/win11/spice.sock'/>
     </graphics>
     <!-- guest audio reaches the Looking Glass client over SPICE; the dGPU's
          HDA function only drives an attached HDMI/DP sink, and this card

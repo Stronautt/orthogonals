@@ -68,6 +68,10 @@ for scenario in "${SCENARIOS[@]}"; do
 	for entry in "$root"/boot/loader/entries/*.conf; do
 		grep -q "$kargs" "$entry" || fail "$kind: $entry missing kernel args '$kargs'"
 	done
+	# kernel-install writes the next kernel's entry from this file, so args that
+	# stop here survive only until the next kernel update.
+	grep -q "$kargs" "$root/etc/kernel/cmdline" ||
+		fail "$kind: /etc/kernel/cmdline missing kernel args '$kargs'"
 	if [ "$kargs" = "iommu=pt" ]; then
 		grep -rq intel_iommu "$root/boot/loader/entries/" &&
 			fail "$kind: AMD host got intel_iommu"
@@ -97,6 +101,8 @@ for scenario in "${SCENARIOS[@]}"; do
 	[ -e "$root/var/lib/orthogonals/manifest.json" ] && fail "$kind: manifest survived undo"
 	grep -rq intel_iommu=on "$root/boot/loader/entries" &&
 		fail "$kind: undo left IOMMU kernel args in the BLS entries"
+	grep -q iommu "$root/etc/kernel/cmdline" &&
+		fail "$kind: undo left IOMMU kernel args in /etc/kernel/cmdline"
 	assert_restored "$root" "$kind" "$kind undo"
 
 	pass "$kind ($records records, kargs='$kargs', byte-identical restore)"

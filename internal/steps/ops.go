@@ -109,6 +109,15 @@ func opDesktopLink(_ *OpClients, root string, out io.Writer, args map[string]str
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// The desktop user controls this directory. os.Chown follows a symlink, so
+	// a ~/Desktop pointed at /etc would hand them /etc; O_NOFOLLOW refuses
+	// that, and chowning the descriptor leaves no swap window.
+	dirFD, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open shortcut directory %s (a symlink there is refused): %w", dir, err)
+	}
+	defer func() { _ = dirFD.Close() }()
+
 	full := filepath.Join(root, link)
 	if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -122,7 +131,7 @@ func opDesktopLink(_ *OpClients, root string, out io.Writer, args map[string]str
 
 	// Under --root the tree is synthetic and may name a user that does not
 	// exist, so report rather than refuse.
-	uid, gid, err := lookupUser(owner)
+	uid, gid, home, err := LookupUser(owner)
 	if err != nil {
 		if root == "" {
 			return err
@@ -130,53 +139,80 @@ func opDesktopLink(_ *OpClients, root string, out io.Writer, args map[string]str
 		fmt.Fprintf(out, "%s: %v — ownership not set under --root\n", link, err)
 		return nil
 	}
-	if err := os.Chown(dir, uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
+	if err := dirFD.Chown(uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return err
 	}
 	if err := os.Lchown(full, uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return err
 	}
-	markTrusted(out, full, uid, gid)
+	markTrusted(out, full, home, uid, gid)
 	return nil
 }
 
-// lookupUser resolves a desktop user to its numeric ids. CGO_ENABLED=0 makes
-// os/user parse /etc/passwd directly, so this stays pure Go.
-func lookupUser(name string) (uid, gid int, err error) {
+// LookupUser resolves a desktop user to its numeric ids and home. CGO_ENABLED=0
+// makes os/user parse /etc/passwd directly, so this stays pure Go.
+func LookupUser(name string) (uid, gid int, home string, err error) {
 	u, err := user.Lookup(name)
 	if err != nil {
-		return 0, 0, fmt.Errorf("desktop user %q: %w", name, err)
+		return 0, 0, "", fmt.Errorf("desktop user %q: %w", name, err)
 	}
 	// 31-bit parse: the ids must survive both the int conversions here
 	// (Lchown) and markTrusted's uint32 credential conversions, so cap at
 	// the smaller signed range.
 	uid64, err := strconv.ParseUint(u.Uid, 10, 31)
 	if err != nil {
-		return 0, 0, fmt.Errorf("desktop user %q has an unusable uid %q", name, u.Uid)
+		return 0, 0, "", fmt.Errorf("desktop user %q has an unusable uid %q", name, u.Uid)
 	}
 	gid64, err := strconv.ParseUint(u.Gid, 10, 31)
 	if err != nil {
-		return 0, 0, fmt.Errorf("desktop user %q has an unusable gid %q", name, u.Gid)
+		return 0, 0, "", fmt.Errorf("desktop user %q has an unusable gid %q", name, u.Gid)
 	}
-	return int(uid64), int(gid64), nil
+	return int(uid64), int(gid64), u.HomeDir, nil
+}
+
+// desktopEnv is env re-pointed at the desktop user: their home, runtime dir and
+// session bus **replace** the inherited entries rather than being appended to
+// them — sudo hands the op root's HOME, getenv takes the first match, and gvfs
+// would then try to write its metadata tree under /root as the dropped user.
+func desktopEnv(env []string, home, bus string, uid int) []string {
+	out := make([]string, 0, len(env)+3)
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "HOME="),
+			strings.HasPrefix(kv, "XDG_RUNTIME_DIR="),
+			strings.HasPrefix(kv, "XDG_DATA_HOME="),
+			strings.HasPrefix(kv, "DBUS_SESSION_BUS_ADDRESS="):
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+home,
+		fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", uid),
+		"DBUS_SESSION_BUS_ADDRESS=unix:path="+bus)
+}
+
+// trustCmd runs gio as the desktop user against their own session bus: the op
+// runs as root, and without the credential gio writes into a home as root.
+func trustCmd(link, bus, home string, uid, gid int) *exec.Cmd {
+	cmd := exec.Command("gio", "set", link, "metadata::trusted", "true")
+	cmd.Env = desktopEnv(os.Environ(), home, bus, uid)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
+	}
+	return cmd
 }
 
 // markTrusted runs gio as the desktop user against their own session bus. gio
 // is the vendor API for GNOME's file metadata, so this stays an exec. It
 // returns no error: a missing trust flag is cosmetic.
-var markTrusted = func(out io.Writer, link string, uid, gid int) {
+var markTrusted = func(out io.Writer, link, home string, uid, gid int) {
 	bus := fmt.Sprintf("/run/user/%d/bus", uid)
 	st, err := os.Stat(bus)
 	if err != nil || st.Mode()&fs.ModeSocket == 0 {
 		fmt.Fprintln(out, DesktopTrustNote)
 		return
 	}
-	cmd := exec.Command("gio", "set", link, "metadata::trusted", "true")
-	cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path="+bus)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
-	}
-	if b, err := cmd.CombinedOutput(); err != nil {
+	if b, err := trustCmd(link, bus, home, uid, gid).CombinedOutput(); err != nil {
 		fmt.Fprintf(out, "%s: %s\n", DesktopTrustNote, strings.TrimSpace(string(b)))
 		return
 	}
@@ -184,6 +220,36 @@ var markTrusted = func(out io.Writer, link string, uid, gid int) {
 }
 
 // opLine renders "op k=v …" with sorted keys.
+// recordLine and stepLine render a journaled record and a current step by their
+// own kind, so a refusal names both sides whichever kinds they are.
+func recordLine(rec *Record) string {
+	switch rec.Kind {
+	case KindWriteFile:
+		return rec.Path
+	case KindRunCmd:
+		return strings.Join(rec.Cmd, " ")
+	case KindEnableUnit:
+		return rec.Unit
+	case KindOp:
+		return opLine(rec.Op, rec.OpArgs)
+	}
+	return string(rec.Kind)
+}
+
+func stepLine(s Step) string {
+	switch s.Kind {
+	case KindWriteFile:
+		return s.Path
+	case KindRunCmd:
+		return strings.Join(s.Cmd, " ")
+	case KindEnableUnit:
+		return s.Unit
+	case KindOp:
+		return opLine(s.Op, s.Args)
+	}
+	return string(s.Kind)
+}
+
 func opLine(op string, args map[string]string) string {
 	parts := []string{op}
 	keys := make([]string, 0, len(args))

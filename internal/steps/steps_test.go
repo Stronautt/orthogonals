@@ -716,3 +716,74 @@ func TestCheckUser(t *testing.T) {
 		}
 	}
 }
+
+// ownedPath is one entry of a synthetic ownership tree for CheckExecTrusted.
+type ownedPath struct {
+	uid  uint32
+	mode fs.FileMode
+}
+
+// TestCheckExecTrusted walks a synthetic ownership tree. Anything writable
+// outside root on the way to the binary is a path to root for whoever can
+// write there, so the walk must reject ancestors, not just the leaf.
+func TestCheckExecTrusted(t *testing.T) {
+	const exe = "/usr/local/bin/orthogonals"
+
+	tests := []struct {
+		name    string
+		path    string // path whose ownership this case overrides
+		uid     uint32
+		mode    fs.FileMode
+		wantErr bool
+	}{
+		{name: "root-owned and closed all the way up"},
+		{name: "exe owned by a user", path: exe, uid: 1000, mode: 0o755, wantErr: true},
+		{name: "exe group-writable", path: exe, mode: 0o775, wantErr: true},
+		{name: "exe world-writable", path: exe, mode: 0o757, wantErr: true},
+		{name: "parent owned by a user", path: "/usr/local/bin", uid: 1000, mode: 0o755, wantErr: true},
+		{name: "grandparent group-writable", path: "/usr/local", mode: 0o775, wantErr: true},
+		{name: "filesystem root world-writable", path: "/", mode: 0o777, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		// No t.Parallel: pathOwner is a process-global seam.
+		t.Run(tt.name, func(t *testing.T) {
+			tree := map[string]ownedPath{
+				"/": {0, 0o755}, "/usr": {0, 0o755}, "/usr/local": {0, 0o755},
+				"/usr/local/bin": {0, 0o755}, exe: {0, 0o755},
+			}
+			if tt.path != "" {
+				tree[tt.path] = ownedPath{tt.uid, tt.mode}
+			}
+			old := pathOwner
+			pathOwner = func(p string) (uint32, fs.FileMode, error) {
+				e, ok := tree[p]
+				if !ok {
+					return 0, 0, fs.ErrNotExist
+				}
+				return e.uid, e.mode, nil
+			}
+			t.Cleanup(func() { pathOwner = old })
+
+			err := CheckExecTrusted(exe)
+			if tt.wantErr && err == nil {
+				t.Errorf("CheckExecTrusted(%s) accepted the tree", exe)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("CheckExecTrusted(%s) = %v, want nil", exe, err)
+			}
+		})
+	}
+}
+
+// TestCheckExecTrustedSurfacesAStatError: a path the walk cannot read is not a
+// path it may assume is fine.
+func TestCheckExecTrustedSurfacesAStatError(t *testing.T) {
+	old := pathOwner
+	pathOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, fs.ErrNotExist }
+	t.Cleanup(func() { pathOwner = old })
+
+	if err := CheckExecTrusted("/usr/bin/orthogonals"); err == nil {
+		t.Error("an unreadable path was treated as trusted")
+	}
+}

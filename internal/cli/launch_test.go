@@ -59,8 +59,12 @@ func launchRoot(t *testing.T, memAvailableKiB string) string {
 	return root
 }
 
+// TestVMLaunchRunningDomainExecs pins the client argv. `-p 0` is not a
+// placeholder: it tells Looking Glass `-c` names a unix socket, so "fixing"
+// the zero breaks the launch.
 func TestVMLaunchRunningDomainExecs(t *testing.T) {
-	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: "127.0.0.1", DisplayPort: "5901"})
+	const sock = "/run/orthogonals/win11/spice.sock"
+	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: sock, DisplayPort: "0"})
 	argv := captureExec(t)
 	fakeBinDir(t, []string{"looking-glass-client"})
 	root := launchRoot(t, "")
@@ -68,12 +72,47 @@ func TestVMLaunchRunningDomainExecs(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
+	want := []string{"looking-glass-client", "-F", "-c", sock, "-p", "0"}
+	if strings.Join(*argv, " ") != strings.Join(want, " ") {
+		t.Errorf("exec argv = %v, want %v", *argv, want)
+	}
+	if !strings.Contains(out, "over "+sock) {
+		t.Errorf("missing connect line:\n%s", out)
+	}
+}
+
+// TestVMLaunchTCPDisplayStillWorks: a domain defined before the socket switch
+// keeps its address listen until the next converge.
+func TestVMLaunchTCPDisplayStillWorks(t *testing.T) {
+	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: "127.0.0.1", DisplayPort: "5901"})
+	argv := captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	root := launchRoot(t, "")
+	if code, out, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch"); code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
+	}
 	want := []string{"looking-glass-client", "-F", "-c", "127.0.0.1", "-p", "5901"}
 	if strings.Join(*argv, " ") != strings.Join(want, " ") {
 		t.Errorf("exec argv = %v, want %v", *argv, want)
 	}
-	if !strings.Contains(out, "127.0.0.1:5901") {
-		t.Errorf("missing connect line:\n%s", out)
+}
+
+// TestVMLaunchWaitsForTheDisplay: libvirt reports no display until QEMU binds
+// the socket, so the poll must outlast that gap.
+func TestVMLaunchWaitsForTheDisplay(t *testing.T) {
+	const sock = "/run/orthogonals/win11/spice.sock"
+	fastPoll(t)
+	fakeVirt(t, &virttest.Fake{
+		State: "running", DisplayHost: sock, DisplayPort: "0", DisplayAfter: 3,
+	})
+	argv := captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	root := launchRoot(t, "")
+	if code, out, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch"); code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
+	}
+	if got := strings.Join(*argv, " "); !strings.Contains(got, sock) {
+		t.Errorf("exec argv = %q, want the socket once the display appeared", got)
 	}
 }
 

@@ -47,13 +47,15 @@ function Invoke-Installer([string]$Path, [string]$Arguments) {
 # Security prompt that no silent installer can answer - unattended
 # provisioning hangs on it forever. Trusting the signer up front is what
 # keeps the install headless.
+#
+# TrustedPublisher only: the same certificate in Root would make the signer a
+# certificate authority for the whole guest, TLS included. A self-signed driver
+# would still prompt; the answer is a signed driver, not a new root of trust.
 function Add-TrustedPublisher([string]$Path) {
     $signer = (Get-AuthenticodeSignature $Path).SignerCertificate
     if (-not $signer) { throw "$Path is not Authenticode-signed" }
-    foreach ($storeName in 'TrustedPublisher', 'Root') {
-        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, 'LocalMachine')
-        $store.Open('ReadWrite'); $store.Add($signer); $store.Close()
-    }
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
+    $store.Open('ReadWrite'); $store.Add($signer); $store.Close()
 }
 
 Write-Status -Stage 'start' -Ok $true

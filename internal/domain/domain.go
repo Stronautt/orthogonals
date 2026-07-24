@@ -101,6 +101,7 @@ type Profile struct {
 	GuestUser       string
 	GuestPassword   string
 	Locale          string
+	SpiceSocket     string
 	GPU             BDF
 	Audio           *BDF
 	VideoNone       bool
@@ -129,7 +130,8 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		Name: name, DiskPath: o.DiskPath, DiskSizeGiB: o.DiskSizeGiB,
 		Win11ISO: o.Win11ISO, VirtioISO: o.VirtioISO, ProvisionISO: o.ProvisionISO,
 		GuestUser: o.GuestUser, GuestPassword: o.GuestPassword, Locale: o.Locale,
-		ROMFile: o.ROMFile, ROMContent: o.ROMContent,
+		SpiceSocket: steps.SpiceSocketPath(name),
+		ROMFile:     o.ROMFile, ROMContent: o.ROMContent,
 	}
 	if err := checkROM(o.ROMFile, o.ROMContent); err != nil {
 		return Profile{}, err
@@ -143,7 +145,7 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	if p.DiskPath == "" {
 		p.DiskPath = "/var/lib/libvirt/images/" + name + ".qcow2"
 	}
-	for _, path := range []string{p.DiskPath, p.Win11ISO, p.VirtioISO, p.ProvisionISO} {
+	for _, path := range []string{p.DiskPath, p.Win11ISO, p.VirtioISO, p.ProvisionISO, p.SpiceSocket} {
 		if strings.ContainsAny(path, `<>&'"`) {
 			return Profile{}, fmt.Errorf("path %q contains characters unsupported in libvirt XML", path)
 		}

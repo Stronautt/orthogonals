@@ -133,7 +133,8 @@
       "dracut": true,
       "nvidia-smi": true,
       "restorecon": true,
-      "semanage": true
+      "semanage": true,
+      "systemd-tmpfiles": true
     }
   }
 }
