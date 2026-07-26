@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // vmNote builds a Windows-VM desktop notification bound for user's session.
@@ -286,7 +288,11 @@ func nvidiaHolders(root string) []holder {
 		}
 		procPid := filepath.Join(root, "/proc", e.Name())
 		if pidHoldsNVIDIA(procPid) {
-			holders = append(holders, holder{Comm: readComm(procPid)})
+			// "?" rather than "": the name goes in a notification listing what
+			// is holding the GPU, and a blank reads as a missing entry.
+			holders = append(holders, holder{
+				Comm: cmp.Or(utils.ReadTrim(filepath.Join(procPid, "comm")), "?"),
+			})
 		}
 	}
 	return holders
@@ -305,14 +311,6 @@ func pidHoldsNVIDIA(procPid string) bool {
 		return true
 	}
 	return false
-}
-
-func readComm(procPid string) string {
-	b, err := os.ReadFile(filepath.Join(procPid, "comm"))
-	if err != nil {
-		return "?"
-	}
-	return strings.TrimSpace(string(b))
 }
 
 // holderApps is the deduped, space-joined command names for the notification.
@@ -361,7 +359,7 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 	log := hookLog(root, "hugepages")
 	need := (ramMiB + hugepageSizeMiB - 1) / hugepageSizeMiB
 	nrPath := filepath.Join(root, nrHugepages2MPath)
-	prior, err := readUint(nrPath)
+	prior, err := utils.ReadUint(nrPath)
 	if err != nil {
 		return hugepageAbort(user, log, "read %s: %v", nrHugepages2MPath, err)
 	}
@@ -388,7 +386,7 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 		}
 		_ = os.WriteFile(filepath.Join(root, compactMemoryPath), []byte("1\n"), 0o644)
 		_ = os.WriteFile(nrPath, []byte(strconv.FormatUint(target, 10)+"\n"), 0o644)
-		got, _ = readUint(nrPath)
+		got, _ = utils.ReadUint(nrPath)
 	}
 	if got < target {
 		_ = os.WriteFile(nrPath, []byte(strconv.FormatUint(prior, 10)+"\n"), 0o644)
@@ -426,15 +424,6 @@ func freeHugepages(root string) {
 	_ = os.WriteFile(filepath.Join(root, nrHugepages2MPath), []byte(prior+"\n"), 0o644)
 	_ = os.Remove(save)
 	log("hugepage pool restored to %s", prior)
-}
-
-// readUint reads a sysfs/proc file holding a single unsigned integer.
-func readUint(path string) (uint64, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 }
 
 // ResetTransientState reverts every host tweak the qemu hook may leave behind

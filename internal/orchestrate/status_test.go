@@ -8,6 +8,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/steps"
 )
 
 const switcherooWants = "etc/systemd/system/multi-user.target.wants/switcheroo-control.service"
@@ -132,5 +133,78 @@ func TestStatusMissingKernelArgsRecord(t *testing.T) {
 	}
 	if !strings.Contains(c.Detail, "kernel-args") {
 		t.Errorf("detail should point at the missing step, got %q", c.Detail)
+	}
+}
+
+// writeKVMFRDomain registers a VM whose rendered XML names the kvmfr device.
+func writeKVMFRDomain(t *testing.T, root, vm string) {
+	t.Helper()
+	write(t, root, filepath.Join(steps.VMsDirPath, vm+".xml"),
+		`<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>`+vm+`</name>
+  <qemu:commandline>
+    <qemu:arg value='-object'/>
+    <qemu:arg value='{"qom-type":"memory-backend-file","id":"looking-glass","mem-path":"`+
+			steps.KVMFRDevice+`","size":134217728,"share":true}'/>
+  </qemu:commandline>
+</domain>`)
+}
+
+// A kernel update dkms cannot follow is the one failure this feature creates on
+// its own: the hook refuses the start, so status has to name it first.
+func TestStatusKVMFRModuleMissingAfterKernelUpdate(t *testing.T) {
+	root := healthyRoot(t)
+	writeKVMFRDomain(t, root, "win11")
+
+	c := failing(Status(root), "looking glass")
+	if c == nil {
+		t.Fatal("a kvmfr domain without the module must not report healthy")
+	}
+	for _, want := range []string{"orthogonals up", steps.LookingGlassSHM} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail does not mention %q: %s", want, c.Detail)
+		}
+	}
+}
+
+func TestStatusKVMFRModuleBuilt(t *testing.T) {
+	root := healthyRoot(t)
+	writeKVMFRDomain(t, root, "win11")
+	const release = "7.1.4-204.fc44.x86_64"
+	write(t, root, "proc/sys/kernel/osrelease", release+"\n")
+	write(t, root, filepath.Join("lib/modules", release, "modules.dep"), "extra/kvmfr.ko.xz:\n")
+
+	cs := Status(root)
+	if !Healthy(cs) {
+		t.Fatalf("want healthy, got %+v", cs)
+	}
+	var detail string
+	for _, c := range cs {
+		if strings.HasPrefix(c.Name, "looking glass") {
+			detail = c.Detail
+		}
+	}
+	if !strings.Contains(detail, "DMABUF") || !strings.Contains(detail, "128 MiB") {
+		t.Errorf("backend check does not report the live buffer: %q", detail)
+	}
+}
+
+// A /dev/shm domain must report the fallback rather than nothing at all.
+func TestStatusSHMBackendReported(t *testing.T) {
+	root := healthyRoot(t)
+	write(t, root, filepath.Join(steps.VMsDirPath, "win11.xml"),
+		"<domain type='kvm'><name>win11</name><shmem name='looking-glass'/></domain>")
+	cs := Status(root)
+	if !Healthy(cs) {
+		t.Fatalf("want healthy, got %+v", cs)
+	}
+	var found bool
+	for _, c := range cs {
+		if strings.HasPrefix(c.Name, "looking glass") && strings.Contains(c.Detail, steps.LookingGlassSHM) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no /dev/shm backend check in %+v", cs)
 	}
 }

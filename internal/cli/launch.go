@@ -10,10 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
+	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/notify"
+	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
@@ -32,7 +34,7 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	fail := func(format string, a ...any) int {
 		msg := fmt.Sprintf(format, a...)
 		fmt.Fprintf(stderr, "orthogonals vm launch: %s\n", msg)
-		if !isTerminal(stderr) {
+		if !utils.IsTerminal(stderr) {
 			notify.Send(notify.Notification{Title: displayName, Icon: "orthogonals", Body: msg})
 		}
 		return 1
@@ -50,7 +52,10 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 			return code
 		}
 		if err := c.StartDomain(name); err != nil {
-			if strings.Contains(err.Error(), "gpu-detach: ") {
+			// The hook has already notified for these; print its reason verbatim
+			// rather than burying it in "starting <vm>: ...". Matching on text is
+			// forced by the hook → libvirtd → RPC boundary it crossed.
+			if strings.Contains(err.Error(), "gpu-detach: ") || strings.Contains(err.Error(), hooks.KVMFRErrPrefix) {
 				fmt.Fprintf(stderr, "orthogonals vm launch: %v\n", err)
 				return 1
 			}
@@ -73,7 +78,20 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	} else {
 		fmt.Fprintf(stdout, "connecting to %s at %s:%s\n", name, host, port)
 	}
-	if err := execProcess(lg, []string{"looking-glass-client", "-F", "-c", host, "-p", port}, os.Environ()); err != nil {
+	args := []string{"looking-glass-client", "-F", "-c", host, "-p", port}
+	// The client prefers /dev/kvmfr0 whenever it exists, so a module left loaded
+	// by an earlier VM would hijack a /dev/shm domain and wait for a host that
+	// never arrives. The backend is read from libvirt, not /etc/orthogonals/vms:
+	// that copy is 0600 root and launch runs as the desktop user, so its EACCES
+	// would read as "not kvmfr" and point the client at an empty buffer.
+	desc, err := c.DomainXML(name)
+	if err != nil {
+		return fail("reading %s XML: %v", name, err)
+	}
+	if _, ok := domain.KVMFRSizeXML([]byte(desc)); !ok {
+		args = append(args, "-f", steps.LookingGlassSHM)
+	}
+	if err := execProcess(lg, args, os.Environ()); err != nil {
 		return fail("exec looking-glass-client: %v", err)
 	}
 	return 0
@@ -108,17 +126,8 @@ func waitForDisplay(c virt.Client, name string) (host, port string, err error) {
 	}
 }
 
-// isTerminal reports whether w is a terminal.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
-	return err == nil
-}
-
 // executablePath resolves the orthogonals binary path, refusing a temp-dir path.
+// A var so tests can stand in for a binary they did not install.
 var executablePath = func() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {

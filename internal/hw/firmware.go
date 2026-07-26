@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // GPUMuxPath is the ASUS ROG display-MUX knob (asus-wmi).
@@ -17,7 +19,7 @@ const (
 
 // gpuMux reads the ASUS display MUX, "" when the knob is absent.
 func gpuMux(root string) string {
-	switch readTrim(filepath.Join(root, GPUMuxPath)) {
+	switch utils.ReadTrim(filepath.Join(root, GPUMuxPath)) {
 	case "1":
 		return GPUMuxHybrid
 	case "0":
@@ -57,8 +59,8 @@ func firmwareIOMMUAttrs(root string) []FirmwareAttr {
 			out = append(out, FirmwareAttr{
 				Driver:         drv.Name(),
 				Name:           a.Name(),
-				Current:        readTrim(filepath.Join(ad, "current_value")),
-				PossibleValues: splitTrim(readTrim(filepath.Join(ad, "possible_values")), ";"),
+				Current:        utils.ReadTrim(filepath.Join(ad, "current_value")),
+				PossibleValues: splitTrim(utils.ReadTrim(filepath.Join(ad, "possible_values")), ";"),
 			})
 		}
 	}

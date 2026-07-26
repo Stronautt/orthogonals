@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Result is the full detect output.
@@ -57,7 +59,7 @@ func (r *Result) Summary() string {
 	}
 	b.WriteString("\n")
 	if r.Platform.MemTotalBytes > 0 {
-		fmt.Fprintf(&b, "RAM: %.1f GiB\n", float64(r.Platform.MemTotalBytes)/(1<<30))
+		fmt.Fprintf(&b, "RAM: %.1f GiB\n", utils.GiB(r.Platform.MemTotalBytes))
 	}
 
 	if r.GPUs.IGPU != nil {

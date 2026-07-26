@@ -25,6 +25,8 @@ Requires:       /usr/bin/notify-send
 Requires:       switcheroo-control
 # version comes from the Makefile (artifacts.LookingGlassVersion); must match the host
 Requires:       looking-glass-client = %{lgver}
+# built from the same source tree as the client, so the versions cannot diverge
+Requires:       kvmfr-dkms = %{lgver}
 # owns /usr/share/icons/hicolor, where the notification icon is looked up
 Requires:       hicolor-icon-theme
 

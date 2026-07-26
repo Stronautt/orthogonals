@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Banner sets operator instructions apart from step logs.
@@ -76,7 +77,7 @@ func writePersisted(root string, p persisted) error {
 	if err != nil {
 		return err
 	}
-	return steps.WriteAtomic(steps.StatePath(root), append(b, '\n'))
+	return utils.WriteAtomic(steps.StatePath(root), append(b, '\n'), 0o600)
 }
 
 // LoadState reads the persisted pipeline state.

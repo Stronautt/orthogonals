@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [bls, domain, steps, hw, media]
+        package: [bls, domain, steps, hw, media, utils]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -94,6 +94,8 @@ jobs:
           sudo chmod 666 /dev/kvm
           python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: actions/setup-go@v7
         with:
           go-version: stable

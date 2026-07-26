@@ -477,10 +477,24 @@ Prints the binary version.
 - Windows 11 requirements are met legitimately, with OVMF Secure Boot, an
   emulated TPM 2.0, and the host CPU model. There are no registry bypass
   hacks for Windows updates to break.
-- Looking Glass uses `/dev/shm` instead of the kvmfr kernel module on
-  purpose: kvmfr is an unsigned out-of-tree module, which contradicts the
-  undoable-host idea and breaks under Secure Boot. The `/dev/shm` path is
-  slightly slower and leaves nothing in your kernel.
+- Looking Glass uses the kvmfr kernel module when it is available, and
+  `/dev/shm` when it is not. kvmfr lets your iGPU pull frames straight out of
+  the buffer over DMA instead of the client copying them: measured on the
+  reference host at 2560x1440, that removed one full-frame write per frame
+  (~800 MiB/s of memory bandwidth), cut the client's CPU from 7.4% of a core to
+  3.0%, and halved the iGPU's clock. On an iGPU desktop that bandwidth is the
+  scarce resource, which is why upstream considers it a requirement rather than
+  a tuning knob.
+  - It is a DKMS module, so it is rebuilt on every kernel update and signed
+    with the key your host already uses for its other out-of-tree modules —
+    Secure Boot needs no new enrollment in the normal case, and `preflight`
+    tells you per-host rather than guessing.
+  - It is loaded only while a VM runs, sized to that VM, and never at boot.
+  - If it ever fails to build, the VM refuses to start and says so on screen;
+    `sudo orthogonals up` re-renders the domain back onto `/dev/shm`.
+- The frame buffer is readable by the desktop user and the `qemu` group,
+  whichever backend is in use (`0660 <user>:qemu`). That is unchanged between
+  the two paths.
 
 ## Troubleshooting
 
@@ -493,6 +507,23 @@ journalctl -b | grep gpu   # hook output from the current boot
 ```
 
 Every answer below comes from a real incident on the tested machine.
+
+### The VM refuses to start and says the kvmfr module is unavailable
+
+Why: a kernel update landed and DKMS could not rebuild the module, so the
+domain names a device that does not exist. The hook refuses the start rather
+than letting QEMU create a plain file where the device should be, which would
+leave the guest writing frames nothing reads.
+
+```sh
+dkms status                # what failed to build
+sudo orthogonals status    # which VM wants kvmfr, and for which kernel
+sudo orthogonals up        # re-render the domain onto /dev/shm and carry on
+```
+
+`up` puts you back on the slower path immediately; fixing the build and running
+`up` again moves you back. Removing the `kvmfr-dkms` package lands in the same
+place.
 
 ### The VM refuses to start and names a process holding the GPU
 
@@ -609,7 +640,7 @@ stripped.
 
 ## Author
 
-<img src="docs/favicon.svg" width="128" align="left" hspace="24" alt="orthogonals">
+<img src="docs/favicon.svg" width="128" align="left" hspace="24" vspace="6" alt="orthogonals">
 
 orthogonals is written and maintained by Pavlo Hrytsenko
 &lt;pavlo.o.hrytsenko@gmail.com&gt;, 2026.

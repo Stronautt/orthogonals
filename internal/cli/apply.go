@@ -61,11 +61,18 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	boot, err := bls.Wanted(cfg.Root, hostcfg.KernelArgs(p))
+	args := hostcfg.KernelArgs(p)
+	boot, err := bls.Wanted(cfg.Root, args)
 	if err != nil {
 		return err
 	}
-	list, err := hostcfg.Steps(p, boot)
+	// Computed from the file libvirt shipped, never from a copy of its default
+	// list: that list changes between libvirt releases.
+	qemuConf, err := os.ReadFile(filepath.Join(cfg.Root, steps.QemuConfPath))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", steps.QemuConfPath, err)
+	}
+	list, err := hostcfg.Steps(p, boot, string(qemuConf))
 	if err != nil {
 		return err
 	}
@@ -79,6 +86,12 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 	}
 	for _, a := range overrides {
 		list = append(list, steps.Step{ID: a.ID, Kind: steps.KindWriteFile, Path: a.Path, Content: a.Content, Mode: a.Mode})
+	}
+	// An akmod-nvidia host trusts the akmods key and not dkms's, so kvmfr is
+	// rejected at load even though the GPU driver works. Reuse the enrolled key
+	// instead of sending the user to the MOK screen.
+	if plan, key := preflight.PlanSigning(res.Platform.SecureBoot, facts.Signing); plan == preflight.SigningReuseAkmods {
+		list = append(list, hostcfg.DKMSSigningSteps(key.Cert, key.Key)...)
 	}
 	if o.binding == hostcfg.BindingDynamic {
 		exe, err := executablePath()
@@ -112,22 +125,23 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 	}
 	argsLive := false
 	if b, err := os.ReadFile(filepath.Join(cfg.Root, "/proc/cmdline")); err == nil {
-		argsLive = strings.Contains(string(b), hostcfg.KernelArgs(p))
+		argsLive = strings.Contains(string(b), args)
 	}
+	const recovery = "recovery: if the host fails to boot to the desktop, press 'e' at the GRUB menu and delete these kernel arguments for a one-boot disable: %s\n"
 	switch {
 	case cfg.Yes && (needReboot || !argsLive):
 		orchestrate.Banner(stdout,
 			"REBOOT REQUIRED — kernel arguments and initramfs changed",
 			"if the desktop does not come back after the reboot: press 'e' at the",
 			"GRUB menu and delete these kernel arguments for a one-boot disable:",
-			"  "+hostcfg.KernelArgs(p))
+			"  "+args)
 	case cfg.Yes:
-		fmt.Fprintf(stdout, "recovery: if the host fails to boot to the desktop, press 'e' at the GRUB menu and delete these kernel arguments for a one-boot disable: %s\n", hostcfg.KernelArgs(p))
+		fmt.Fprintf(stdout, recovery, args)
 	default:
 		if needReboot {
 			fmt.Fprintln(stdout, "apply will change kernel arguments and the initramfs — a reboot will be required")
 		}
-		fmt.Fprintf(stdout, "recovery: if the host fails to boot to the desktop, press 'e' at the GRUB menu and delete these kernel arguments for a one-boot disable: %s\n", hostcfg.KernelArgs(p))
+		fmt.Fprintf(stdout, recovery, args)
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to apply")
 	}
 	return nil

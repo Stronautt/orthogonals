@@ -43,6 +43,16 @@ func sharedHostFiles(cpuVendorID string) []file {
 		// kernel, so kernel args apply does not write here last only until the
 		// next kernel update.
 		{"etc/kernel/cmdline", "root=UUID=aaaa ro rhgb quiet\n"},
+		// Fedora 44's shipped qemu.conf: the cgroup_device_acl block commented
+		// out and missing /dev/kvm. apply rewrites this file, so the fixture has
+		// to carry the trap.
+		{"etc/libvirt/qemu.conf", "# Master configuration file for the QEMU driver.\n\n" +
+			"# Setting cgroup_device_acl replaces the built-in default list.\n" +
+			"#cgroup_device_acl = [\n" +
+			"#    \"/dev/null\", \"/dev/full\", \"/dev/zero\",\n" +
+			"#    \"/dev/random\", \"/dev/urandom\",\n" +
+			"#    \"/dev/ptmx\", \"/dev/userfaultfd\"\n" +
+			"#]\n"},
 	}
 	coreIDs := []int{0, 0, 4, 4, 8, 8, 12, 12, 16, 16, 20, 20, 24, 25, 26, 27, 28, 29, 30, 31}
 	for cpu, id := range coreIDs {

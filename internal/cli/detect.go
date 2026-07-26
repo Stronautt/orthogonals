@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 func newDetectCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
@@ -26,7 +27,7 @@ func runDetect(cfg *Config, stdout io.Writer) error {
 		return err
 	}
 	if cfg.JSON {
-		if err := writeJSON(stdout, res); err != nil {
+		if err := utils.WriteJSON(stdout, res); err != nil {
 			return fmt.Errorf("encode: %w", err)
 		}
 		return nil

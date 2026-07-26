@@ -77,10 +77,9 @@
       "status": "warn"
     },
     {
-      "message": "Secure Boot is enabled: the NVIDIA kernel module must be signed or it will not load after the setup reboot",
+      "message": "Secure Boot signing not checked (no mokutil, or --root)",
       "name": "secure-boot",
-      "remedy": "if the NVIDIA driver works today you are fine (akmods MOK is enrolled); otherwise enroll it before apply",
-      "status": "warn"
+      "status": "pass"
     },
     {
       "message": "nvidia-persistenced not enabled",

@@ -1,78 +1,13 @@
 package domain
 
 import (
-	"encoding/xml"
+	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stronautt/orthogonals/internal/steps"
 )
-
-// FuzzParseCPUSet asserts arbitrary cpuset strings never panic, and that any
-// list the parser accepts is usable for CPU pinning: no negative indices, and
-// ranges expanded in order.
-func FuzzParseCPUSet(f *testing.F) {
-	f.Add("0-3,7,9-11")
-	f.Add("")
-	f.Add("   ")
-	f.Add(",,,")
-	f.Add("0-")
-	f.Add("-1")
-	f.Add("3-1")
-	f.Add("999999999999999999999")
-	f.Add("0-99999999")
-	f.Add("1,,2")
-	// an unbounded range: expanding this exhausted memory before MaxCPUIndex
-	f.Add("9999-9999999999999999")
-	f.Add("0-8191,0-8191,0-8191,0-8191")
-
-	f.Fuzz(func(t *testing.T, s string) {
-		cpus, err := ParseCPUSet(s)
-		if err != nil {
-			if cpus != nil {
-				t.Fatalf("ParseCPUSet(%q) returned both cpus %v and error %v", s, cpus, err)
-			}
-			return
-		}
-		if len(cpus) > MaxCPUIndex+1 {
-			t.Fatalf("ParseCPUSet(%q) yielded %d cpus, past the %d bound", s, len(cpus), MaxCPUIndex+1)
-		}
-		for i, c := range cpus {
-			if c < 0 || c > MaxCPUIndex {
-				t.Fatalf("ParseCPUSet(%q) yielded out-of-range index %d", s, c)
-			}
-			if i > 0 && c <= cpus[i-1] && strings.Count(s, ",") == 0 {
-				t.Fatalf("ParseCPUSet(%q) yielded a non-ascending range: %v", s, cpus)
-			}
-		}
-	})
-}
-
-// FuzzXMLEscape asserts escaped text always parses back as XML character data
-// and survives the round trip unchanged: the domain template interpolates user
-// strings (VM name, password, locale) through it.
-func FuzzXMLEscape(f *testing.F) {
-	f.Add("plain")
-	f.Add("<script>alert(1)</script>")
-	f.Add("a & b")
-	f.Add("]]>")
-	f.Add("\x00\x01")
-	f.Add("emoji 🙂 and ünïcode")
-
-	f.Fuzz(func(t *testing.T, s string) {
-		escaped := XMLEscape(s)
-		doc := "<e>" + escaped + "</e>"
-		var out struct {
-			Value string `xml:",chardata"`
-		}
-		if err := xml.Unmarshal([]byte(doc), &out); err != nil {
-			t.Fatalf("XMLEscape(%q) produced unparsable XML %q: %v", s, doc, err)
-		}
-		if strings.ContainsAny(escaped, "<>") {
-			t.Fatalf("XMLEscape(%q) left a markup character: %q", s, escaped)
-		}
-	})
-}
 
 // FuzzReadMemoryMiB asserts arbitrary domain XML never panics and never yields
 // a memory size the caller could mis-scale a hugepage pool from.
@@ -104,6 +39,47 @@ func FuzzReadMemoryMiB(f *testing.F) {
 		}
 		if mib == 0 {
 			t.Fatalf("ReadMemoryMiB accepted zero memory from %q", content)
+		}
+	})
+}
+
+// FuzzKVMFRSizeMiB asserts arbitrary domain XML never yields a buffer size the
+// hook would hand modprobe. qemu maps the declared bytes regardless, so a
+// module sized below them leaves the guest writing past the end of the buffer.
+func FuzzKVMFRSizeMiB(f *testing.F) {
+	arg := func(size string) string {
+		return `<domain><qemu:commandline><qemu:arg value='{"qom-type":"memory-backend-file",` +
+			`"mem-path":"` + steps.KVMFRDevice + `","size":` + size + `}'/></qemu:commandline></domain>`
+	}
+	f.Add(arg("134217728"))
+	f.Add(arg("0"))
+	f.Add(arg("1"))
+	// MaxUint64 rounded up by mib-1 wraps back to near zero.
+	f.Add(arg("18446744073709551615"))
+	f.Add(arg("99999999999999999999999"))
+	f.Add(`<domain><shmem name='looking-glass'><size unit='M'>128</size></shmem></domain>`)
+	f.Add(`not xml at all`)
+	f.Add(``)
+
+	f.Fuzz(func(t *testing.T, content string) {
+		root := t.TempDir()
+		path := filepath.Join(root, xmlPath("win11"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		size, ok := KVMFRSizeMiB(root, "win11")
+		switch {
+		case !ok && size != 0:
+			t.Fatalf("no kvmfr backend reported alongside %d MiB", size)
+		case ok && size == 0:
+			t.Fatalf("kvmfr backend reported a zero-MiB buffer from %q", content)
+		case ok && size > math.MaxInt32:
+			// The number becomes a static_size_mb argv token and the module takes
+			// an int; EnsureKVMFR refuses it, but it must not get that far.
+			t.Fatalf("kvmfr buffer of %d MiB does not fit static_size_mb", size)
 		}
 	})
 }

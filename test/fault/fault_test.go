@@ -14,10 +14,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/steps/stepstest"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // stateDir is the one subtree a killed apply is allowed to leave behind: undo
@@ -230,6 +232,24 @@ func TestUndoFromConstructedResidue(t *testing.T) {
 				path := recordedPath(t, root)
 				if err := os.WriteFile(filepath.Join(root, path), []byte("trunc"), 0o644); err != nil {
 					t.Fatal(err)
+				}
+			},
+		},
+		{
+			// Crash inside WriteAtomic, between CreateTemp and Rename. SIGKILL
+			// runs no deferred cleanup, so the temp outlives the process; both
+			// directories orthogonals writes into this way have to be swept.
+			name: "stranded write temps",
+			corrupt: func(t *testing.T, root string) {
+				dirs := []string{
+					filepath.Dir(filepath.Join(root, recordedPath(t, root))),
+					filepath.Join(root, bls.EntriesPath),
+				}
+				for _, dir := range dirs {
+					tmp := filepath.Join(dir, utils.TempPrefix+"3141592")
+					if err := os.WriteFile(tmp, []byte("half-written"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
 			},
 		},

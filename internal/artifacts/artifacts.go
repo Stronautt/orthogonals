@@ -24,6 +24,13 @@ var lgHostSHA256Raw string
 // LookingGlassVersion is the committed Looking Glass release lockfile.
 var LookingGlassVersion = strings.TrimSpace(lgVersionRaw)
 
+// LookingGlassRPMVersion is that release as the RPMs carry it; the "0~" prefix
+// sorts a lettered upstream release below any numeric one. Anything addressing
+// a package built from this spec must use this form: the dkms tree kvmfr-dkms
+// registers is named for it, so `dkms build -m kvmfr/<bare version>` targets a
+// version dkms does not have. The Makefile's LG_RPMVER must agree.
+var LookingGlassRPMVersion = "0~" + LookingGlassVersion
+
 var (
 	// VirtioWin is the virtio-win ISO attached to the VM as its own CD.
 	VirtioWin = Download{

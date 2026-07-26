@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // RequiredTools are host binaries later stages shell out to.
@@ -85,7 +87,7 @@ func iommuAddressWidth(root string) int {
 	caps, _ := filepath.Glob(filepath.Join(root, "/sys/class/iommu/dmar*/intel-iommu/cap"))
 	width := 0
 	for _, f := range caps {
-		reg, err := strconv.ParseUint(readTrim(f), 16, 64)
+		reg, err := strconv.ParseUint(utils.ReadTrim(f), 16, 64)
 		if err != nil {
 			continue
 		}
@@ -127,14 +129,40 @@ func MeminfoKiB(root, key string) uint64 {
 }
 
 // memTotalBytes is the host's total RAM from /proc/meminfo.
-func memTotalBytes(root string) uint64 { return MeminfoKiB(root, "MemTotal:") * 1024 }
+func memTotalBytes(root string) uint64 { return MeminfoKiB(root, "MemTotal:") * utils.BytesPerKiB }
 
 // nvidiaVersionRe matches a driver version token like 570.153.02.
 var nvidiaVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)+$`)
 
 // KernelVersion is the running kernel release.
 func KernelVersion(root string) string {
-	return readTrim(filepath.Join(root, "/proc/sys/kernel/osrelease"))
+	return utils.ReadTrim(filepath.Join(root, "/proc/sys/kernel/osrelease"))
+}
+
+// KVMFRAvailable reports whether the kvmfr module is built for the running
+// kernel — whether it exists, never whether it is loaded: up crosses a reboot
+// between apply and vm define, so a loaded-state test would put every host on
+// /dev/shm for the second leg. modules.dep is what modprobe consults, so the
+// answer holds whichever directory dkms used and whatever compression suffix
+// the distro applies.
+func KVMFRAvailable(root string) bool {
+	release := KernelVersion(root)
+	if release == "" {
+		return false
+	}
+	// Read whole rather than scan: a dependency line runs past bufio.Scanner's
+	// default limit, and a truncated read silently downgrades the backend.
+	b, err := os.ReadFile(filepath.Join(root, "/lib/modules", release, "modules.dep"))
+	if err != nil {
+		return false
+	}
+	for line := range strings.Lines(string(b)) {
+		path, _, ok := strings.Cut(line, ":")
+		if ok && strings.HasPrefix(filepath.Base(path), "kvmfr.ko") {
+			return true
+		}
+	}
+	return false
 }
 
 // DetectNVIDIA reads the loaded NVIDIA module's flavor and version.
@@ -163,13 +191,13 @@ func DetectNVIDIA(root string) NVIDIADriver {
 		}
 		break
 	}
-	d.Modeset = readTrim(filepath.Join(root, "/sys/module/nvidia_drm/parameters/modeset"))
-	d.Fbdev = readTrim(filepath.Join(root, "/sys/module/nvidia_drm/parameters/fbdev"))
+	d.Modeset = utils.ReadTrim(filepath.Join(root, "/sys/module/nvidia_drm/parameters/modeset"))
+	d.Fbdev = utils.ReadTrim(filepath.Join(root, "/sys/module/nvidia_drm/parameters/fbdev"))
 	return d
 }
 
 func selinuxMode(root string) string {
-	switch readTrim(filepath.Join(root, "/sys/fs/selinux/enforce")) {
+	switch utils.ReadTrim(filepath.Join(root, "/sys/fs/selinux/enforce")) {
 	case "1":
 		return "enforcing"
 	case "0":
@@ -188,7 +216,7 @@ func secureBootEnabled(root string) bool {
 
 // ChassisType reads the SMBIOS chassis type from sysfs, 0 when absent.
 func ChassisType(root string) int {
-	n, _ := strconv.Atoi(readTrim(filepath.Join(root, "/sys/class/dmi/id/chassis_type")))
+	n, _ := strconv.Atoi(utils.ReadTrim(filepath.Join(root, "/sys/class/dmi/id/chassis_type")))
 	return n
 }
 

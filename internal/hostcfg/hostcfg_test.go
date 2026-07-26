@@ -134,7 +134,7 @@ func TestLaptopArtifactsGolden(t *testing.T) {
 
 func TestLaptopStepsAddPowerManagement(t *testing.T) {
 	ids := func(p Profile) map[string]bool {
-		list, err := Steps(p, bls.Args{})
+		list, err := Steps(p, bls.Args{}, fedoraQemuConf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -289,7 +289,7 @@ func TestLibvirtAuthenticatesOnTheSocketNotPolkit(t *testing.T) {
 			t.Errorf("socket drop-in missing %q — an unauthenticated 0666 socket is world-writable:\n%s", want, sock)
 		}
 	}
-	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{})
+	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{}, fedoraQemuConf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func stepByID(t *testing.T, list []steps.Step, id string) steps.Step {
 }
 
 func TestSteps(t *testing.T) {
-	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{})
+	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{}, fedoraQemuConf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestSteps(t *testing.T) {
 func TestStepsNetActiveAndStatic(t *testing.T) {
 	p := referenceProfile(t, "static")
 	p.DefaultNetActive = true
-	list, err := Steps(p, bls.Args{})
+	list, err := Steps(p, bls.Args{}, fedoraQemuConf)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -54,8 +54,22 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   code, else 2 for cobra usage errors). `vm` and `hook` are real subcommand
   trees; the RPM ships generated shell completions.
 - Packages: `internal/{cli,hw,preflight,steps,bls,hostcfg,hooks,domain,media,
-  orchestrate,artifacts,virt,sysd}`. Package boundaries are the
-  distro/vendor seams. `internal/virt` and `internal/sysd` are the narrow
+  orchestrate,artifacts,virt,sysd,utils}`. Package boundaries are the
+  distro/vendor seams, with one exception: `internal/utils` holds the
+  primitives every seam needs — filesystem (`WriteAtomic`, `WriteSync`,
+  `SyncDir`, `Exists`, `ReadTrim`, `ReadUint`, `LinkBase`, `CopyFile`,
+  `SweepTemps`, `IsTerminal`), hashing (`SHA256Hex`, `FileSHA256`), escaping and encoding
+  (`XMLEscape`, `PowerShellEscape`, `WriteJSON`), and the binary size units
+  (`BytesPerKiB/MiB/GiB` plus `GiB()` for display). It
+  imports nothing from this module and must stay that way — it is the only
+  package everything else may depend on. **`utils.Exists` returns
+  `(bool, error)`** because absent and unreadable are different answers: two
+  bugs came from a `bool` helper folding EACCES into "not there"
+  (`/etc/libvirt` is 0700). Dropping the error is fine, but it has to be
+  written at the call site. A helper earns a place here by having a second
+  consumer, not by looking generic: single-caller helpers stay with their
+  caller, where the local name is the documentation (`hostcfg.uncomment`,
+  `hw.splitTrim`, `steps.splitLines`). `internal/virt` and `internal/sysd` are the narrow
   client surfaces for libvirt and systemd — no virsh/systemctl exec, no
   output parsing. `internal/bls` edits `/boot/loader/entries` directly (the
   native replacement for grubby) **and `/etc/kernel/cmdline` with it** —
@@ -91,6 +105,35 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   socket. SELinux type is `qemu_var_run_t`, the policy's type for
   `/var/lib/libvirt/qemu`; `svirt_var_run_t` does not exist, and `test/desk`
   checks it against the running policy.
+- **The Looking Glass buffer has two backends and the render picks one.**
+  `hw.KVMFRAvailable` asks whether the module is *built for the running kernel*
+  (via `modules.dep`), never whether it is loaded — `up` crosses a reboot
+  between apply and `vm define`, so a loaded-state test would downgrade every
+  host to `/dev/shm` on the second leg. Built is not loadable, though, so the
+  render also asks `preflight.KVMFRWillLoad`: under Secure Boot with no key dkms
+  can sign with, the module exists and is rejected at load, and a kvmfr domain
+  would trap the user — the hook's refusal names `orthogonals up`, which renders
+  kvmfr again. Declining at `vm define` is what makes that remedy terminate.
+  libvirt's `<shmem>` can only name a file under `/dev/shm`, so kvmfr goes
+  through `<qemu:commandline>`, which in turn means qemu.conf must list the
+  device: **setting `cgroup_device_acl`
+  replaces libvirt's compiled-in default rather than extending it, and Fedora's
+  commented sample omits `/dev/kvm`** — uncommenting it verbatim, which is what
+  the Looking Glass docs instruct, leaves the guest with no KVM. `hostcfg`
+  writes an explicit closed list and `test/tmt/kvmfr.sh` starts a real domain to
+  prove it. The module is loaded **by the hook, on demand**, sized from the
+  domain being started (`domain.KVMFRSizeMiB`) and never unloaded; that is why
+  there is no modprobe.d, modules-load.d, udev rule or `semanage` entry for it —
+  the hook chowns and labels the node itself — **after `udevadm settle`**, since
+  udev stamps its own `device_t` while processing the add event and that write
+  can land after the hook's `svirt_image_t`, leaving qemu denied at map time with
+  nothing but an AVC to show for it; the label is read back for the same reason.
+  A failure there refuses the start,
+  notifies the desktop, and carries `hooks.KVMFRErrPrefix` so `vm launch` prints
+  it verbatim; matching on text is forced by the hook → libvirtd → RPC boundary,
+  where nothing else survives. `vm launch` passes `-f` for a `/dev/shm` domain,
+  because the client prefers `/dev/kvmfr0` whenever it exists and would
+  otherwise attach to a stale buffer and wait forever.
 - **Every host mutation routes through the apply engine** (`internal/steps`):
   journaled to `/var/lib/orthogonals/manifest.json` with original bytes
   backed up, so `undo` restores byte-identically. The journal is
@@ -99,7 +142,14 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   (`Engine.rollbackOnError`), so a process killed mid-step never strands an
   unjournaled change — and a failed step is retried rather than mistaken for
   one already applied. `test/fault` enforces this by SIGKILLing a real apply
-  at every one of its progress points. Dry-run is the default and
+  at every one of its progress points. **A kill also strands the temp file
+  `utils.WriteAtomic` renames from** — SIGKILL runs no deferred cleanup — so
+  every write sweeps `utils.TempPrefix` leftovers from its target directory
+  first, and the two undo paths that *remove* rather than write call
+  `utils.SweepTemps` themselves (before `removeDirs`, or the leftover keeps the
+  directory non-empty and that leaks too). bls sweeps on its no-op path for the
+  same reason: undoing a kernel-args edit that never landed changes nothing, so
+  it never reaches `WriteAtomic`. Dry-run is the default and
   never dials a daemon; `--yes` gates all mutation. Step kinds: write_file,
   run_cmd (argv), enable_unit, and **op** — a named entry in the compiled-in
   ops registry (`internal/steps/ops.go`) with JSON args journaled like argv,

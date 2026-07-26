@@ -15,6 +15,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // TestMain silences the hook progress mirror.
@@ -580,7 +581,7 @@ func requireRealHugepages(t *testing.T) uint64 {
 	if os.Geteuid() != 0 {
 		t.Skip("moving the real hugepage pool needs root — covered by the VM tier (make test-vm)")
 	}
-	prior, err := readUint(nrHugepages2MPath)
+	prior, err := utils.ReadUint(nrHugepages2MPath)
 	if err != nil {
 		t.Skipf("no 2M hugepage pool on this kernel: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
 	if err := reserveHugepages("/", "user", ramMiB); err != nil {
 		t.Fatalf("reserve %d MiB from the live pool: %v", ramMiB, err)
 	}
-	got, err := readUint(nrHugepages2MPath)
+	got, err := utils.ReadUint(nrHugepages2MPath)
 	if err != nil {
 		t.Fatalf("read the live pool: %v", err)
 	}
@@ -615,7 +616,7 @@ func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
 	}
 
 	freeHugepages("/")
-	if got, err = readUint(nrHugepages2MPath); err != nil || got != prior {
+	if got, err = utils.ReadUint(nrHugepages2MPath); err != nil || got != prior {
 		t.Errorf("nr_hugepages after free = %d (err %v), want restored %d", got, err, prior)
 	}
 	if _, err := os.Stat(hugepageSaveFile); !os.IsNotExist(err) {
@@ -647,7 +648,7 @@ func TestReserveHugepagesShortfallAgainstTheRealPool(t *testing.T) {
 	if len(*notes) != 1 {
 		t.Errorf("want one desktop notification, got %v", *notes)
 	}
-	got, readErr := readUint(nrHugepages2MPath)
+	got, readErr := utils.ReadUint(nrHugepages2MPath)
 	if readErr != nil || got != prior {
 		t.Errorf("nr_hugepages = %d (err %v), want rolled back to %d", got, readErr, prior)
 	}

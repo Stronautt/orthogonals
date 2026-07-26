@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // CPU vendor tokens from /proc/cpuinfo vendor_id.
@@ -25,21 +27,33 @@ type CPU struct {
 	ECores  []int  `json:"e_cores,omitempty"`
 }
 
+// PresentCPUsPath is the kernel's list of populated CPUs.
+const PresentCPUsPath = "/sys/devices/system/cpu/present"
+
+// PresentCPUs is the host's populated CPU indices.
+func PresentCPUs(root string) ([]int, error) {
+	b, err := os.ReadFile(filepath.Join(root, PresentCPUsPath))
+	if err != nil {
+		return nil, fmt.Errorf("read cpu present: %w", err)
+	}
+	cpus, err := ParseCPUList(string(b))
+	if err != nil {
+		return nil, fmt.Errorf("parse cpu present: %w", err)
+	}
+	return cpus, nil
+}
+
 // detectCPU reads root/sys/devices/system/cpu.
 func detectCPU(root string) (CPU, error) {
-	present, err := os.ReadFile(filepath.Join(root, "/sys/devices/system/cpu/present"))
+	cpus, err := PresentCPUs(root)
 	if err != nil {
-		return CPU{}, fmt.Errorf("read cpu present: %w", err)
-	}
-	cpus, err := ParseCPUList(strings.TrimSpace(string(present)))
-	if err != nil {
-		return CPU{}, fmt.Errorf("parse cpu present: %w", err)
+		return CPU{}, err
 	}
 	c := CPU{Threads: len(cpus), Vendor: cpuVendor(root)}
 
 	coreIDs := map[string]bool{}
 	for _, n := range cpus {
-		id := readTrim(filepath.Join(root, "/sys/devices/system/cpu",
+		id := utils.ReadTrim(filepath.Join(root, "/sys/devices/system/cpu",
 			fmt.Sprintf("cpu%d/topology/core_id", n)))
 		if id != "" {
 			coreIDs[id] = true
@@ -50,8 +64,8 @@ func detectCPU(root string) (CPU, error) {
 		c.Cores = c.Threads
 	}
 
-	pList := readTrim(filepath.Join(root, "/sys/devices/cpu_core/cpus"))
-	eList := readTrim(filepath.Join(root, "/sys/devices/cpu_atom/cpus"))
+	pList := utils.ReadTrim(filepath.Join(root, "/sys/devices/cpu_core/cpus"))
+	eList := utils.ReadTrim(filepath.Join(root, "/sys/devices/cpu_atom/cpus"))
 	if pList != "" && eList != "" {
 		p, errP := ParseCPUList(pList)
 		e, errE := ParseCPUList(eList)

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
+
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps/stepstest"
 )

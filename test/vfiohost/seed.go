@@ -14,6 +14,8 @@ import (
 
 	"github.com/kdomanski/iso9660"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // The base cloud image, pinned the way every other download in this project is.
@@ -49,7 +51,7 @@ func ensureBaseImage() (string, error) {
 		return staged, nil
 	}
 	logf("staging the base image into %s", WorkDir)
-	if err := copyFile(cached, staged, 0o644); err != nil {
+	if err := utils.CopyFile(cached, staged, 0o644); err != nil {
 		return "", err
 	}
 	return staged, nil
@@ -99,23 +101,6 @@ func sameSize(a, b string) bool {
 	}
 	sb, err := os.Stat(b)
 	return err == nil && sa.Size() == sb.Size()
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // ensureSSHKey returns the authorized-keys line for a throwaway keypair,

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"unicode/utf16"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // The WIM header layout: the XML data resource descriptor sits at a fixed offset, stored uncompressed UTF-16LE.
@@ -14,7 +16,7 @@ const (
 	wimHeaderSize   = 96
 	wimXMLSizeOff   = 72
 	wimXMLOffsetOff = 80
-	wimXMLSizeLimit = 64 << 20
+	wimXMLSizeLimit = 64 * utils.BytesPerMiB
 )
 
 // wimXML mirrors the <WIM> info document.

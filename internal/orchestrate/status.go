@@ -2,14 +2,15 @@ package orchestrate
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Check is one status or verify result.
@@ -79,13 +80,21 @@ func Status(root string) []Check {
 	}
 
 	if m.Has(hooks.DispatcherStepID) {
-		var missing []string
+		var missing, unreadable []string
 		for _, p := range hooks.InstalledPaths() {
-			if _, err := os.Stat(filepath.Join(root, p)); err != nil {
+			// An unreadable path is not a missing one: re-running apply is the
+			// wrong advice when the answer is that this process cannot look.
+			switch ok, statErr := utils.Exists(filepath.Join(root, p)); {
+			case statErr != nil:
+				unreadable = append(unreadable, p)
+			case !ok:
 				missing = append(missing, p)
 			}
 		}
 		var err error
+		if len(unreadable) > 0 {
+			err = fmt.Errorf("cannot read %s — run as root to check", strings.Join(unreadable, ", "))
+		}
 		if len(missing) > 0 {
 			err = fmt.Errorf("missing %s — re-run `orthogonals apply --yes`", strings.Join(missing, ", "))
 		}
@@ -98,6 +107,41 @@ func Status(root string) []Check {
 			err = fmt.Errorf("%s is not enabled — GNOME's dGPU launch menu will be missing", hostcfg.UnitSwitcheroo)
 		}
 		add("switcheroo-control", err)
+	}
+	out = append(out, lookingGlassBackend(root)...)
+	rpmnew, _ := utils.Exists(filepath.Join(root, steps.QemuConfPath+".rpmnew"))
+	if m.Has(hostcfg.DeviceACLStepID) && rpmnew {
+		add("libvirt device acl", fmt.Errorf(
+			"libvirt shipped a new %s (.rpmnew): its default device list may have grown past ours — re-run `orthogonals apply --yes`",
+			steps.QemuConfPath))
+	}
+	return out
+}
+
+// lookingGlassBackend reports which frame-buffer backend each defined VM uses,
+// and fails when a domain wants kvmfr on a host that no longer has the module
+// built — the state in which the qemu hook refuses the start.
+func lookingGlassBackend(root string) []Check {
+	names, err := filepath.Glob(filepath.Join(steps.VMsDir(root), "*.xml"))
+	if err != nil {
+		return nil
+	}
+	var out []Check
+	for _, path := range names {
+		vm := strings.TrimSuffix(filepath.Base(path), ".xml")
+		size, kvmfr := domain.KVMFRSizeMiB(root, vm)
+		switch {
+		case !kvmfr:
+			out = append(out, Check{Name: "looking glass " + vm, OK: true,
+				Detail: "frame buffer on " + steps.LookingGlassSHM})
+		case hw.KVMFRAvailable(root):
+			out = append(out, Check{Name: "looking glass " + vm, OK: true,
+				Detail: fmt.Sprintf("frame buffer on %s, %d MiB (DMABUF)", steps.KVMFRDevice, size)})
+		default:
+			out = append(out, Check{Name: "looking glass " + vm, Detail: fmt.Sprintf(
+				"%s wants %s but the kvmfr module is not built for kernel %s — the VM will refuse to start; run `sudo orthogonals up` to fall back to %s",
+				vm, steps.KVMFRDevice, hw.KernelVersion(root), steps.LookingGlassSHM)})
+		}
 	}
 	return out
 }

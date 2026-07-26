@@ -12,6 +12,7 @@ package desk
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/orchestrate"
@@ -119,6 +121,27 @@ func TestSpiceSocketTypeIsUsableOnThisHost(t *testing.T) {
 	if !strings.Contains(string(b), "qemu_var_run_t") {
 		t.Errorf("%s never mentions qemu_var_run_t — apply's fcontext rule for %s would be refused",
 			fileContexts, steps.RunDirPath)
+	}
+}
+
+// TestKVMFRLabelIsUsableOnThisHost: a type the running policy does not define
+// would fail every VM start with a denial that names nothing.
+//
+// file_contexts is the wrong oracle — it maps paths to types, and no path
+// defaults to svirt_image_t, which libvirt applies dynamically to the devices it
+// hands a domain. /sys/fs/selinux/context is the kernel's own validator.
+func TestKVMFRLabelIsUsableOnThisHost(t *testing.T) {
+	const validator = "/sys/fs/selinux/context"
+	if _, err := os.Stat(validator); err != nil {
+		t.Skipf("no SELinux on this host: %v", err)
+	}
+	if err := os.WriteFile(validator, []byte(hooks.KVMFRLabel), 0o644); err != nil {
+		t.Errorf("the running policy rejects %q, so the hook could not label %s: %v",
+			hooks.KVMFRLabel, steps.KVMFRDevice, err)
+	}
+	// Prove the validator would have caught a bad type, so a pass means something.
+	if err := os.WriteFile(validator, []byte("system_u:object_r:orthogonals_not_a_type_t:s0"), 0o644); err == nil {
+		t.Error("the context validator accepted a type that cannot exist")
 	}
 }
 
@@ -254,7 +277,13 @@ func checkHostPath(t *testing.T, rel string) {
 	if dir := filepath.Dir(rel); dir == "boot/loader/entries" {
 		rel = dir
 	}
-	if _, err := os.Lstat(filepath.Join(realRoot, rel)); err == nil {
+	switch _, err := os.Lstat(filepath.Join(realRoot, rel)); {
+	case err == nil:
+		return
+	case errors.Is(err, fs.ErrPermission):
+		// /etc/libvirt is 0700, so an unprivileged run cannot tell absent from
+		// unreadable — the same limit preflight records as Facts.BLSUnreadable.
+		t.Logf("skipped /%s: unreadable without root", rel)
 		return
 	}
 	if why, ok := hostConditional[rel]; ok {

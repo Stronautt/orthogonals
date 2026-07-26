@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -120,37 +122,6 @@ func TestReadMemoryMiB(t *testing.T) {
 	}
 }
 
-func TestParseCPUSet(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []int
-		err  bool
-	}{
-		{"", nil, false},
-		{"5", []int{5}, false},
-		{"0-1", []int{0, 1}, false},
-		{"12,13,14,15", []int{12, 13, 14, 15}, false},
-		{"2-11,14", []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14}, false},
-		{"3-1", nil, true},
-		{"x", nil, true},
-		{"1-y", nil, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			got, err := ParseCPUSet(tc.in)
-			if tc.err {
-				if err == nil {
-					t.Errorf("ParseCPUSet(%q) = %v, want error", tc.in, got)
-				}
-				return
-			}
-			if err != nil || !slices.Equal(got, tc.want) {
-				t.Errorf("ParseCPUSet(%q) = %v, %v, want %v", tc.in, got, err, tc.want)
-			}
-		})
-	}
-}
-
 func TestReadPinnedCPUs(t *testing.T) {
 	root := t.TempDir()
 	p := mustProfile(t, reference(t), Options{})
@@ -195,6 +166,12 @@ func TestRenderGolden(t *testing.T) {
 			ROMContent:   []byte{0x55, 0xaa, 0x01, 0x02},
 		}, false},
 		{"no-ecores-46bit.xml", noECores(), Options{}, false},
+		{"reference-kvmfr.xml", reference(t), Options{
+			Win11ISO:     "/home/user/Win11.iso",
+			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
+			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
+			KVMFR:        true,
+		}, false},
 		{"provisioned.xml", reference(t), Options{
 			Win11ISO:     "/home/user/Win11.iso",
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
@@ -424,17 +401,24 @@ func TestAssignableVCPUs(t *testing.T) {
 		return s
 	}
 	cases := []struct {
-		name string
-		cpu  hw.CPU
-		want int
+		name    string
+		cpu     hw.CPU
+		want    int
+		wantErr bool
 	}{
-		{"hybrid 6P+8E", hw.CPU{Threads: 20, Cores: 14, PCores: pcores(12), ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}}, 10},
-		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 7},
-		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 2},
-		{"unusable topology", hw.CPU{}, 0},
+		{"hybrid 6P+8E", hw.CPU{Threads: 20, Cores: 14, PCores: pcores(12), ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}}, 10, false},
+		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 7, false},
+		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 2, false},
+		// An unreadable topology must not read as a small CPU: preflight quotes
+		// this error instead of telling the user to buy more cores.
+		{"unusable topology", hw.CPU{}, 0, true},
 	}
 	for _, tc := range cases {
-		if got := AssignableVCPUs(tc.cpu); got != tc.want {
+		got, err := AssignableVCPUs(tc.cpu)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: AssignableVCPUs error = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+		if got != tc.want {
 			t.Errorf("%s: AssignableVCPUs = %d, want %d", tc.name, got, tc.want)
 		}
 	}
@@ -470,6 +454,77 @@ func TestIVSHMEMSizing(t *testing.T) {
 	for _, tc := range cases {
 		if got := IVSHMEMMiB(tc.w, tc.h); got != tc.want {
 			t.Errorf("IVSHMEMMiB(%d, %d) = %d, want %d", tc.w, tc.h, got, tc.want)
+		}
+	}
+}
+
+// TestKVMFRFits pins the cap that keeps a huge buffer away from modprobe: kvmfr
+// vmallocs the whole region at load, so an oversized profile must render shm.
+func TestKVMFRFits(t *testing.T) {
+	const host = 32 * utils.BytesPerGiB
+	cases := []struct {
+		name    string
+		sizeMiB uint64
+		host    uint64
+		want    bool
+	}{
+		{"4K on a 32 GiB host", 128, host, true},
+		{"exactly one sixteenth", 2048, host, true},
+		{"one MiB over", 2049, host, false},
+		{"16384x16384 sizes at 4 GiB", IVSHMEMMiB(MaxDimension, MaxDimension), host, false},
+		{"unknown host size is taken at its word", 4096, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := KVMFRFits(tc.sizeMiB, tc.host); got != tc.want {
+				t.Errorf("KVMFRFits(%d, %d) = %v, want %v", tc.sizeMiB, tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestKVMFRDeclinedRendersSHM: the cap has to reach the rendered XML, not just
+// the profile field.
+func TestKVMFRDeclinedRendersSHM(t *testing.T) {
+	p := mustProfile(t, reference(t), Options{
+		Width: MaxDimension, Height: MaxDimension, KVMFR: true,
+	})
+	if p.KVMFR {
+		t.Fatalf("profile kept kvmfr for a %d MiB buffer", p.IVSHMEMMiB)
+	}
+	got := string(mustRender(t, p))
+	if !strings.Contains(got, "<shmem name='looking-glass'>") {
+		t.Error("declined kvmfr did not fall back to the shmem element")
+	}
+	if strings.Contains(got, steps.KVMFRDevice) {
+		t.Errorf("declined kvmfr still names %s", steps.KVMFRDevice)
+	}
+}
+
+// TestKVMFRRenderSize pairs the two numbers qemu and the hook must agree on:
+// the backend size in the XML is the module's static_size_mb in bytes.
+func TestKVMFRRenderSize(t *testing.T) {
+	p := mustProfile(t, reference(t), Options{KVMFR: true})
+	if !p.KVMFR {
+		t.Fatal("reference profile declined kvmfr")
+	}
+	if p.IVSHMEMBytes() != p.IVSHMEMMiB*utils.BytesPerMiB {
+		t.Errorf("IVSHMEMBytes = %d, want %d", p.IVSHMEMBytes(), p.IVSHMEMMiB*utils.BytesPerMiB)
+	}
+	got := string(mustRender(t, p))
+	for _, want := range []string{
+		`"mem-path":"/dev/kvmfr0"`,
+		fmt.Sprintf(`"size":%d`, p.IVSHMEMBytes()),
+		// libvirt names a controller's qemu id pci.<index>, so declaring the
+		// bridge ourselves is what makes this bus reference ours to predict —
+		// and its root port must carry the lower index to be emitted first.
+		`"bus":"pci.2"`,
+		`<controller type='pci' index='1' model='pcie-root-port'/>`,
+		`<controller type='pci' index='2' model='pcie-to-pci-bridge'>`,
+		`<address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered XML lacks %s:\n%s", want, got)
 		}
 	}
 }
@@ -654,4 +709,45 @@ func TestOptionsOverrides(t *testing.T) {
 	if list[0].Path != "/etc/orthogonals/vms/gamer.xml" {
 		t.Errorf("xml path = %q", list[0].Path)
 	}
+}
+
+// TestKVMFRSizeMiB covers what the hook keys on: load the module only for a
+// domain that names the device, and never below the declared backend size.
+func TestKVMFRSizeMiB(t *testing.T) {
+	write := func(t *testing.T, p Profile) string {
+		t.Helper()
+		root := t.TempDir()
+		path := filepath.Join(root, xmlPath(p.Name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	t.Run("kvmfr domain reports its buffer", func(t *testing.T) {
+		p := mustProfile(t, reference(t), Options{KVMFR: true})
+		got, ok := KVMFRSizeMiB(write(t, p), p.Name)
+		if !ok {
+			t.Fatal("kvmfr domain not recognised")
+		}
+		if got != p.IVSHMEMMiB {
+			t.Errorf("size = %d MiB, want %d", got, p.IVSHMEMMiB)
+		}
+	})
+
+	t.Run("shm domain must not load the module", func(t *testing.T) {
+		p := mustProfile(t, reference(t), Options{})
+		if _, ok := KVMFRSizeMiB(write(t, p), p.Name); ok {
+			t.Error("a /dev/shm domain reported a kvmfr buffer")
+		}
+	})
+
+	t.Run("undefined VM", func(t *testing.T) {
+		if _, ok := KVMFRSizeMiB(t.TempDir(), "missing"); ok {
+			t.Error("undefined VM reported a kvmfr buffer")
+		}
+	})
 }

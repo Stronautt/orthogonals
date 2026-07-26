@@ -121,6 +121,7 @@ func TestParseCPUList(t *testing.T) {
 		{in: "0", want: []int{0}},
 		{in: "0-3", want: []int{0, 1, 2, 3}},
 		{in: "0-2,8-9", want: []int{0, 1, 2, 8, 9}},
+		{in: "12,13,14,15", want: []int{12, 13, 14, 15}},
 		{in: "12-19", want: seq(12, 19)},
 		{in: "", want: nil},
 		{in: "abc", wantErr: true},

@@ -3,11 +3,13 @@ package media
 import (
 	"strings"
 	"testing"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // FuzzRender guards the two escapers between user-supplied guest settings and
-// root-authored artifacts: domain.XMLEscape for the answer file, psEscape for
-// provision.ps1. --guest-user, --guest-password and --locale reach both
+// root-authored artifacts: utils.XMLEscape for the answer file,
+// utils.PowerShellEscape for provision.ps1. --guest-user, --guest-password and --locale reach both
 // unmodified, and the script runs elevated in the guest.
 func FuzzRender(f *testing.F) {
 	f.Add("user", "password", "en-US", 1920, 1080)
@@ -46,7 +48,7 @@ func FuzzRender(f *testing.F) {
 		// Every interpolation sits in a single-quoted PowerShell literal, so
 		// the escaped form being present means it never terminated the string.
 		ps := string(byName["provision.ps1"])
-		if !strings.Contains(ps, "'"+psEscape(p.GuestUser)+"'") {
+		if !strings.Contains(ps, "'"+utils.PowerShellEscape(p.GuestUser)+"'") {
 			t.Errorf("provision.ps1 does not carry the guest user %q as an escaped literal:\n%s",
 				p.GuestUser, ps)
 		}

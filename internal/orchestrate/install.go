@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stronautt/orthogonals/internal/media"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
@@ -21,7 +22,7 @@ var (
 )
 
 // setupWritingBytes marks that Windows setup has booted and is writing.
-const setupWritingBytes = 64 << 20
+const setupWritingBytes = 64 * utils.BytesPerMiB
 
 // Install boots the VM and polls until provisioning reports done.
 func Install(c virt.Client, vm string, out io.Writer) error {
@@ -139,5 +140,5 @@ func diskWritten(c virt.Client, vm string) string {
 	if n == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	return fmt.Sprintf("%.1f GiB", utils.GiB(n))
 }

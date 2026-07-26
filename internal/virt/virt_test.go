@@ -5,31 +5,6 @@ import (
 	"testing"
 )
 
-// TestXMLEscape: CreateVolumeQCow2 interpolates the --disk path into pool and
-// volume XML by hand, so this is the only thing between a path and a malformed
-// (or attacker-shaped) document reaching libvirt.
-func TestXMLEscape(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"ordinary path", "/var/lib/libvirt/images/win11.qcow2", "/var/lib/libvirt/images/win11.qcow2"},
-		{"ampersand", "a&b", "a&amp;b"},
-		{"angle brackets", "<pool>", "&lt;pool&gt;"},
-		{"apostrophe", "it's", "it&apos;s"},
-		{"double quote", `say "hi"`, "say &quot;hi&quot;"},
-		{"empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := xmlEscape(tt.in); got != tt.want {
-				t.Errorf("xmlEscape(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseSpiceDisplay(t *testing.T) {
 	cases := []struct {
 		name          string

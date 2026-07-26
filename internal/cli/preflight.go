@@ -10,6 +10,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/preflight"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 func newPreflightCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
@@ -37,21 +38,25 @@ func runPreflight(cfg *Config, stdout, stderr io.Writer) error {
 			Status preflight.Status  `json:"status"`
 			Checks []preflight.Check `json:"checks"`
 		}{overall, checks}
-		if err := writeJSON(stdout, report); err != nil {
+		if err := utils.WriteJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "orthogonals preflight: encode: %v\n", err)
 			return exitCode(1)
 		}
-		return codeErr(overall.ExitCode())
+	} else {
+		for _, c := range checks {
+			fmt.Fprintf(stdout, "%-4s %s: %s\n", strings.ToUpper(string(c.Status)), c.Name, c.Message)
+			if c.Remedy != "" && c.Status != preflight.Pass {
+				fmt.Fprintf(stdout, "     fix: %s\n", c.Remedy)
+			}
+		}
+		fmt.Fprintf(stdout, "\npreflight: %s\n", strings.ToUpper(string(overall)))
 	}
 
-	for _, c := range checks {
-		fmt.Fprintf(stdout, "%-4s %s: %s\n", strings.ToUpper(string(c.Status)), c.Name, c.Message)
-		if c.Remedy != "" && c.Status != preflight.Pass {
-			fmt.Fprintf(stdout, "     fix: %s\n", c.Remedy)
-		}
+	// The verdict is the exit status, in either output form (fail 1, warn 2).
+	if n := overall.ExitCode(); n != 0 {
+		return exitCode(n)
 	}
-	fmt.Fprintf(stdout, "\npreflight: %s\n", strings.ToUpper(string(overall)))
-	return codeErr(overall.ExitCode())
+	return nil
 }
 
 func newBundleCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {

@@ -10,13 +10,14 @@ import (
 	"text/template"
 
 	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 //go:embed templates
 var templateFS embed.FS
 
 const (
-	// Edition is the only Windows edition v1 installs.
+	// Edition is the only Windows edition installed.
 	Edition = "Windows 11 Pro"
 
 	// DefaultGuestUser is the default guest account name.
@@ -116,7 +117,7 @@ type Artifact struct {
 
 // templates holds the embedded provision templates, parsed once.
 var templates = template.Must(template.New("media").
-	Funcs(template.FuncMap{"xml": domain.XMLEscape, "ps": psEscape}).
+	Funcs(template.FuncMap{"xml": utils.XMLEscape, "ps": utils.PowerShellEscape}).
 	ParseFS(templateFS, "templates/*"))
 
 // Render produces the generated provision-ISO files.
@@ -137,6 +138,3 @@ func Render(p Profile) ([]Artifact, error) {
 	}
 	return out, nil
 }
-
-// psEscape makes s safe inside a PowerShell single-quoted string.
-func psEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }

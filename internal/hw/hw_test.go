@@ -1,6 +1,8 @@
 package hw
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -133,5 +135,55 @@ func TestSummaryReference(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q:\n%s", want, s)
 		}
+	}
+}
+
+// TestKVMFRAvailable covers the module-present test the domain render keys on:
+// modules.dep rather than /sys/module, since up crosses a reboot and nothing is
+// loaded on the second leg.
+func TestKVMFRAvailable(t *testing.T) {
+	const release = "7.1.4-204.fc44.x86_64"
+	cases := []struct {
+		name string
+		dep  string
+		want bool
+	}{
+		{"dkms places it in extra", "extra/kvmfr.ko.xz:\nkernel/drivers/misc/foo.ko.xz:\n", true},
+		{"uncompressed", "extra/kvmfr.ko:\n", true},
+		{"upstream location", "kernel/drivers/misc/kvmfr.ko.xz:\n", true},
+		{"absent", "extra/nvidia.ko.xz: kernel/drivers/acpi/video.ko.xz\n", false},
+		{"a lookalike is not a match", "extra/kvmfr-helper.ko.xz:\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mustWrite(t, filepath.Join(root, "proc/sys/kernel/osrelease"), release+"\n")
+			mustWrite(t, filepath.Join(root, "lib/modules", release, "modules.dep"), tc.dep)
+			if got := KVMFRAvailable(root); got != tc.want {
+				t.Errorf("KVMFRAvailable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("no modules.dep", func(t *testing.T) {
+		root := t.TempDir()
+		mustWrite(t, filepath.Join(root, "proc/sys/kernel/osrelease"), release+"\n")
+		if KVMFRAvailable(root) {
+			t.Error("reported available without a modules.dep")
+		}
+	})
+	t.Run("unknown kernel release", func(t *testing.T) {
+		if KVMFRAvailable(t.TempDir()) {
+			t.Error("reported available without an osrelease")
+		}
+	})
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

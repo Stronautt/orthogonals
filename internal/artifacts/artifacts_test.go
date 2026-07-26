@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -31,5 +32,23 @@ func TestDownloadPinsWellFormed(t *testing.T) {
 	if LookingGlassVersion == "" || !strings.Contains(LookingGlassHost.URL, LookingGlassVersion) {
 		t.Errorf("LookingGlassHost.URL %q must embed LookingGlassVersion %q",
 			LookingGlassHost.URL, LookingGlassVersion)
+	}
+}
+
+// TestRPMVersionMatchesTheMakefile holds the one string Go and rpm must agree
+// on: the RPMs are built with --define "lgver $(LG_RPMVER)", so that expression
+// names the dkms tree a Go caller addresses.
+func TestRPMVersionMatchesTheMakefile(t *testing.T) {
+	b, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^LG_RPMVER\s*:?=\s*(\S+)$`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("no LG_RPMVER assignment in the Makefile — this test no longer guards anything")
+	}
+	want := strings.Replace(string(m[1]), "$(LG_VERSION)", LookingGlassVersion, 1)
+	if LookingGlassRPMVersion != want {
+		t.Errorf("LookingGlassRPMVersion = %q, but the Makefile builds %q", LookingGlassRPMVersion, want)
 	}
 }

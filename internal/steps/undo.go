@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
@@ -117,6 +118,17 @@ func VMsDir(root string) string { return filepath.Join(root, VMsDirPath) }
 
 // LibvirtRunDir holds libvirt's live-domain state XML.
 const LibvirtRunDir = "/run/libvirt/qemu"
+
+// LookingGlassSHM is the fallback frame buffer, created by tmpfiles.d for the
+// desktop user.
+const LookingGlassSHM = "/dev/shm/looking-glass"
+
+// KVMFRDevice is the frame buffer when the kvmfr module backs it. Shared by the
+// rendered domain, the qemu hook, and qemu.conf's cgroup_device_acl.
+const KVMFRDevice = "/dev/kvmfr0"
+
+// QemuConfPath is libvirt's qemu driver configuration.
+const QemuConfPath = "/etc/libvirt/qemu.conf"
 
 // RunDirPath is recreated each boot by tmpfiles.d. QEMU binds the SPICE socket
 // under it as user qemu, so the per-VM directory mode is the access control;
@@ -362,11 +374,12 @@ func (e *Engine) undoWriteFile(rec Record, force bool) (bool, error) {
 	if missing && !rec.Existed {
 		fmt.Fprintf(e.Out, "%s: already removed\n", rec.Path)
 		if e.Yes {
+			utils.SweepTemps(filepath.Dir(full))
 			removeDirs(e.Root, rec.MadeDirs)
 		}
 		return true, nil
 	}
-	if (missing || sha256hex(cur) != rec.NewSHA256) && !force {
+	if (missing || utils.SHA256Hex(cur) != rec.NewSHA256) && !force {
 		fmt.Fprintf(e.Err, "%s: changed since apply, skipping (undo --force restores anyway)\n", rec.Path)
 		return false, nil
 	}
@@ -378,6 +391,10 @@ func (e *Engine) undoWriteFile(rec Record, force bool) (bool, error) {
 		if err := os.Remove(full); err != nil {
 			return false, err
 		}
+		// Before removeDirs: a temp left here by the killed apply that journaled
+		// this record would otherwise keep its parent directory non-empty, and
+		// the directory would leak along with it.
+		utils.SweepTemps(filepath.Dir(full))
 		removeDirs(e.Root, rec.MadeDirs)
 		fmt.Fprintf(e.Out, "removed %s\n", rec.Path)
 		return true, nil
@@ -477,6 +494,10 @@ func (e *Engine) undoEnableUnit(rec Record, oc *OpClients) (bool, error) {
 	return true, nil
 }
 
+// removeDirs drops the directories a write_file step created, deepest first —
+// the order missingDirs records them in, and the only order os.Remove can
+// unwind. Errors are ignored on purpose: os.Remove refuses a non-empty
+// directory, which is exactly the case where something else still needs it.
 func removeDirs(root string, dirs []string) {
 	for _, d := range dirs {
 		_ = os.Remove(filepath.Join(root, d))

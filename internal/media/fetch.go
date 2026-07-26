@@ -14,6 +14,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // stallTimeout bounds how long a download may deliver no bytes.
@@ -21,7 +22,7 @@ var stallTimeout = 60 * time.Second
 
 // maxDownloadBytes stops a bad mirror filling the disk before the checksum can
 // reject it. Every pin is under 1 GiB. A var so tests can shrink it.
-var maxDownloadBytes int64 = 4 << 30
+var maxDownloadBytes int64 = 4 * utils.BytesPerGiB
 
 // stallResetReader pushes the watchdog forward on every successful read.
 type stallResetReader struct {
@@ -47,7 +48,7 @@ func CacheDir(root string) string { return filepath.Join(root, CachePath) }
 func Fetch(root string, d artifacts.Download, out io.Writer) (string, error) {
 	dest := filepath.Join(CacheDir(root), d.File)
 	if _, err := os.Stat(dest); err == nil {
-		sum, err := fileSHA256(dest)
+		sum, err := utils.FileSHA256(dest)
 		if err != nil {
 			return "", err
 		}
@@ -143,19 +144,6 @@ func hashCopy(dest string, r io.Reader) (string, error) {
 		err = cerr
 	}
 	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

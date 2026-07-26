@@ -7,8 +7,10 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,14 +18,13 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 //go:embed templates
 var templateFS embed.FS
 
 const (
-	mib = 1 << 20
-	gib = 1 << 30
 
 	// MinRAMGiB is the minimum guest RAM in GiB.
 	MinRAMGiB = 8
@@ -31,8 +32,11 @@ const (
 	// RAM (5/8 — e.g. 20 GiB on a 32 GiB host), scaling with the host and leaving
 	// the rest free so the hook's 2M hugepage pool reserves cleanly. Override with
 	// --ram.
-	DefaultRAMNum      = 5
-	DefaultRAMDen      = 8
+	DefaultRAMNum = 5
+	DefaultRAMDen = 8
+	// MinHostRAMGiB is the smallest host DefaultGuestRAMGiB clears MinRAMGiB on.
+	// Derived, so it follows the fraction rather than drifting from it.
+	MinHostRAMGiB      = (MinRAMGiB*DefaultRAMDen + DefaultRAMNum - 1) / DefaultRAMNum
 	MinVCPUs           = 4
 	DefaultDiskSizeGiB = 100
 	// DefaultWidth and DefaultHeight are the default maximum guest resolution.
@@ -42,7 +46,13 @@ const (
 	MaxDimension = 16384
 
 	// ivshmemOverhead is the Looking Glass header size added to the two frames.
-	ivshmemOverhead = 10 * mib
+	ivshmemOverhead = 10 * utils.BytesPerMiB
+
+	// KVMFRRAMDivisor caps the kvmfr buffer at 1/16 of host RAM. kvmfr vmallocs
+	// the whole region at load, where the /dev/shm file populates only the pages
+	// Looking Glass touches, so a 16384x16384 profile (4 GiB) must not reach
+	// modprobe.
+	KVMFRRAMDivisor = 16
 
 	// WideAddressWidthBits is the IOMMU address-width threshold for the maxphysaddr fix.
 	WideAddressWidthBits = 40
@@ -51,7 +61,7 @@ const (
 // DefaultGuestRAMGiB is the default guest RAM in GiB for a host of hostBytes:
 // DefaultRAMNum/DefaultRAMDen (5/8) of host RAM, scaling with the host.
 func DefaultGuestRAMGiB(hostBytes uint64) int {
-	memGiB := int((hostBytes + gib - 1) / gib)
+	memGiB := int((hostBytes + utils.BytesPerGiB - 1) / utils.BytesPerGiB)
 	return memGiB * DefaultRAMNum / DefaultRAMDen
 }
 
@@ -72,6 +82,10 @@ type Options struct {
 	// installed there. Both empty renders <rom bar='off'/>.
 	ROMFile    string
 	ROMContent []byte
+	// KVMFR asks for the kvmfr backend, the caller having established the module
+	// is built for the running kernel. NewProfile still refuses a buffer too
+	// large to vmalloc, so compare with Profile.KVMFR to detect the downgrade.
+	KVMFR bool
 }
 
 // BDF is a PCI address split into the hostdev XML address fields.
@@ -92,22 +106,26 @@ type Profile struct {
 	IOThreadPin     string
 	MaxPhysAddrBits int
 	IVSHMEMMiB      uint64
-	Width, Height   int
-	DiskPath        string
-	DiskSizeGiB     int
-	Win11ISO        string
-	VirtioISO       string
-	ProvisionISO    string
-	GuestUser       string
-	GuestPassword   string
-	Locale          string
-	SpiceSocket     string
-	GPU             BDF
-	Audio           *BDF
-	VideoNone       bool
-	UUID            string
-	ROMFile         string
-	ROMContent      []byte
+	// KVMFR renders the buffer as a memory-backend-file on steps.KVMFRDevice
+	// instead of a <shmem> element: libvirt's <shmem> can only name a file under
+	// /dev/shm, so kvmfr has to go through <qemu:commandline>.
+	KVMFR         bool
+	Width, Height int
+	DiskPath      string
+	DiskSizeGiB   int
+	Win11ISO      string
+	VirtioISO     string
+	ProvisionISO  string
+	GuestUser     string
+	GuestPassword string
+	Locale        string
+	SpiceSocket   string
+	GPU           BDF
+	Audio         *BDF
+	VideoNone     bool
+	UUID          string
+	ROMFile       string
+	ROMContent    []byte
 }
 
 // NewProfile derives the domain profile from a detect result.
@@ -157,11 +175,11 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	}
 	if ramGiB < MinRAMGiB {
 		return Profile{}, fmt.Errorf("guest RAM %d GiB is below the 8 GiB minimum (host has %.1f GiB)",
-			ramGiB, float64(r.Platform.MemTotalBytes)/gib)
+			ramGiB, utils.GiB(r.Platform.MemTotalBytes))
 	}
-	if r.Platform.MemTotalBytes > 0 && uint64(ramGiB)*gib >= r.Platform.MemTotalBytes {
+	if r.Platform.MemTotalBytes > 0 && uint64(ramGiB)*utils.BytesPerGiB >= r.Platform.MemTotalBytes {
 		return Profile{}, fmt.Errorf("guest RAM %d GiB does not fit in host RAM %.1f GiB",
-			ramGiB, float64(r.Platform.MemTotalBytes)/gib)
+			ramGiB, utils.GiB(r.Platform.MemTotalBytes))
 	}
 	p.RAMMiB = uint64(ramGiB) * 1024
 
@@ -190,6 +208,7 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	}
 	p.Width, p.Height = w, h
 	p.IVSHMEMMiB = IVSHMEMMiB(w, h)
+	p.KVMFR = o.KVMFR && KVMFRFits(p.IVSHMEMMiB, r.Platform.MemTotalBytes)
 
 	if aw := r.Platform.IOMMUAddressWidth; aw < WideAddressWidthBits {
 		p.MaxPhysAddrBits = aw
@@ -209,12 +228,14 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 }
 
 // AssignableVCPUs is how many P-core threads reserve assigns to the guest.
-func AssignableVCPUs(c hw.CPU) int {
+// The error is reserve's own: an unreadable topology and a genuinely small CPU
+// both yield no threads, and only reserve can tell preflight which it was.
+func AssignableVCPUs(c hw.CPU) (int, error) {
 	vcpu, _, _, _, err := reserve(c)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(vcpu)
+	return len(vcpu), nil
 }
 
 // pinning is reserve plus the MinVCPUs floor.
@@ -253,6 +274,20 @@ func reserve(c hw.CPU) (vcpu, emu, iot []int, tpc int, err error) {
 	return vcpu, emu, iot, tpc, nil
 }
 
+// KVMFRFits reports whether a buffer of sizeMiB is small enough to hand kvmfr.
+// A host of unknown size (hostBytes 0, the fixture case) is taken at its word.
+func KVMFRFits(sizeMiB, hostBytes uint64) bool {
+	return hostBytes == 0 || sizeMiB*utils.BytesPerMiB <= hostBytes/KVMFRRAMDivisor
+}
+
+// IVSHMEMBytes is the buffer size the memory-backend-file object declares; it
+// must match what the hook passes to modprobe as static_size_mb.
+func (p Profile) IVSHMEMBytes() uint64 { return p.IVSHMEMMiB * utils.BytesPerMiB }
+
+// KVMFRDevice is the node the rendered XML names; a method so the template and
+// the hook cannot drift apart.
+func (Profile) KVMFRDevice() string { return steps.KVMFRDevice }
+
 // IVSHMEMMiB sizes the Looking Glass frame buffer in MiB for a w×h maximum.
 func IVSHMEMMiB(w, h int) uint64 {
 	need := uint64(w)*uint64(h)*4*2 + ivshmemOverhead
@@ -260,7 +295,7 @@ func IVSHMEMMiB(w, h int) uint64 {
 	for size < need {
 		size <<= 1
 	}
-	return size / mib
+	return size / utils.BytesPerMiB
 }
 
 // romMagic is the PCI expansion-ROM signature (bytes 0x55 0xAA).
@@ -306,7 +341,7 @@ func parseBDF(addr string) (BDF, error) {
 func xmlPath(name string) string { return steps.VMsDirPath + "/" + name + ".xml" }
 
 var domainTpl = template.Must(template.New("domain.xml").
-	Funcs(template.FuncMap{"xml": XMLEscape}).
+	Funcs(template.FuncMap{"xml": utils.XMLEscape}).
 	ParseFS(templateFS, "templates/domain.xml"))
 
 // render produces the domain XML for the profile.
@@ -316,13 +351,6 @@ func render(p Profile) ([]byte, error) {
 		return nil, fmt.Errorf("render domain XML: %w", err)
 	}
 	return buf.Bytes(), nil
-}
-
-// XMLEscape makes s safe as XML element text.
-func XMLEscape(s string) string {
-	var b bytes.Buffer
-	_ = xml.EscapeText(&b, []byte(s))
-	return b.String()
 }
 
 // GuestConfig is the per-VM guest provisioning config carried in the domain XML metadata.
@@ -366,18 +394,65 @@ func ReadMemoryMiB(root, name string) (uint64, error) {
 	if doc.Memory.Unit != "MiB" {
 		return 0, fmt.Errorf("domain memory unit %q is not MiB", doc.Memory.Unit)
 	}
-	mib, err := strconv.ParseUint(strings.TrimSpace(doc.Memory.Value), 10, 64)
-	if err != nil || mib == 0 {
+	n, err := strconv.ParseUint(strings.TrimSpace(doc.Memory.Value), 10, 64)
+	if err != nil || n == 0 {
 		return 0, fmt.Errorf("bad domain memory %q", doc.Memory.Value)
 	}
-	return mib, nil
+	return n, nil
 }
 
-// MaxCPUIndex bounds a parsed cpuset; see hw.MaxCPUIndex.
-const MaxCPUIndex = hw.MaxCPUIndex
+// KVMFRSizeMiB returns the buffer a VM's registry XML asks kvmfr for, and
+// whether that VM uses the kvmfr backend at all. The hook needs both: load the
+// module before qemu opens the device, and only for domains that name it.
+// Root-only — the registry copy is 0600 because it carries the guest password;
+// an unprivileged caller takes KVMFRSizeXML over libvirt's copy.
+func KVMFRSizeMiB(root, name string) (uint64, bool) {
+	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
+	if err != nil {
+		return 0, false
+	}
+	return KVMFRSizeXML(b)
+}
 
-// ParseCPUSet parses a libvirt/sysfs cpuset list ("0-3,7,9-11") into CPU indices.
-func ParseCPUSet(s string) ([]int, error) { return hw.ParseCPUList(s) }
+// KVMFRSizeXML is the same answer from a domain XML already in hand.
+func KVMFRSizeXML(b []byte) (uint64, bool) {
+	var doc struct {
+		Args []struct {
+			Value string `xml:"value,attr"`
+		} `xml:"commandline>arg"`
+	}
+	if err := xml.Unmarshal(b, &doc); err != nil {
+		return 0, false
+	}
+	for _, arg := range doc.Args {
+		if !strings.Contains(arg.Value, `"mem-path":"`+steps.KVMFRDevice+`"`) {
+			continue
+		}
+		m := backendSizeRe.FindStringSubmatch(arg.Value)
+		if m == nil {
+			return 0, false
+		}
+		size, err := strconv.ParseUint(m[1], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		// Round up, since a partial MiB would size the module below the backend,
+		// but divide before adding: size+BytesPerMiB-1 wraps within a MiB of MaxUint64.
+		n := size / utils.BytesPerMiB
+		if size%utils.BytesPerMiB != 0 {
+			n++
+		}
+		// static_size_mb is a C int in the module.
+		if n == 0 || n > math.MaxInt32 {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// backendSizeRe pulls the byte count out of the rendered memory-backend-file.
+var backendSizeRe = regexp.MustCompile(`"size":(\d+)`)
 
 // ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to guest
 // threads (vcpu, emulator, iothread) — the complement of the host's housekeeping
@@ -404,7 +479,7 @@ func ReadPinnedCPUs(root, name string) ([]int, error) {
 	seen := map[int]bool{}
 	var out []int
 	add := func(set string) error {
-		cpus, err := ParseCPUSet(set)
+		cpus, err := hw.ParseCPUList(set)
 		if err != nil {
 			return err
 		}

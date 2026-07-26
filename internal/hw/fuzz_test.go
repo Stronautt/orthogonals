@@ -3,6 +3,7 @@ package hw
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,46 @@ func FuzzChassisType(f *testing.F) {
 		got := ChassisType(root)
 		if IsLaptopChassis(got) && ChassisName(got) == "" {
 			t.Fatalf("chassis %d reads as a laptop but has no name", got)
+		}
+	})
+}
+
+// FuzzParseCPUList asserts arbitrary cpulist strings never panic, and that any
+// list the parser accepts is usable for CPU pinning: no negative indices, and
+// ranges expanded in order.
+func FuzzParseCPUList(f *testing.F) {
+	f.Add("0-3,7,9-11")
+	f.Add("")
+	f.Add("   ")
+	f.Add(",,,")
+	f.Add("0-")
+	f.Add("-1")
+	f.Add("3-1")
+	f.Add("999999999999999999999")
+	f.Add("0-99999999")
+	f.Add("1,,2")
+	// an unbounded range: expanding this exhausted memory before MaxCPUIndex
+	f.Add("9999-9999999999999999")
+	f.Add("0-8191,0-8191,0-8191,0-8191")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		cpus, err := ParseCPUList(s)
+		if err != nil {
+			if cpus != nil {
+				t.Fatalf("ParseCPUList(%q) returned both cpus %v and error %v", s, cpus, err)
+			}
+			return
+		}
+		if len(cpus) > MaxCPUIndex+1 {
+			t.Fatalf("ParseCPUList(%q) yielded %d cpus, past the %d bound", s, len(cpus), MaxCPUIndex+1)
+		}
+		for i, c := range cpus {
+			if c < 0 || c > MaxCPUIndex {
+				t.Fatalf("ParseCPUList(%q) yielded out-of-range index %d", s, c)
+			}
+			if i > 0 && c <= cpus[i-1] && strings.Count(s, ",") == 0 {
+				t.Fatalf("ParseCPUList(%q) yielded a non-ascending range: %v", s, cpus)
+			}
 		}
 	})
 }

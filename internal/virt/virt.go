@@ -10,6 +10,8 @@ import (
 
 	libvirt "github.com/digitalocean/go-libvirt"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Client is what orthogonals needs from libvirt.
@@ -27,6 +29,9 @@ type Client interface {
 	DomainMaxMemoryKiB(name string) (uint64, error)
 	// DomainDisplay returns the SPICE host and port from the live domain XML.
 	DomainDisplay(name string) (host, port string, err error)
+	// DomainXML is the live domain XML — the copy an unprivileged caller can
+	// read, since /etc/orthogonals/vms is 0600 root.
+	DomainXML(name string) (string, error)
 	SendKeyEnter(name string) error
 	// AgentCommand sends one qemu-guest-agent request and returns the raw JSON reply.
 	AgentCommand(name, cmdJSON string) (string, error)
@@ -218,14 +223,20 @@ func (c *client) DomainMaxMemoryKiB(name string) (uint64, error) {
 // ErrNoDisplay means the domain has no resolved SPICE port yet.
 var ErrNoDisplay = errors.New("no graphics display port yet")
 
-func (c *client) DomainDisplay(name string) (host, port string, err error) {
+func (c *client) DomainXML(name string) (string, error) {
 	var desc string
-	if e := c.withDomain("display of", name, func(l *libvirt.Libvirt, d libvirt.Domain) error {
+	err := c.withDomain("xml of", name, func(l *libvirt.Libvirt, d libvirt.Domain) error {
 		x, err := l.DomainGetXMLDesc(d, 0)
 		desc = x
 		return err
-	}); e != nil {
-		return "", "", e
+	})
+	return desc, err
+}
+
+func (c *client) DomainDisplay(name string) (host, port string, err error) {
+	desc, err := c.DomainXML(name)
+	if err != nil {
+		return "", "", err
 	}
 	return parseSpiceDisplay(desc)
 }
@@ -345,7 +356,7 @@ func (c *client) EnsureNetworkActive(name string) error {
 func (c *client) CreateVolumeQCow2(path string, sizeGiB int) error {
 	dir := filepath.Dir(path)
 	volXML := fmt.Sprintf("<volume><name>%s</name><capacity unit='GiB'>%d</capacity><target><format type='qcow2'/></target></volume>",
-		xmlEscape(filepath.Base(path)), sizeGiB)
+		utils.XMLEscape(filepath.Base(path)), sizeGiB)
 	err := c.do(func(l *libvirt.Libvirt) error {
 		pool, transient, err := volumePool(l, dir)
 		if err != nil {
@@ -374,7 +385,7 @@ func volumePool(l *libvirt.Libvirt, dir string) (pool libvirt.StoragePool, trans
 			return pool, false, err
 		}
 		poolXML := fmt.Sprintf("<pool type='dir'><name>orthogonals-vol</name><target><path>%s</path></target></pool>",
-			xmlEscape(dir))
+			utils.XMLEscape(dir))
 		pool, err = l.StoragePoolCreateXML(poolXML, 0)
 		return pool, true, err
 	}
@@ -384,10 +395,6 @@ func volumePool(l *libvirt.Libvirt, dir string) (pool libvirt.StoragePool, trans
 	}
 	return pool, false, nil
 }
-
-var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "'", "&apos;", `"`, "&quot;")
-
-func xmlEscape(s string) string { return xmlEscaper.Replace(s) }
 
 func (c *client) Ping() error {
 	_, err := c.ensure()

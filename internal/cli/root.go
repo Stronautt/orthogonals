@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -85,21 +84,6 @@ func finish(stderr io.Writer, name string, err error) error {
 	}
 	fmt.Fprintf(stderr, "orthogonals %s: %v\n", name, err)
 	return exitCode(1)
-}
-
-// codeErr turns a computed exit code into a RunE return.
-func codeErr(n int) error {
-	if n == 0 {
-		return nil
-	}
-	return exitCode(n)
-}
-
-// writeJSON encodes v as indented JSON to w, the shared --json output form.
-func writeJSON(w io.Writer, v any) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
 }
 
 func newVersionCmd(stdout io.Writer) *cobra.Command {

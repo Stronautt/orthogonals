@@ -13,6 +13,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
@@ -31,28 +32,37 @@ type Facts struct {
 	// BLSUnreadable marks that directory as root-only (0700 on Fedora): an
 	// unprivileged preflight cannot judge the boot entries either way.
 	BLSUnreadable bool `json:"bls_unreadable,omitempty"`
+	// Signing answers whether the kvmfr module will load under Secure Boot.
+	Signing ModuleSigning `json:"module_signing"`
 }
 
-// GatherFacts reads the live host (prefixed by root, the test seam).
+// GatherFacts reads the live host (prefixed by root, the test seam). Every
+// probe is best-effort: an unreadable path is reported as the absent fact it
+// looks like, and preflight's checks phrase their remedies as suggestions.
 func GatherFacts(root string) Facts {
+	netActive, _ := utils.Exists(filepath.Join(root, "/var/run/libvirt/network/default.xml"))
+	if !netActive {
+		netActive, _ = utils.Exists(filepath.Join(root, "/run/libvirt/network/default.xml"))
+	}
+	managed, _ := utils.Exists(steps.ManifestPath(root))
 	f := Facts{
 		PersistencedEnabled: steps.UnitEnabled(root, hostcfg.UnitPersistenced),
-		DefaultNetActive: exists(filepath.Join(root, "/var/run/libvirt/network/default.xml")) ||
-			exists(filepath.Join(root, "/run/libvirt/network/default.xml")),
+		DefaultNetActive:    netActive,
 		FreeDiskBytes: freeDisk(
 			filepath.Join(root, "/var/lib/libvirt/images"),
 			filepath.Join(root, "/var/lib"),
 			filepath.Join(root, "/"),
 		),
-		OrthogonalsManaged: exists(steps.ManifestPath(root)),
+		OrthogonalsManaged: managed,
 		ForeignVFIO:        scanForeignVFIO(root),
 		SwitcherooEnabled:  steps.UnitEnabled(root, hostcfg.UnitSwitcheroo),
 		LibvirtReachable:   libvirtReachable(root),
+		Signing:            gatherSigning(root),
 	}
 	if f.SwitcherooEnabled {
 		f.SwitcherooNVIDIA = switcherooListsNVIDIA(root)
 	}
-	if err := bls.Readable(root); errors.Is(err, fs.ErrPermission) {
+	if err := bls.CheckAccess(root); errors.Is(err, fs.ErrPermission) {
 		f.BLSUnreadable = true
 	} else if err != nil {
 		f.BLSError = err.Error()
@@ -127,18 +137,13 @@ var switcherooListsNVIDIA = func(root string) bool {
 }
 
 // libvirtReachable probes the local libvirt socket.
-var libvirtReachable = func(root string) bool {
+func libvirtReachable(root string) bool {
 	if root != "" {
 		return true
 	}
 	c := virt.New()
 	defer func() { _ = c.Close() }()
 	return c.Ping() == nil
-}
-
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // freeDisk returns available bytes at the first path statfs accepts.

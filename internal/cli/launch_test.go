@@ -4,11 +4,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stronautt/orthogonals/internal/notify"
+	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
@@ -72,7 +74,9 @@ func TestVMLaunchRunningDomainExecs(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
-	want := []string{"looking-glass-client", "-F", "-c", sock, "-p", "0"}
+	// Without -f the client would prefer a /dev/kvmfr0 left loaded by an earlier
+	// VM and wait forever for a host.
+	want := []string{"looking-glass-client", "-F", "-c", sock, "-p", "0", "-f", steps.LookingGlassSHM}
 	if strings.Join(*argv, " ") != strings.Join(want, " ") {
 		t.Errorf("exec argv = %v, want %v", *argv, want)
 	}
@@ -91,7 +95,7 @@ func TestVMLaunchTCPDisplayStillWorks(t *testing.T) {
 	if code, out, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch"); code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
 	}
-	want := []string{"looking-glass-client", "-F", "-c", "127.0.0.1", "-p", "5901"}
+	want := []string{"looking-glass-client", "-F", "-c", "127.0.0.1", "-p", "5901", "-f", steps.LookingGlassSHM}
 	if strings.Join(*argv, " ") != strings.Join(want, " ") {
 		t.Errorf("exec argv = %v, want %v", *argv, want)
 	}
@@ -188,5 +192,32 @@ func TestVMLaunchNotifiesOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(*notes, "\n"), "no such VM") {
 		t.Errorf("no desktop notification on failure: %v", *notes)
+	}
+}
+
+// TestVMLaunchKVMFRDomainOmitsBackendFlag: a kvmfr domain is left to the
+// client's own detection, which is what picks the DMABUF path. No registry copy
+// is written, so the decision can only come from libvirt — launch runs as the
+// desktop user and cannot read the 0600 root one.
+func TestVMLaunchKVMFRDomainOmitsBackendFlag(t *testing.T) {
+	const sock = "/run/orthogonals/win11/spice.sock"
+	xml := `<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>win11</name>
+  <qemu:commandline>
+    <qemu:arg value='-object'/>
+    <qemu:arg value='{"qom-type":"memory-backend-file","id":"looking-glass","mem-path":"` +
+		steps.KVMFRDevice + `","size":134217728,"share":true}'/>
+  </qemu:commandline>
+</domain>`
+	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: sock, DisplayPort: "0", XML: xml})
+	argv := captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	root := launchRoot(t, "")
+
+	if code, out, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch"); code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
+	}
+	if slices.Contains(*argv, "-f") {
+		t.Errorf("kvmfr domain launched with an explicit backend: %v", *argv)
 	}
 }

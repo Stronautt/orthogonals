@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
 // seedEntries writes named entries under root's BLS dir.
 func seedEntries(t *testing.T, root string, entries map[string]string) {
 	t.Helper()
-	dir := Dir(root)
+	dir := filepath.Join(root, EntriesPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +73,11 @@ func TestReadableSurfacesPermissionError(t *testing.T) {
 	}
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
-	if err := os.Chmod(Dir(root), 0o000); err != nil {
+	if err := os.Chmod(filepath.Join(root, EntriesPath), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(Dir(root), 0o755) })
-	if err := Readable(root); !errors.Is(err, fs.ErrPermission) {
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, EntriesPath), 0o755) })
+	if err := CheckAccess(root); !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("Readable = %v, want a permission error", err)
 	}
 }
@@ -120,7 +121,7 @@ func TestAddArgsLeavesAbsentCmdlineAlone(t *testing.T) {
 func TestNoOpEditLeavesEntryUntouched(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
-	path := filepath.Join(Dir(root), "a.conf")
+	path := filepath.Join(root, EntriesPath, "a.conf")
 	if err := AddArgs(root, "iommu=pt"); err != nil {
 		t.Fatal(err)
 	}
@@ -167,11 +168,11 @@ func TestAddArgsIdempotent(t *testing.T) {
 	if err := AddArgs(root, "intel_iommu=on iommu=pt"); err != nil {
 		t.Fatal(err)
 	}
-	after1, _ := os.ReadFile(filepath.Join(Dir(root), "a.conf"))
+	after1, _ := os.ReadFile(filepath.Join(root, EntriesPath, "a.conf"))
 	if err := AddArgs(root, "intel_iommu=on iommu=pt"); err != nil {
 		t.Fatal(err)
 	}
-	after2, _ := os.ReadFile(filepath.Join(Dir(root), "a.conf"))
+	after2, _ := os.ReadFile(filepath.Join(root, EntriesPath, "a.conf"))
 	if string(after1) != string(after2) {
 		t.Errorf("AddArgs not idempotent:\n%s\nvs\n%s", after1, after2)
 	}
@@ -184,7 +185,7 @@ func TestAddArgsIdempotent(t *testing.T) {
 func TestAddRemoveRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
-	before, _ := os.ReadFile(filepath.Join(Dir(root), "a.conf"))
+	before, _ := os.ReadFile(filepath.Join(root, EntriesPath, "a.conf"))
 
 	const args = "intel_iommu=on iommu=pt"
 	if err := AddArgs(root, args); err != nil {
@@ -193,7 +194,7 @@ func TestAddRemoveRoundTrip(t *testing.T) {
 	if err := RemoveArgs(root, args); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := os.ReadFile(filepath.Join(Dir(root), "a.conf"))
+	after, _ := os.ReadFile(filepath.Join(root, EntriesPath, "a.conf"))
 	if string(before) != string(after) {
 		t.Errorf("add→remove not byte-identical:\nbefore %q\nafter  %q", before, after)
 	}
@@ -209,10 +210,59 @@ func TestEditAllEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"a.conf", "b.conf"} {
-		b, _ := os.ReadFile(filepath.Join(Dir(root), name))
+		b, _ := os.ReadFile(filepath.Join(root, EntriesPath, name))
 		if !slices.Contains(optionsOf(string(b)), "iommu=pt") {
 			t.Errorf("%s not edited: %s", name, b)
 		}
+	}
+}
+
+// The BLS spec lets the options key repeat and combines the values, so a token
+// on the second line is present. Reading only the first line reported it
+// missing, and apply then wrote a second copy of an arg the host already had.
+func TestOptionsLinesCombine(t *testing.T) {
+	root := t.TempDir()
+	seedEntries(t, root, map[string]string{"a.conf": "options root=UUID=abc ro\noptions iommu=pt\n"})
+	got, err := Wanted(root, "iommu=pt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Present, "iommu=pt") {
+		t.Errorf("Present = %v, want iommu=pt from the second options line", got.Present)
+	}
+	if len(got.Missing) > 0 {
+		t.Errorf("Missing = %v, want none", got.Missing)
+	}
+}
+
+// An edit collapses the combined set onto the first options line. Rewriting each
+// line on its own instead appended the token to every line that lacked it, so
+// the kernel command line ended up carrying the same arg twice — and the removal
+// that followed took both copies plus, on a line that had held it all along, an
+// arg the host booted with before apply ran.
+func TestAddArgsDoesNotDuplicateAcrossOptionsLines(t *testing.T) {
+	root := t.TempDir()
+	seedEntries(t, root, map[string]string{"a.conf": "options ro\noptions iommu=pt\n"})
+	path := filepath.Join(root, EntriesPath, "a.conf")
+
+	if err := AddArgs(root, "intel_iommu=on"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	// The second options line is blanked, not deleted, so its newline remains.
+	if want := "options ro iommu=pt intel_iommu=on\n\n"; string(b) != want {
+		t.Errorf("entry = %q, want %q", b, want)
+	}
+	if want := []string{"ro", "iommu=pt", "intel_iommu=on"}; !slices.Equal(optionsOf(string(b)), want) {
+		t.Errorf("options = %v, want %v", optionsOf(string(b)), want)
+	}
+
+	if err := RemoveArgs(root, "intel_iommu=on"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if want := []string{"ro", "iommu=pt"}; !slices.Equal(optionsOf(string(b)), want) {
+		t.Errorf("after remove options = %v, want %v", optionsOf(string(b)), want)
 	}
 }
 
@@ -226,14 +276,14 @@ func TestRemoveToleratesMissingToken(t *testing.T) {
 
 func TestRefusals(t *testing.T) {
 	t.Run("missing dir", func(t *testing.T) {
-		if err := Readable(t.TempDir()); err == nil {
+		if err := CheckAccess(t.TempDir()); err == nil {
 			t.Error("want error for missing entries dir")
 		}
 	})
 	t.Run("kernelopts indirection", func(t *testing.T) {
 		root := t.TempDir()
 		seedEntries(t, root, map[string]string{"a.conf": "options $kernelopts rhgb\n"})
-		if err := Readable(root); err == nil {
+		if err := CheckAccess(root); err == nil {
 			t.Error("want error for $kernelopts entry")
 		}
 		if err := AddArgs(root, "iommu=pt"); err == nil {
@@ -243,14 +293,14 @@ func TestRefusals(t *testing.T) {
 	t.Run("no options line", func(t *testing.T) {
 		root := t.TempDir()
 		seedEntries(t, root, map[string]string{"a.conf": "title x\nlinux /vmlinuz\n"})
-		if err := Readable(root); err == nil {
+		if err := CheckAccess(root); err == nil {
 			t.Error("want error for entry without options line")
 		}
 	})
 }
 
-// optionsOf pulls the options-line tokens out of a rendered entry for asserts.
+// optionsOf pulls the options tokens out of a rendered entry for asserts.
 func optionsOf(content string) []string {
-	toks, _ := optionsTokens(content)
+	toks, _ := parseOptions(strings.Split(content, "\n"))
 	return toks
 }

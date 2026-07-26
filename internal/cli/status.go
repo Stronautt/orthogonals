@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stronautt/orthogonals/internal/orchestrate"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // newStatusCmd reports whether the applied setup is still intact.
@@ -18,7 +19,7 @@ func newStatusCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 		RunE: func(*cobra.Command, []string) error {
 			checks := orchestrate.Status(cfg.Root)
 			if cfg.JSON {
-				if err := writeJSON(stdout, checks); err != nil {
+				if err := utils.WriteJSON(stdout, checks); err != nil {
 					return finish(stderr, "status", err)
 				}
 			} else {

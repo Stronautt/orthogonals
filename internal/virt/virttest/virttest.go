@@ -137,6 +137,14 @@ func (f *Fake) DomainMaxMemoryKiB(name string) (uint64, error) {
 	return f.MaxMemKiB, nil
 }
 
+func (f *Fake) DomainXML(name string) (string, error) {
+	f.log("domxml", name)
+	if f.State == "" && f.XML == "" {
+		return "", ErrNoDomain
+	}
+	return f.XML, nil
+}
+
 func (f *Fake) DomainDisplay(name string) (host, port string, err error) {
 	f.displayCalls++
 	f.log("domdisplay", name)

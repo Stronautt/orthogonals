@@ -343,7 +343,7 @@ func renderArtifacts(p Profile) ([]Artifact, error) {
 // Steps assembles the ordered host-configuration step list. boot is the live
 // state of the kernel args across the boot config; the zero value reads as a
 // host that carries none of them.
-func Steps(p Profile, boot bls.Args) ([]steps.Step, error) {
+func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 	arts, err := renderArtifacts(p)
 	if err != nil {
 		return nil, err
@@ -355,6 +355,13 @@ func Steps(p Profile, boot bls.Args) ([]steps.Step, error) {
 			Path: a.Path, Content: a.Content, Mode: a.Mode,
 		})
 	}
+	// Before libvirt-socket-reload below, which is what restarts virtqemud and
+	// so makes the new ACL live.
+	acl, err := DeviceACLStep(qemuConf)
+	if err != nil {
+		return nil, err
+	}
+	list = append(list, acl)
 	args := KernelArgs(p)
 	list = append(list,
 		steps.Step{

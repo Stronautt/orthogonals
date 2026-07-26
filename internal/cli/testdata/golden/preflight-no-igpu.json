@@ -8,7 +8,7 @@
     {
       "message": "single-GPU host: the only GPU cannot both drive the desktop and be passed through",
       "name": "gpu-topology",
-      "remedy": "v1 requires an iGPU for the desktop plus an NVIDIA dGPU for the guest",
+      "remedy": "an iGPU is required for the desktop, plus an NVIDIA dGPU for the guest",
       "status": "fail"
     },
     {
@@ -79,10 +79,9 @@
       "status": "warn"
     },
     {
-      "message": "Secure Boot is enabled: the NVIDIA kernel module must be signed or it will not load after the setup reboot",
+      "message": "Secure Boot signing not checked (no mokutil, or --root)",
       "name": "secure-boot",
-      "remedy": "if the NVIDIA driver works today you are fine (akmods MOK is enrolled); otherwise enroll it before apply",
-      "status": "warn"
+      "status": "pass"
     },
     {
       "message": "nvidia-persistenced not enabled",

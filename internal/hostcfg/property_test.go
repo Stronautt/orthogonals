@@ -132,7 +132,7 @@ func TestApplyUndoRestoresTree(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("read boot config: %v", err)
 		}
-		list, err := Steps(p, boot)
+		list, err := Steps(p, boot, fedoraQemuConf)
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}
@@ -157,7 +157,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		p := genProfile(rt)
 		root := propRoot(rt)
 
-		list, err := Steps(p, bls.Args{})
+		list, err := Steps(p, bls.Args{}, fedoraQemuConf)
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}
@@ -195,7 +195,7 @@ func TestDryRunIsInert(t *testing.T) {
 		root := propRoot(rt)
 		before := snapshot(rt, root)
 
-		list, err := Steps(p, bls.Args{})
+		list, err := Steps(p, bls.Args{}, fedoraQemuConf)
 		if err != nil {
 			rt.Fatalf("Steps(%+v): %v", p, err)
 		}

@@ -1,4 +1,4 @@
-<domain type='kvm'{{if .MaxPhysAddrBits}} xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'{{end}}>
+<domain type='kvm'{{if or .MaxPhysAddrBits .KVMFR}} xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'{{end}}>
   <name>{{.Name}}</name>
 {{- if .UUID}}
   <uuid>{{xml .UUID}}</uuid>
@@ -179,19 +179,38 @@
       </source>
     </hostdev>
 {{- end}}
+{{- if .KVMFR}}
+    <!-- A controller's index is its PCI bus number and libvirt emits -device in
+         index order, so the bridge's root port is declared here with the lower
+         index: left to libvirt the bridge lands on an auto-added port above it
+         and qemu fails the start with "Bus 'pci.2' not found". -->
+    <controller type='pci' index='1' model='pcie-root-port'/>
+    <controller type='pci' index='2' model='pcie-to-pci-bridge'>
+      <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
+    </controller>
+{{- else}}
     <shmem name='looking-glass'>
       <model type='ivshmem-plain'/>
       <size unit='M'>{{.IVSHMEMMiB}}</size>
     </shmem>
+{{- end}}
     <tpm model='tpm-crb'>
       <backend type='emulator' version='2.0'/>
     </tpm>
     <memballoon model='none'/>
   </devices>
-{{- if .MaxPhysAddrBits}}
+{{- if or .MaxPhysAddrBits .KVMFR}}
   <qemu:commandline>
+{{- if .MaxPhysAddrBits}}
     <qemu:arg value='-fw_cfg'/>
     <qemu:arg value='opt/ovmf/X-PciMmio64Mb,string=65536'/>
+{{- end}}
+{{- if .KVMFR}}
+    <qemu:arg value='-object'/>
+    <qemu:arg value='{"qom-type":"memory-backend-file","id":"looking-glass","mem-path":"{{.KVMFRDevice}}","size":{{.IVSHMEMBytes}},"share":true}'/>
+    <qemu:arg value='-device'/>
+    <qemu:arg value='{"driver":"ivshmem-plain","id":"shmem0","memdev":"looking-glass","bus":"pci.2","addr":"0x1"}'/>
+{{- end}}
   </qemu:commandline>
 {{- end}}
 </domain>

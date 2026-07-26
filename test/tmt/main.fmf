@@ -45,6 +45,21 @@ summary: Host-mutation tests, shared by every plan
     duration: 45m
     tier: 4
 
+/kvmfr:
+    summary: the kvmfr module and its device ACL, against a real kernel
+    description: |
+        The out-of-tree module is the standing risk of the DMABUF path, and a
+        fixture cannot compile or load it. This builds it against the running
+        kernel, exercises its ioctl and DMABUF export with upstream's own test
+        program, converts the qemu.conf this guest's libvirt actually shipped,
+        and then has a real qemu open the device through the resulting
+        cgroup_device_acl. Fedora's shipped sample omits /dev/kvm, so proving
+        that list against the installed libvirt is the point rather than a
+        formality.
+    test: ./kvmfr.sh
+    duration: 15m
+    tier: 4
+
 /hugepages:
     summary: the hook's hugepage pool, against a real kernel
     description: |

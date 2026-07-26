@@ -9,6 +9,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Status is a check outcome.
@@ -41,7 +42,7 @@ type Check struct {
 }
 
 // cacheBytes is the ISO cache and provision headroom above the default disk image.
-const cacheBytes = 15 << 30
+const cacheBytes = 15 * utils.BytesPerGiB
 
 // hardTools missing => fail (apply cannot run); other RequiredTools warn.
 var hardTools = map[string]bool{
@@ -66,7 +67,7 @@ func Analyze(r *hw.Result, f Facts) []Check {
 		checkCPU(r),
 		checkMemory(r),
 		checkAddressWidth(r),
-		checkSecureBoot(r),
+		checkSecureBoot(r, f),
 		checkPersistenced(f),
 		checkSwitcheroo(f),
 		checkLibvirt(f),
@@ -169,7 +170,7 @@ func checkGPUTopology(r *hw.Result) Check {
 	switch {
 	case r.GPUs.IGPU == nil && len(r.GPUs.DGPUs) == 1:
 		return Check{name, Fail, "single-GPU host: the only GPU cannot both drive the desktop and be passed through",
-			"v1 requires an iGPU for the desktop plus an NVIDIA dGPU for the guest"}
+			"an iGPU is required for the desktop, plus an NVIDIA dGPU for the guest"}
 	case r.GPUs.IGPU == nil:
 		remedy := "enable the iGPU in the BIOS (often \"iGPU Multi-Monitor\") and connect a display to it"
 		if hw.IsLaptopChassis(r.Platform.ChassisType) {
@@ -177,13 +178,13 @@ func checkGPUTopology(r *hw.Result) Check {
 		}
 		return Check{name, Fail, "no iGPU found to drive the host desktop", remedy}
 	case len(amd) > 0:
-		return Check{name, Fail, fmt.Sprintf("AMD dGPU %s is unsupported in v1 (reset quirks need vendor-reset gating)", amd[0].Address),
-			"v1 supports NVIDIA dGPUs only; AMD support is on the roadmap"}
+		return Check{name, Fail, fmt.Sprintf("AMD dGPU %s is unsupported (reset quirks need vendor-reset gating)", amd[0].Address),
+			"only NVIDIA dGPUs can be passed through"}
 	case len(nvidia) == 0:
-		return Check{name, Fail, "no NVIDIA dGPU found to pass through", "v1 requires an NVIDIA dGPU"}
+		return Check{name, Fail, "no NVIDIA dGPU found to pass through", "an NVIDIA dGPU is required"}
 	case len(nvidia) > 1:
-		return Check{name, Fail, fmt.Sprintf("found %d NVIDIA dGPUs; v1 supports exactly one NVIDIA dGPU", len(nvidia)),
-			"remove or ignore the extra GPU (multi-dGPU selection is on the roadmap)"}
+		return Check{name, Fail, fmt.Sprintf("found %d NVIDIA dGPUs; exactly one is supported", len(nvidia)),
+			"remove or disable the extra GPU"}
 	default:
 		return Check{name, Pass, fmt.Sprintf("%s iGPU %s + NVIDIA dGPU %s",
 			vendorName(r.GPUs.IGPU.Vendor), r.GPUs.IGPU.Address, nvidia[0].Address), ""}
@@ -310,7 +311,7 @@ func checkDuplicateGPUIDs(r *hw.Result) Check {
 			return Check{name, Fail,
 				fmt.Sprintf("NVIDIA GPUs %s share vendor:device %s — static vfio-pci.ids binding cannot tell them apart",
 					strings.Join(addrs, " and "), id),
-				"remove one of the identical GPUs; address-based binding is on the post-v1 roadmap"}
+				"remove one of the identical GPUs"}
 		}
 	}
 	return Check{name, Pass, "no duplicate NVIDIA vendor:device IDs", ""}
@@ -418,11 +419,15 @@ func checkTools(r *hw.Result) Check {
 // checkCPU gates on the vCPU count domain's pinning will assign.
 func checkCPU(r *hw.Result) Check {
 	const name = "cpu"
-	assignable := domain.AssignableVCPUs(r.CPU)
+	assignable, err := domain.AssignableVCPUs(r.CPU)
+	if err != nil {
+		return Check{name, Fail, err.Error(),
+			"collect diagnostics with: orthogonals bundle orthogonals-diagnostics.tar.gz"}
+	}
 	if assignable < domain.MinVCPUs {
 		return Check{name, Fail,
 			fmt.Sprintf("only %d assignable vCPU threads (P-core threads minus reserved host/emulator cores); need at least %d", assignable, domain.MinVCPUs),
-			"v1 needs enough performance cores for 4 vCPU threads after reserving host/emulator cores"}
+			fmt.Sprintf("a CPU with enough performance cores for %d vCPU threads after reserving host/emulator cores is required", domain.MinVCPUs)}
 	}
 	return Check{name, Pass, fmt.Sprintf("%d assignable vCPU threads", assignable), ""}
 }
@@ -433,10 +438,10 @@ func checkMemory(r *hw.Result) Check {
 	if assignable < domain.MinRAMGiB {
 		return Check{name, Fail,
 			fmt.Sprintf("host has %.1f GiB RAM; the default guest RAM works out to %d GiB but needs at least %d GiB",
-				gib(r.Platform.MemTotalBytes), assignable, domain.MinRAMGiB),
-			"Windows 11 needs 8 GiB minimum; v1 requires a 16 GiB host"}
+				utils.GiB(r.Platform.MemTotalBytes), assignable, domain.MinRAMGiB),
+			fmt.Sprintf("Windows 11 needs 8 GiB minimum; a %d GiB host is required", domain.MinHostRAMGiB)}
 	}
-	return Check{name, Pass, fmt.Sprintf("%.1f GiB host RAM, %d GiB assignable", gib(r.Platform.MemTotalBytes), assignable), ""}
+	return Check{name, Pass, fmt.Sprintf("%.1f GiB host RAM, %d GiB assignable", utils.GiB(r.Platform.MemTotalBytes), assignable), ""}
 }
 
 func checkAddressWidth(r *hw.Result) Check {
@@ -454,14 +459,34 @@ func checkAddressWidth(r *hw.Result) Check {
 	}
 }
 
-func checkSecureBoot(r *hw.Result) Check {
+// checkSecureBoot judges signing from the host's enrolled keys, not from the
+// NVIDIA driver working: an akmod-nvidia host trusts the akmods key, not dkms's.
+func checkSecureBoot(r *hw.Result, f Facts) Check {
 	const name = "secure-boot"
-	if r.Platform.SecureBoot && len(r.GPUs.NVIDIA()) > 0 {
-		return Check{name, Warn,
-			"Secure Boot is enabled: the NVIDIA kernel module must be signed or it will not load after the setup reboot",
-			"if the NVIDIA driver works today you are fine (akmods MOK is enrolled); otherwise enroll it before apply"}
+	if !r.Platform.SecureBoot || len(r.GPUs.NVIDIA()) == 0 {
+		return Check{name, Pass, "no Secure Boot signing concern", ""}
 	}
-	return Check{name, Pass, "no Secure Boot signing concern", ""}
+	plan, key := PlanSigning(r.Platform.SecureBoot, f.Signing)
+	switch plan {
+	case SigningReady:
+		if !f.Signing.Checked {
+			return Check{name, Pass, "Secure Boot signing not checked (no mokutil, or --root)", ""}
+		}
+		return Check{name, Pass,
+			"Secure Boot is enabled and the key dkms signs with is enrolled: kvmfr will load", ""}
+	case SigningReuseAkmods:
+		return Check{name, Pass,
+			"Secure Boot is enabled and dkms's own key is not enrolled, but " + key.Cert + " is",
+			"apply points dkms at that already-enrolled key, so nothing needs enrolling"}
+	case SigningNotBuilt:
+		return Check{name, Warn,
+			"Secure Boot is enabled and dkms has built nothing yet, so its signing key does not exist",
+			"install kvmfr-dkms (dkms generates and signs with a new key), then re-run preflight"}
+	default:
+		return Check{name, Warn,
+			"Secure Boot is enabled and no module-signing key on this host is enrolled: kvmfr will not load",
+			"run `sudo mokutil --import " + DKMSCert + "`, then choose Enroll MOK at the blue screen on the next reboot"}
+	}
 }
 
 func checkPersistenced(f Facts) Check {
@@ -502,18 +527,16 @@ func checkDefaultNet(f Facts) Check {
 
 func checkDiskSpace(f Facts) Check {
 	const name = "disk-space"
-	const need = uint64(domain.DefaultDiskSizeGiB<<30 + cacheBytes)
+	const need = uint64(domain.DefaultDiskSizeGiB*utils.BytesPerGiB + cacheBytes)
 	if f.FreeDiskBytes == 0 {
 		return Check{name, Warn, "could not determine free disk space where the guest disk lives",
-			fmt.Sprintf("ensure ~%.0f GiB is free for the disk image and ISO cache", gib(need))}
+			fmt.Sprintf("ensure ~%.0f GiB is free for the disk image and ISO cache", utils.GiB(need))}
 	}
 	if f.FreeDiskBytes < need {
 		return Check{name, Warn,
 			fmt.Sprintf("%.0f GiB free where the guest disk lives; ~%.0f GiB recommended for the disk image and ISO cache",
-				gib(f.FreeDiskBytes), gib(need)),
+				utils.GiB(f.FreeDiskBytes), utils.GiB(need)),
 			"free up space or point --disk-path/--disk-size at a larger filesystem"}
 	}
-	return Check{name, Pass, fmt.Sprintf("%.0f GiB free disk space", gib(f.FreeDiskBytes)), ""}
+	return Check{name, Pass, fmt.Sprintf("%.0f GiB free disk space", utils.GiB(f.FreeDiskBytes)), ""}
 }
-
-func gib(b uint64) float64 { return float64(b) / (1 << 30) }

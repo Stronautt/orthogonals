@@ -15,7 +15,6 @@ import (
 const (
 	cpusetSaveFile        = "/run/orthogonals-cpuset"
 	cgroupControllersPath = "/sys/fs/cgroup/cgroup.controllers"
-	presentCPUsPath       = "/sys/devices/system/cpu/present"
 )
 
 // isolationUnits are the host slices confined to the housekeeping cores while a
@@ -33,7 +32,7 @@ func isolateCPUs(root string, sd sysd.Client, vm string) {
 		log("cgroup v2 cpuset controller unavailable — isolation skipped")
 		return
 	}
-	present, err := readPresentCPUs(root)
+	present, err := hw.PresentCPUs(root)
 	if err != nil {
 		log("read present CPUs: %v — isolation skipped", err)
 		return
@@ -65,7 +64,7 @@ func unisolateCPUs(root string, sd sysd.Client) {
 	if err != nil {
 		return
 	}
-	present, err := domain.ParseCPUSet(string(b))
+	present, err := hw.ParseCPUList(string(b))
 	if err != nil || len(present) == 0 {
 		_ = os.Remove(save)
 		return
@@ -107,13 +106,4 @@ func cpusetControllerAvailable(root string) bool {
 		return false
 	}
 	return slices.Contains(strings.Fields(string(b)), "cpuset")
-}
-
-// readPresentCPUs parses the host's set of populated CPUs.
-func readPresentCPUs(root string) ([]int, error) {
-	b, err := os.ReadFile(filepath.Join(root, presentCPUsPath))
-	if err != nil {
-		return nil, err
-	}
-	return domain.ParseCPUSet(string(b))
 }

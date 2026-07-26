@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // PCI vendor IDs used by GPU classification and preflight vendor gates.
@@ -56,13 +58,13 @@ func ScanPCI(root string) ([]PCIDevice, error) {
 		dir := filepath.Join(base, e.Name())
 		d := PCIDevice{
 			Address:    e.Name(),
-			Vendor:     readTrim(filepath.Join(dir, "vendor")),
-			Device:     readTrim(filepath.Join(dir, "device")),
-			Class:      readTrim(filepath.Join(dir, "class")),
-			Driver:     linkBase(filepath.Join(dir, "driver")),
+			Vendor:     utils.ReadTrim(filepath.Join(dir, "vendor")),
+			Device:     utils.ReadTrim(filepath.Join(dir, "device")),
+			Class:      utils.ReadTrim(filepath.Join(dir, "class")),
+			Driver:     utils.LinkBase(filepath.Join(dir, "driver")),
 			IOMMUGroup: -1,
 		}
-		if g := linkBase(filepath.Join(dir, "iommu_group")); g != "" {
+		if g := utils.LinkBase(filepath.Join(dir, "iommu_group")); g != "" {
 			if n, err := strconv.Atoi(g); err == nil {
 				d.IOMMUGroup = n
 			}
@@ -70,7 +72,7 @@ func ScanPCI(root string) ([]PCIDevice, error) {
 		if _, err := os.Stat(filepath.Join(dir, "reset")); err == nil {
 			d.HasReset = true
 		}
-		d.BootVGA = readTrim(filepath.Join(dir, "boot_vga")) == "1"
+		d.BootVGA = utils.ReadTrim(filepath.Join(dir, "boot_vga")) == "1"
 		d.DRMCard, d.Connectors = scanDRM(dir)
 		devs = append(devs, d)
 	}
@@ -146,12 +148,12 @@ func RescanPCI(root string) error {
 
 // DeviceDriver is the bound driver of a PCI device.
 func DeviceDriver(root, addr string) string {
-	return linkBase(filepath.Join(root, "/sys/bus/pci/devices", addr, "driver"))
+	return utils.LinkBase(filepath.Join(root, "/sys/bus/pci/devices", addr, "driver"))
 }
 
 // RuntimeStatus reads a PCI device's power/runtime_status, "" without runtime PM.
 func RuntimeStatus(root, addr string) string {
-	return readTrim(filepath.Join(root, "/sys/bus/pci/devices", addr, "power/runtime_status"))
+	return utils.ReadTrim(filepath.Join(root, "/sys/bus/pci/devices", addr, "power/runtime_status"))
 }
 
 // SetPowerControl writes a PCI device's power/control ("on" pins D0, "auto" allows suspend).
@@ -264,26 +266,10 @@ func scanDRM(devDir string) (card string, connected []string) {
 		if !strings.HasPrefix(c.Name(), card+"-") {
 			continue
 		}
-		status := readTrim(filepath.Join(devDir, "drm", card, c.Name(), "status"))
+		status := utils.ReadTrim(filepath.Join(devDir, "drm", card, c.Name(), "status"))
 		if status == "connected" {
 			connected = append(connected, strings.TrimPrefix(c.Name(), card+"-"))
 		}
 	}
 	return card, connected
-}
-
-func readTrim(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
-func linkBase(path string) string {
-	target, err := os.Readlink(path)
-	if err != nil {
-		return ""
-	}
-	return filepath.Base(target)
 }

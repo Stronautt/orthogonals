@@ -11,6 +11,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/sysd"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
@@ -116,7 +117,7 @@ func TestWriteFileApplyRecordsAndUndoRestores(t *testing.T) {
 	if !r.Existed || r.OrigMode != 0o644 || r.Backup == "" {
 		t.Fatalf("record should carry original state, got %+v", r)
 	}
-	if r.NewSHA256 != sha256hex([]byte("new\n")) {
+	if r.NewSHA256 != utils.SHA256Hex([]byte("new\n")) {
 		t.Fatalf("record checksum = %q", r.NewSHA256)
 	}
 	backup, err := os.ReadFile(filepath.Join(backupDir(root), r.Backup))
@@ -368,7 +369,7 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustLoad(t, root)
-	if len(m.Records) != 1 || m.Records[0].InputSHA256 != sha256hex([]byte("xml-v1")) {
+	if len(m.Records) != 1 || m.Records[0].InputSHA256 != utils.SHA256Hex([]byte("xml-v1")) {
 		t.Fatalf("record must carry the input hash, got %+v", m.Records)
 	}
 
@@ -397,7 +398,7 @@ func TestRunCmdInputRerunsOnDrift(t *testing.T) {
 		t.Fatalf("drifted input must re-run, got %v", lines)
 	}
 	m = mustLoad(t, root)
-	if len(m.Records) != 1 || m.Records[0].InputSHA256 != sha256hex([]byte("xml-v2")) {
+	if len(m.Records) != 1 || m.Records[0].InputSHA256 != utils.SHA256Hex([]byte("xml-v2")) {
 		t.Fatalf("re-run must refresh the hash on the single record, got %+v", m.Records)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/sysd"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
@@ -198,7 +199,7 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 		r.UndoOp, r.UndoArgs = rec.UndoOp, rec.UndoArgs
 	}
 	if len(s.Input) > 0 {
-		r.InputSHA256 = sha256hex(s.Input)
+		r.InputSHA256 = utils.SHA256Hex(s.Input)
 	}
 	if err := e.journal(m, r); err != nil {
 		return err
@@ -217,7 +218,7 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 // statting the bare path would consult the real filesystem instead.
 func (e *Engine) journaledStepState(s Step, rec *Record) (inputDrift, done bool) {
 	switch {
-	case len(s.Input) > 0 && rec.InputSHA256 != sha256hex(s.Input):
+	case len(s.Input) > 0 && rec.InputSHA256 != utils.SHA256Hex(s.Input):
 		return true, false
 	case s.Recheck:
 		fmt.Fprintf(e.Out, "%s: journaled but not live on the host — reapplying\n", s.ID)
@@ -285,7 +286,7 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 			rec.Path, s.Path, undoFirst(s.ID))
 	}
 	same := exists && bytes.Equal(cur, s.Content) && curMode == s.Mode.Perm()
-	if same && rec != nil && rec.NewSHA256 == sha256hex(s.Content) {
+	if same && rec != nil && rec.NewSHA256 == utils.SHA256Hex(s.Content) {
 		fmt.Fprintf(e.Out, "%s: unchanged\n", s.Path)
 		return nil
 	}
@@ -323,7 +324,7 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 		rec = m.find(s.ID)
 	}
 	rec.Mode = uint32(s.Mode.Perm())
-	rec.NewSHA256 = sha256hex(s.Content)
+	rec.NewSHA256 = utils.SHA256Hex(s.Content)
 	if err := m.save(e.Root); err != nil {
 		return err
 	}
@@ -339,23 +340,7 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 // half-written qemu shim breaks every GPU handover), and a torn file would
 // also fail undo's changed-since-apply hash gate.
 func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restorecon bool) error {
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	tmp := full + ".tmp"
-	if err := writeSync(tmp, content, mode); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, full); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := syncDir(filepath.Dir(full)); err != nil {
+	if err := utils.WriteAtomic(full, content, mode); err != nil {
 		return err
 	}
 	if restorecon {
@@ -387,7 +372,7 @@ func (e *Engine) applyRunCmd(m *Manifest, s Step) error {
 	r := Record{ID: s.ID, Kind: KindRunCmd, Data: s.Data, Reboot: s.Reboot,
 		Cmd: s.Cmd, UndoCmd: s.UndoCmd, UndoOp: s.UndoOp, UndoArgs: s.UndoArgs}
 	if len(s.Input) > 0 {
-		r.InputSHA256 = sha256hex(s.Input)
+		r.InputSHA256 = utils.SHA256Hex(s.Input)
 	}
 	if err := e.journal(m, r); err != nil {
 		return err

@@ -1,8 +1,6 @@
 package steps
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // Record is the journaled outcome of one applied step.
@@ -94,58 +93,14 @@ func Load(root string) (*Manifest, error) {
 	return &m, nil
 }
 
+// save must be atomic: a torn manifest.json after power loss would wedge every
+// command and lose undo records for mutations already on disk.
 func (m *Manifest) save(root string) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return WriteAtomic(ManifestPath(root), b)
-}
-
-// WriteAtomic writes content to path via a temp file and rename, creating
-// parent dirs. File and directory are fsynced: a torn manifest.json after
-// power loss would wedge every command and lose undo records for mutations
-// already on disk.
-func WriteAtomic(path string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := writeSync(tmp, content, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(path))
-}
-
-func writeSync(path string, content []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		return err
-	}
-	return d.Close()
+	return utils.WriteAtomic(ManifestPath(root), b, 0o600)
 }
 
 // Has reports whether a step id is already journaled.
@@ -198,10 +153,10 @@ func writeBackup(root, name string, content []byte) error {
 	if err := os.MkdirAll(backupDir(root), 0o700); err != nil {
 		return err
 	}
-	if err := writeSync(filepath.Join(backupDir(root), name), content, 0o600); err != nil {
+	if err := utils.WriteSync(filepath.Join(backupDir(root), name), content, 0o600); err != nil {
 		return err
 	}
-	return syncDir(backupDir(root))
+	return utils.SyncDir(backupDir(root))
 }
 
 func backupName(id string) string {
@@ -213,9 +168,4 @@ func backupName(id string) string {
 		}
 		return '_'
 	}, id)
-}
-
-func sha256hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }

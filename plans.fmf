@@ -84,13 +84,15 @@ execute:
         script: |
           set -eux
           # Derived from the spec, never copied: a missing Requires: then fails
-          # here instead of on a user's first run. looking-glass-client is
-          # filtered because it only exists in COPR — installing the built RPM
-          # is what proves that one, and that happens in the Packit build.
+          # here instead of on a user's first run. looking-glass-client and
+          # kvmfr-dkms are filtered because they only exist in COPR —
+          # installing the built RPM is what proves those, and that happens in
+          # the Packit build. The kvmfr test builds the module from the
+          # submodule instead.
           pkgs=$(rpmspec -q --requires \
             --define "pkgver 0" --define "lgver 0" \
             "$TMT_TREE/packaging/orthogonals.spec" \
-            | grep -v '^rpmlib\|^looking-glass-client')
+            | grep -v '^rpmlib\|^looking-glass-client\|^kvmfr-dkms')
           test -n "$pkgs"
           # Mirrors time out often enough to matter in CI.
           # shellcheck disable=SC2086

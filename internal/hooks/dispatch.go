@@ -6,9 +6,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
@@ -32,6 +34,18 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 	case "prepare/begin":
 		if err := oneVMAtATime(root, vm); err != nil {
 			return err
+		}
+		// Before the GPU handover: detaching first would leave the desktop
+		// without its dGPU for a VM that is not going to start. Only for a domain
+		// that names the device — a /dev/shm domain must not pin the buffer.
+		if sizeMiB, ok := domain.KVMFRSizeMiB(root, vm); ok {
+			if err := EnsureKVMFR(root, user, sizeMiB); err != nil {
+				log("%v", err)
+				// The error names its own remedy; the cases differ.
+				notify.Send(vmNote(user, "Looking Glass cannot start — "+
+					strings.TrimPrefix(err.Error(), KVMFRErrPrefix), true))
+				return err
+			}
 		}
 		if err := Detach(root, user, sd); err != nil {
 			return fmt.Errorf("GPU handover to vfio-pci failed — VM start aborted. Details: %s: %w",

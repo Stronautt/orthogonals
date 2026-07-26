@@ -19,6 +19,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/orchestrate"
+	"github.com/stronautt/orthogonals/internal/preflight"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/virt"
 )
@@ -178,9 +179,19 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 			}
 		}
 	}
+	wantKVMFR := hw.KVMFRAvailable(cfg.Root)
+	// Built is not loadable. A domain the hook refuses traps the user: the
+	// refusal's remedy is `orthogonals up`, which lands back here.
+	if wantKVMFR && !preflight.KVMFRWillLoad(cfg.Root, res.Platform.SecureBoot) {
+		fmt.Fprintf(stdout, "kvmfr declined: Secure Boot trusts no key dkms can sign with, so the module cannot load — using %s\n",
+			steps.LookingGlassSHM)
+		fmt.Fprintf(stdout, "  for the faster path: sudo mokutil --import %s, then choose Enroll MOK at the next reboot\n",
+			preflight.DKMSCert)
+		wantKVMFR = false
+	}
 	p, err := domain.NewProfile(res, domain.Options{
 		VMName: o.vmName, RAMGiB: o.ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
-		Width: w, Height: h,
+		Width: w, Height: h, KVMFR: wantKVMFR,
 		GuestUser:     cmp.Or(o.guestUser, prev.User),
 		GuestPassword: cmp.Or(o.guestPassword, prev.Password),
 		Locale:        cmp.Or(o.locale, prev.Locale),
@@ -192,6 +203,11 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	})
 	if err != nil {
 		return err
+	}
+	// The remaining downgrade is the buffer being too large to vmalloc.
+	if wantKVMFR && !p.KVMFR {
+		fmt.Fprintf(stdout, "kvmfr declined: a %d MiB buffer for %dx%d is more than 1/%d of host RAM — using /dev/shm\n",
+			p.IVSHMEMMiB, p.Width, p.Height, domain.KVMFRRAMDivisor)
 	}
 	p.ApplyStage(stage)
 	if m.Has(domain.DefineStepID(p.Name)) {

@@ -6,9 +6,9 @@
       "status": "pass"
     },
     {
-      "message": "found 2 NVIDIA dGPUs; v1 supports exactly one NVIDIA dGPU",
+      "message": "found 2 NVIDIA dGPUs; exactly one is supported",
       "name": "gpu-topology",
-      "remedy": "remove or ignore the extra GPU (multi-dGPU selection is on the roadmap)",
+      "remedy": "remove or disable the extra GPU",
       "status": "fail"
     },
     {
@@ -24,7 +24,7 @@
     {
       "message": "NVIDIA GPUs 0000:01:00.0 and 0000:02:00.0 share vendor:device 10de:2206 — static vfio-pci.ids binding cannot tell them apart",
       "name": "duplicate-gpu-ids",
-      "remedy": "remove one of the identical GPUs; address-based binding is on the post-v1 roadmap",
+      "remedy": "remove one of the identical GPUs",
       "status": "fail"
     },
     {
@@ -79,10 +79,9 @@
       "status": "warn"
     },
     {
-      "message": "Secure Boot is enabled: the NVIDIA kernel module must be signed or it will not load after the setup reboot",
+      "message": "Secure Boot signing not checked (no mokutil, or --root)",
       "name": "secure-boot",
-      "remedy": "if the NVIDIA driver works today you are fine (akmods MOK is enrolled); otherwise enroll it before apply",
-      "status": "warn"
+      "status": "pass"
     },
     {
       "message": "nvidia-persistenced not enabled",

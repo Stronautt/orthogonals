@@ -156,7 +156,7 @@ func TestAnalyzers(t *testing.T) {
 				second := hw.DGPU{PCIDevice: hw.PCIDevice{Address: "0000:02:00.0", Vendor: hw.VendorNVIDIA, Class: "0x030000", IOMMUGroup: 2, HasReset: true}}
 				r.GPUs.DGPUs = append(r.GPUs.DGPUs, second)
 			},
-			check: "gpu-topology", want: Fail, has: []string{"one NVIDIA"},
+			check: "gpu-topology", want: Fail, has: []string{"exactly one is supported"},
 		},
 		{
 			name: "amd dgpu fails",
@@ -339,9 +339,32 @@ func TestAnalyzers(t *testing.T) {
 			check:  "address-width", want: Warn, has: []string{"39", "automatic"},
 		},
 		{
-			name:   "secure boot with nvidia warns about module signing",
-			mutate: func(r *hw.Result, _ *Facts) { r.Platform.SecureBoot = true },
-			check:  "secure-boot", want: Warn, has: []string{"sign"},
+			name: "secure boot with no enrolled key warns and names the import",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.SecureBoot = true
+				f.Signing = ModuleSigning{Checked: true, DKMS: SigningKey{Cert: DKMSCert, Key: DKMSKey}}
+			},
+			check: "secure-boot", want: Warn, has: []string{"mokutil --import", DKMSCert},
+		},
+		{
+			name: "secure boot with the dkms key enrolled passes",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.SecureBoot = true
+				f.Signing = ModuleSigning{Checked: true,
+					DKMS: SigningKey{Cert: DKMSCert, Key: DKMSKey, Enrolled: true}}
+			},
+			check: "secure-boot", want: Pass, has: []string{"kvmfr will load"},
+		},
+		{
+			name: "an enrolled akmods key is reused instead of enrolling a new one",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.SecureBoot = true
+				f.Signing = ModuleSigning{Checked: true,
+					DKMS:   SigningKey{Cert: DKMSCert, Key: DKMSKey},
+					Akmods: []SigningKey{{Cert: "/etc/pki/akmods/certs/public_key.der", Key: "/etc/pki/akmods/private/public_key.priv", Enrolled: true}},
+				}
+			},
+			check: "secure-boot", want: Pass, has: []string{"nothing needs enrolling"},
 		},
 		{
 			name:   "nvidia-persistenced enabled warns",

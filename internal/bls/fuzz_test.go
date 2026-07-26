@@ -12,7 +12,7 @@ import (
 func entryRoot(t *testing.T, content string) (root, entry string) {
 	t.Helper()
 	root = t.TempDir()
-	dir := Dir(root)
+	dir := filepath.Join(root, EntriesPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -64,19 +64,23 @@ func FuzzWanted(f *testing.F) {
 	})
 }
 
-// canonicalOptions rewrites the options line the way editOne does: a single
-// space between tokens and no trailing space. Editing an entry normalizes that
-// line's whitespace, so it is the canonical form — not the original bytes —
-// that a round trip must land back on.
+// canonicalOptions is editEntry's normalization with an identity transform: the
+// combined token set on the first options line, a single space between tokens,
+// no trailing space, and any further options lines blanked. An edit normalizes
+// all of that, so it is the canonical form — not the original bytes — that a
+// round trip must land back on.
 func canonicalOptions(content string) string {
 	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		rest, ok := cutKey(line, "options")
-		if !ok {
-			continue
-		}
-		lines[i] = strings.TrimSpace("options " + strings.Join(strings.Fields(rest), " "))
+	toks, first := parseOptions(lines)
+	if first < 0 {
+		return content
 	}
+	for i := first + 1; i < len(lines); i++ {
+		if _, ok := cutKey(lines[i], "options"); ok {
+			lines[i] = ""
+		}
+	}
+	lines[first] = strings.TrimSpace("options " + strings.Join(toks, " "))
 	return strings.Join(lines, "\n")
 }
 
@@ -97,6 +101,10 @@ func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 	f.Add("options\tro\tquiet\n", "z=1")
 	// an entry that legitimately repeats a token
 	f.Add("options 0 0\n", "00")
+	// the spec's repeated options key: transforming each line on its own used to
+	// drop a token only one of them carried
+	f.Add("options \noptions \xcf", "\xcf")
+	f.Add("options ro\noptions iommu=pt\n", "quiet")
 
 	f.Fuzz(func(t *testing.T, content, args string) {
 		root, entry := entryRoot(t, content)
@@ -105,8 +113,8 @@ func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		original, ok := optionsTokens(string(before))
-		if !ok {
+		original, first := parseOptions(strings.Split(string(before), "\n"))
+		if first < 0 {
 			return // no options line: AddArgs is expected to fail, not round-trip
 		}
 		// The round trip is only identity for tokens that were not already
@@ -144,11 +152,11 @@ func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 			t.Fatalf("add+remove of %q did not restore the entry:\nwant: %q\ngot:  %q",
 				args, want, after)
 		}
-		// Compare against optionsTokens, not Tokens: Tokens returns the
-		// deduplicated union across entries, so an entry that legitimately
-		// repeats a token would not match it.
-		post, ok := optionsTokens(string(after))
-		if !ok {
+		// Compare against parseOptions, not Wanted: Wanted answers about a token
+		// set across every target, so an entry that legitimately repeats a token
+		// would not match it.
+		post, postFirst := parseOptions(strings.Split(string(after), "\n"))
+		if postFirst < 0 {
 			t.Fatalf("add+remove of %q left no options line: %q", args, after)
 		}
 		if !slices.Equal(original, post) {
