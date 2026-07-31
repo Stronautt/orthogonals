@@ -71,7 +71,13 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   caller, where the local name is the documentation (`hostcfg.uncomment`,
   `hw.splitTrim`, `steps.splitLines`). `internal/virt` and `internal/sysd` are the narrow
   client surfaces for libvirt and systemd — no virsh/systemctl exec, no
-  output parsing. `internal/bls` edits `/boot/loader/entries` directly (the
+  output parsing. **sysd dials one connection per call and hangs up**, where
+  virt caches one: go-systemd ties a connection's lifetime to the context it
+  was dialled with, so a cached one is closed by the very call that opened it,
+  and the next call either redials mid-flight or — slipping through just before
+  the close lands — waits out its whole timeout for a `JobRemoved` signal the
+  dead connection can no longer deliver, failing an ordinary restart with
+  `context deadline exceeded`. `internal/bls` edits `/boot/loader/entries` directly (the
   native replacement for grubby) **and `/etc/kernel/cmdline` with it** —
   kernel-install writes a new kernel's entry from that file, so args that stop
   at the entries are dropped by the next `dnf upgrade kernel` and the host

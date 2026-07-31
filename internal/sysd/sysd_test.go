@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
 	"testing"
 
 	godbus "github.com/godbus/dbus/v5"
@@ -31,31 +30,6 @@ func TestIsNoSuchUnit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isNoSuchUnit(tt.err); got != tt.want {
 				t.Errorf("isNoSuchUnit(%v) = %v, want %v", tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestIsClosedConn decides whether a dropped private connection is redialled.
-// A false negative surfaces a transport hiccup as a failed mutation.
-func TestIsClosedConn(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"godbus closed", godbus.ErrClosed, true},
-		{"net closed", net.ErrClosed, true},
-		{"wrapped net closed", fmt.Errorf("enable unit: %w", net.ErrClosed), true},
-		{"closed-connection text", errors.New("use of closed network connection"), true},
-		{"closed-by-user text", errors.New("connection closed by user"), true},
-		{"unrelated failure", errors.New("permission denied"), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isClosedConn(tt.err); got != tt.want {
-				t.Errorf("isClosedConn(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

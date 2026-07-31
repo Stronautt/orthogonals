@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -35,90 +34,50 @@ type Client interface {
 	Close() error
 }
 
-// New returns a lazily connecting client for the local systemd manager.
+// New returns a client for the local systemd manager, one connection per call.
 func New() Client { return &client{} }
 
 // callTimeout bounds every manager call.
 const callTimeout = time.Minute
 
-type client struct {
-	c *sddbus.Conn
-}
+type client struct{}
 
-func (c *client) ensure(ctx context.Context) (*sddbus.Conn, error) {
-	if c.c != nil {
-		return c.c, nil
-	}
-	conn, err := sddbus.NewSystemdConnectionContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("connect to systemd (root required): %w", err)
-	}
-	c.c = conn
-	return conn, nil
-}
-
+// do runs one manager call on its own connection. The connection is never
+// cached across calls: go-systemd binds a connection's lifetime to the context
+// it was dialled with, so one dialled here is closed the moment this call's
+// context is cancelled. A later call reusing it either redials mid-flight or —
+// when it slips through just before the close lands — blocks until its own
+// deadline for a JobRemoved signal the dead connection can no longer deliver.
 func (c *client) do(op string, f func(ctx context.Context, conn *sddbus.Conn) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	conn, err := c.ensure(ctx)
+	conn, err := sddbus.NewSystemdConnectionContext(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to systemd (root required): %w", err)
 	}
-	err = f(ctx, conn)
-	if isClosedConn(err) {
-		conn.Close()
-		c.c = nil
-		if conn, err2 := c.ensure(ctx); err2 == nil {
-			err = f(ctx, conn)
-		}
-	}
-	if err != nil {
+	defer conn.Close()
+	if err := f(ctx, conn); err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 	return nil
 }
 
-// isClosedConn matches the shapes a dropped private connection surfaces as.
-func isClosedConn(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, godbus.ErrClosed) || errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "use of closed network connection") ||
-		strings.Contains(s, "connection closed by user")
-}
-
 func (c *client) EnableUnit(unit string) error {
-	err := c.do("enable unit "+unit, func(ctx context.Context, conn *sddbus.Conn) error {
+	return c.do("enable unit "+unit, func(ctx context.Context, conn *sddbus.Conn) error {
 		if _, _, err := conn.EnableUnitFilesContext(ctx, []string{unit}, false, false); err != nil {
 			return err
 		}
 		return conn.ReloadContext(ctx)
 	})
-	c.resetConn()
-	return err
 }
 
 func (c *client) DisableUnit(unit string) error {
-	err := c.do("disable unit "+unit, func(ctx context.Context, conn *sddbus.Conn) error {
+	return c.do("disable unit "+unit, func(ctx context.Context, conn *sddbus.Conn) error {
 		if _, err := conn.DisableUnitFilesContext(ctx, []string{unit}, false); err != nil {
 			return err
 		}
 		return conn.ReloadContext(ctx)
 	})
-	c.resetConn()
-	return err
-}
-
-// resetConn drops the connection so the next call dials fresh.
-func (c *client) resetConn() {
-	if c.c != nil {
-		c.c.Close()
-		c.c = nil
-	}
 }
 
 func (c *client) UnitFileState(unit string) string {
@@ -140,11 +99,9 @@ func (c *client) UnitFileState(unit string) string {
 }
 
 func (c *client) Reload() error {
-	err := c.do("daemon-reload", func(ctx context.Context, conn *sddbus.Conn) error {
+	return c.do("daemon-reload", func(ctx context.Context, conn *sddbus.Conn) error {
 		return conn.ReloadContext(ctx)
 	})
-	c.resetConn()
-	return err
 }
 
 func (c *client) RestartUnit(unit string) error {
@@ -258,11 +215,5 @@ func isNoSuchUnit(err error) bool {
 		strings.Contains(err.Error(), "NoSuchUnit")
 }
 
-func (c *client) Close() error {
-	if c.c == nil {
-		return nil
-	}
-	c.c.Close()
-	c.c = nil
-	return nil
-}
+// Close holds nothing to close: every call hangs up its own connection.
+func (c *client) Close() error { return nil }
