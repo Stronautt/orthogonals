@@ -7,13 +7,22 @@ import (
 	"testing"
 )
 
-// writeUnder writes content at root/rel, creating parents.
-func writeUnder(t *testing.T, root, rel, content string) {
-	t.Helper()
-	path := filepath.Join(root, rel)
+// fuzzFile makes root/rel's parent directory once, for the whole run: a
+// t.TempDir() per execution costs more I/O than the parse under test, enough on
+// a loaded runner to stall every worker and time the run out.
+func fuzzFile(f *testing.F, rel string) (root, path string) {
+	f.Helper()
+	root = f.TempDir()
+	path = filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+		f.Fatal(err)
 	}
+	return root, path
+}
+
+// writeFuzzFile replaces the whole file, so no input carries over to the next.
+func writeFuzzFile(t *testing.T, path, content string) {
+	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -30,9 +39,9 @@ func FuzzMeminfoKiB(f *testing.F) {
 	f.Add("")
 	f.Add("MemTotal 33554432 kB\n")
 
+	root, path := fuzzFile(f, "proc/meminfo")
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		writeUnder(t, root, "proc/meminfo", content)
+		writeFuzzFile(t, path, content)
 		MeminfoKiB(root, "MemTotal")
 	})
 }
@@ -45,9 +54,9 @@ func FuzzDetectNVIDIA(f *testing.F) {
 	f.Add("garbage")
 	f.Add("")
 
+	root, path := fuzzFile(f, "proc/driver/nvidia/version")
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		writeUnder(t, root, "proc/driver/nvidia/version", content)
+		writeFuzzFile(t, path, content)
 		DetectNVIDIA(root)
 	})
 }
@@ -62,9 +71,9 @@ func FuzzChassisType(f *testing.F) {
 	f.Add("99999999999999999999\n")
 	f.Add("not a number\n")
 
+	root, path := fuzzFile(f, "sys/class/dmi/id/chassis_type")
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		writeUnder(t, root, "sys/class/dmi/id/chassis_type", content)
+		writeFuzzFile(t, path, content)
 		got := ChassisType(root)
 		if IsLaptopChassis(got) && ChassisName(got) == "" {
 			t.Fatalf("chassis %d reads as a laptop but has no name", got)

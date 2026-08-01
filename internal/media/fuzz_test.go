@@ -24,7 +24,7 @@ func FuzzRender(f *testing.F) {
 	f.Add("user", "pw", "en-US", 1<<30, 1<<30)
 
 	f.Fuzz(func(t *testing.T, user, password, locale string, w, h int) {
-		p, err := NewProfile(user, password, locale, w, h)
+		p, err := NewProfile(user, password, locale, w, h, nil)
 		if err != nil {
 			return // refusal is the validator's job; nothing to render
 		}

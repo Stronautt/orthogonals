@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -583,6 +584,66 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 	}
 }
 
+// Shares survive the flag-less re-define an `up` converge performs, and only a
+// lone empty --share clears them.
+func TestVMDefineSharesSticky(t *testing.T) {
+	fakeVMPath(t)
+	root := hwtest.ReferenceRoot(t)
+	for _, dir := range []string{"/srv/docs", "/srv/media"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	define := func(t *testing.T, extra ...string) {
+		t.Helper()
+		args := append([]string{"vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes"}, extra...)
+		if code, _, stderr := run(t, append(args, "define")...); code != 0 {
+			t.Fatalf("exit %d\nstderr: %s", code, stderr)
+		}
+	}
+	define(t, "--share", "/srv/docs", "--share", "/srv/media")
+	want := []string{"/srv/docs", "/srv/media"}
+	if got := domain.ReadGuestConfig(root, "win11").Shares; !reflect.DeepEqual(got, want) {
+		t.Fatalf("shares after define = %q, want %q", got, want)
+	}
+	xmlPath := filepath.Join(root, "/etc/orthogonals/vms/win11.xml")
+	b, err := os.ReadFile(xmlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frag := range []string{"<access mode='shared'/>", "<source dir='/srv/docs'/>", "<target dir='media'/>"} {
+		if !strings.Contains(string(b), frag) {
+			t.Errorf("domain XML is missing %q", frag)
+		}
+	}
+
+	define(t)
+	if got := domain.ReadGuestConfig(root, "win11").Shares; !reflect.DeepEqual(got, want) {
+		t.Errorf("a converge with no --share dropped the shares: %q", got)
+	}
+
+	define(t, "--share", "")
+	if got := domain.ReadGuestConfig(root, "win11").Shares; len(got) != 0 {
+		t.Errorf(`--share "" left shares %q`, got)
+	}
+	if b, err := os.ReadFile(xmlPath); err != nil || strings.Contains(string(b), "virtiofs") {
+		t.Errorf("clearing the shares left the virtiofs devices behind (err %v)", err)
+	}
+}
+
+func TestVMDefineRefusesAMissingShare(t *testing.T) {
+	fakeVMPath(t)
+	root := hwtest.ReferenceRoot(t)
+	code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes",
+		"--share", "/srv/not-there", "define")
+	if code == 0 {
+		t.Fatal("define accepted a share directory that does not exist — the VM would fail to start")
+	}
+	if !strings.Contains(stderr, "/srv/not-there") {
+		t.Errorf("the refusal does not name the bad path: %s", stderr)
+	}
+}
+
 // guest settings given at define land in the domain XML and survive a re-define.
 func TestVMDefineGuestSettingsSticky(t *testing.T) {
 	fakeVMPath(t)
@@ -594,7 +655,7 @@ func TestVMDefineGuestSettingsSticky(t *testing.T) {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
 	want := domain.GuestConfig{User: "pavlo", Password: "s3cret", Locale: "uk-UA", Resolution: "2560x1440", Win11ISO: "/isos/Win11.iso"}
-	if got := domain.ReadGuestConfig(root, "win11"); got != want {
+	if got := domain.ReadGuestConfig(root, "win11"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("metadata after define = %+v, want %+v", got, want)
 	}
 	st, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
@@ -605,7 +666,7 @@ func TestVMDefineGuestSettingsSticky(t *testing.T) {
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("re-define exit %d\nstderr: %s", code, stderr)
 	}
-	if got := domain.ReadGuestConfig(root, "win11"); got != want {
+	if got := domain.ReadGuestConfig(root, "win11"); !reflect.DeepEqual(got, want) {
 		t.Errorf("metadata after re-define = %+v, want %+v", got, want)
 	}
 }

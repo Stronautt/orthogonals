@@ -334,6 +334,9 @@ sudo orthogonals up --yes --vm-name gaming --ram 24 \
 - `--ram`: guest RAM in GiB (default: all of host RAM minus 8 GiB for the host).
 - `--disk`: qcow2 path (default `/var/lib/libvirt/images/<vm-name>.qcow2`).
 - `--disk-size`: disk size in GiB (default 100).
+- `--share`: host directory to export to the guest over virtiofs, as a drive
+  letter counting down from `Z:`; repeat for more, `--share ""` clears them.
+  Only shares present at install time get mounted.
 - `--resolution`: maximum guest resolution `WxH` (default 3840x2160).
 - `--guest-user`, `--guest-password`: guest admin account (default `user` / `password`).
 - `--locale`: guest locale and keyboard, e.g. `uk-UA` (default: the ISO's default language).
@@ -385,7 +388,7 @@ sudo orthogonals vm define --yes --vm-name gaming --display-name "Gaming"
 sudo orthogonals vm undefine --yes --vm-name gaming --purge
 ```
 
-- `--vm-name`, `--display-name`, `--ram`, `--disk`, `--disk-size`, `--resolution`, `--gpu-rom`: as in `up`.
+- `--vm-name`, `--display-name`, `--ram`, `--disk`, `--disk-size`, `--resolution`, `--share`, `--gpu-rom`: as in `up`.
 - `--win11-iso`: attach the install CD (needed for a VM that will install Windows).
 - `--purge`: with `undefine`, also delete the disk image and reset the `up` pipeline for a from-scratch reinstall.
 

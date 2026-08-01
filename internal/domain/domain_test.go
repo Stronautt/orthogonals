@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -83,10 +84,10 @@ func TestGuestConfigRoundTrip(t *testing.T) {
 	}
 	got := ReadGuestConfig(root, p.Name)
 	want := GuestConfig{User: "user", Password: `p&<>"'w`, Locale: "uk-UA", Resolution: "1920x1080"}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ReadGuestConfig = %+v, want %+v", got, want)
 	}
-	if empty := ReadGuestConfig(root, "missing"); empty != (GuestConfig{}) {
+	if empty := ReadGuestConfig(root, "missing"); !reflect.DeepEqual(empty, GuestConfig{}) {
 		t.Errorf("undefined VM must read empty, got %+v", empty)
 	}
 }
@@ -145,6 +146,92 @@ func TestReadPinnedCPUs(t *testing.T) {
 	}
 }
 
+func TestNewShares(t *testing.T) {
+	got, err := NewShares([]string{
+		"/home/user/Documents/",
+		"/home/user/Windows Shared",
+		"/srv/media",
+		"/mnt/Документи",
+		"/mnt/other/Documents",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Share{
+		{Dir: "/home/user/Documents", Tag: "Documents", Drive: "Z:", Service: "VirtioFsSvc"},
+		// a space is fine in the path and becomes a dash in the tag
+		{Dir: "/home/user/Windows Shared", Tag: "Windows-Shared", Drive: "Y:", Service: "VirtioFsSvc-Windows-Shared"},
+		{Dir: "/srv/media", Tag: "media", Drive: "X:", Service: "VirtioFsSvc-media"},
+		// non-ASCII collapses to the fallback tag; the last collides with the
+		// first, proving the dedupe suffix
+		{Dir: "/mnt/Документи", Tag: "share", Drive: "W:", Service: "VirtioFsSvc-share"},
+		{Dir: "/mnt/other/Documents", Tag: "Documents-2", Drive: "V:", Service: "VirtioFsSvc-Documents-2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("NewShares =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestNewSharesRefusals(t *testing.T) {
+	cases := map[string][]string{
+		"relative path":                     {"home/user/Documents"},
+		"same directory":                    {"/srv/media", "/srv/media/"},
+		"XML-hostile":                       {"/srv/m<edia"},
+		"more than there are drive letters": make([]string, len(shareDrives)+1),
+	}
+	for name, dirs := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewShares(dirs); err == nil {
+				t.Errorf("NewShares(%q) succeeded, want a refusal", dirs)
+			}
+		})
+	}
+}
+
+func TestShareTagFitsTheGuestLimit(t *testing.T) {
+	long := "/mnt/" + strings.Repeat("d", 3*MaxShareTag)
+	shares, err := NewShares([]string{long, long + "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range shares {
+		if len(s.Tag) > MaxShareTag {
+			t.Errorf("tag %q is %d bytes, over the %d the guest service accepts", s.Tag, len(s.Tag), MaxShareTag)
+		}
+	}
+	if shares[0].Tag == shares[1].Tag {
+		t.Errorf("truncation collapsed two shares onto tag %q", shares[0].Tag)
+	}
+}
+
+// Without shared access libvirt refuses a virtiofs domain outright, and a
+// domain with no shares must not pay for a backend it does not use.
+func TestSharesRenderSharedMemoryAndDevices(t *testing.T) {
+	with := string(mustRender(t, mustProfile(t, reference(t), Options{
+		Shares: []string{"/home/user/Documents", "/srv/media"},
+	})))
+	for _, want := range []string{
+		"<source type='memfd'/>",
+		"<access mode='shared'/>",
+		"<driver type='virtiofs'/>",
+		"<source dir='/home/user/Documents'/>",
+		"<target dir='Documents'/>",
+		"<source dir='/srv/media'/>",
+		"<target dir='media'/>",
+		"<orthogonals:share>/home/user/Documents</orthogonals:share>",
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("shared domain XML is missing %q", want)
+		}
+	}
+	without := string(mustRender(t, mustProfile(t, reference(t), Options{})))
+	for _, banned := range []string{"access mode='shared'", "virtiofs", "orthogonals:share"} {
+		if strings.Contains(without, banned) {
+			t.Errorf("share-less domain XML contains %q", banned)
+		}
+	}
+}
+
 func TestRenderGolden(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -177,6 +264,12 @@ func TestRenderGolden(t *testing.T) {
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, true},
+		{"reference-shares.xml", reference(t), Options{
+			Win11ISO:     "/home/user/Win11.iso",
+			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
+			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
+			Shares:       []string{"/home/user/Windows Shared", "/srv/media"},
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,7 @@ type vmOpts struct {
 	locale        string
 	win11ISO      string
 	gpuROM        string
+	shares        []string
 	stage         string
 	purge         bool
 }
@@ -56,6 +58,7 @@ func addVMFlags(fs *pflag.FlagSet, o *vmOpts) {
 	fs.StringVar(&o.locale, "locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
 	fs.StringVar(&o.win11ISO, "win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
 	fs.StringVar(&o.gpuROM, "gpu-rom", "", "path to an extracted GPU vBIOS ROM, installed and rendered as <rom file=>; needed only when a MUXless laptop dGPU gives no guest output")
+	fs.StringArrayVar(&o.shares, "share", nil, "host directory to export to the guest over virtiofs; repeat for more, each taking the next drive letter down from Z:. Passing --share replaces the registered set, --share \"\" clears it")
 }
 
 func newVMCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
@@ -166,6 +169,11 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	shares, err := resolveShares(cfg.Root, o.shares, prev.Shares)
+	if err != nil {
+		return err
+	}
+	sharesChanged := !slices.Equal(shares, prev.Shares)
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
 		return err
@@ -191,7 +199,7 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	}
 	p, err := domain.NewProfile(res, domain.Options{
 		VMName: o.vmName, RAMGiB: o.ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
-		Width: w, Height: h, KVMFR: wantKVMFR,
+		Width: w, Height: h, KVMFR: wantKVMFR, Shares: shares,
 		GuestUser:     cmp.Or(o.guestUser, prev.User),
 		GuestPassword: cmp.Or(o.guestPassword, prev.Password),
 		Locale:        cmp.Or(o.locale, prev.Locale),
@@ -208,6 +216,9 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	if wantKVMFR && !p.KVMFR {
 		fmt.Fprintf(stdout, "kvmfr declined: a %d MiB buffer for %dx%d is more than 1/%d of host RAM — using /dev/shm\n",
 			p.IVSHMEMMiB, p.Width, p.Height, domain.KVMFRRAMDivisor)
+	}
+	if stage != domain.StageInstall && sharesChanged {
+		warnLateShares(stdout, p.Name, p.Shares)
 	}
 	p.ApplyStage(stage)
 	if m.Has(domain.DefineStepID(p.Name)) {
@@ -249,6 +260,60 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "VM %s is %s — the updated definition takes effect on its next boot\n", p.Name, state)
 	}
 	return nil
+}
+
+// resolveShares takes the directories --share asks for, else the registered
+// ones, and refuses any that is not an existing directory: libvirt starts
+// virtiofsd before the guest, so a bad path costs the whole VM its start. No
+// flag keeps the registered set — what makes an `up` converge non-destructive —
+// and a lone empty --share clears it.
+func resolveShares(root string, flag, prev []string) ([]string, error) {
+	dirs := prev
+	if len(flag) > 0 {
+		dirs = flag
+		if len(dirs) == 1 && dirs[0] == "" {
+			return nil, nil
+		}
+	}
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if dir == "" {
+			return nil, errors.New("--share needs a directory path (pass it alone to clear the registered shares)")
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("--share %s: %w", dir, err)
+		}
+		fi, err := os.Stat(filepath.Join(root, abs))
+		if err != nil {
+			return nil, fmt.Errorf("--share %s: %w", dir, err)
+		}
+		if !fi.IsDir() {
+			return nil, fmt.Errorf("--share %s is not a directory", dir)
+		}
+		out = append(out, abs)
+	}
+	return out, nil
+}
+
+// warnLateShares reports that the guest cannot mount a share the domain just
+// gained: the mount services are made during provisioning, which an installed
+// guest no longer re-runs.
+func warnLateShares(w io.Writer, vm string, shares []domain.Share) {
+	if len(shares) == 0 {
+		fmt.Fprintf(w, "%s: the virtiofs devices are gone from the domain, but its mount services remain in the guest — delete them there with sc.exe delete\n", vm)
+		return
+	}
+	fmt.Fprintf(w, "%s is already installed, so provisioning will not run again to create the guest mount services. In Windows, as Administrator:\n", vm)
+	for i, s := range shares {
+		verb := "create"
+		if i == 0 {
+			verb = "config" // virtio-win already installs this one
+		}
+		fmt.Fprintf(w, "  sc.exe %s %s binPath= \"<virtiofs.exe> -t %s -m %s\" start= delayed-auto   (%s)\n",
+			verb, s.Service, s.Tag, s.Drive, s.Dir)
+	}
+	fmt.Fprintln(w, "  <virtiofs.exe> is the path already in VirtioFsSvc's ImagePath")
 }
 
 // resolveGPUROM returns the canonical vBIOS path and bytes: from --gpu-rom, else

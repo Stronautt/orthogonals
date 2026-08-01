@@ -53,7 +53,7 @@ func Install(c virt.Client, vm string, out io.Writer) error {
 			if !st.OK {
 				if failedSince.IsZero() {
 					failedSince = time.Now()
-					fmt.Fprintf(out, "guest reports stage %s failed — waiting %v for a provisioning re-run to supersede it\n", st.Stage, provisionFailGrace)
+					fmt.Fprintf(out, "guest reports stage %s failed: %s — waiting %v for a provisioning re-run to supersede it\n", st.Stage, st.Error, provisionFailGrace)
 				} else if time.Since(failedSince) >= provisionFailGrace {
 					return fmt.Errorf("provisioning failed at stage %s: %s", st.Stage, st.Error)
 				}

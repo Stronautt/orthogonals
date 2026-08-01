@@ -80,13 +80,15 @@ func Detach(root, user string, sd sysd.Client) error {
 	if holders := nvidiaHolders(root); len(holders) > 0 {
 		apps := holderApps(holders)
 		log("GPU busy — refusing handover, holders: %s", apps)
-		notify.Send(vmNote(user, "GPU is busy — close these apps, then start the VM again:\n"+apps, false))
+		notify.Send(vmNote(user, "GPU is busy — close these apps, then start the VM again:\n"+apps, true))
 		return fmt.Errorf("GPU busy — close these apps first: %s", apps)
 	}
 	log("holder gate passed")
 	if err := wakeDevices(root, devs, log); err != nil {
 		return abort(root, user, log, "%v", err)
 	}
+	// Non-urgent on purpose: it explains the black screen ahead, and every
+	// failure past this point notifies urgently, so it is never the last word.
 	notify.Send(vmNote(user, "VM is starting — the GPU is being handed over, first screen in ~20 seconds.", false))
 
 	for _, m := range NVIDIAUnloadOrder {
@@ -251,7 +253,7 @@ func reloadNVIDIA(root string, devs []string, sd sysd.Client) error {
 func abort(root, user string, log logFunc, format string, a ...any) error {
 	err := fmt.Errorf(format, a...)
 	log("failed — %v", err)
-	notify.Send(vmNote(user, "GPU handover failed — VM not started. See: "+filepath.Join(root, LogPath), false))
+	notify.Send(vmNote(user, "GPU handover failed — VM not started. See: "+filepath.Join(root, LogPath), true))
 	return err
 }
 
@@ -403,7 +405,7 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 func hugepageAbort(user string, log logFunc, format string, a ...any) error {
 	err := fmt.Errorf(format, a...)
 	log("failed — %v", err)
-	notify.Send(vmNote(user, "VM not started — could not reserve hugepages (host memory fragmented). Reboot or close apps, then start the VM again.", false))
+	notify.Send(vmNote(user, "VM not started — could not reserve hugepages (host memory fragmented). Reboot or close apps, then start the VM again.", true))
 	return err
 }
 

@@ -13,6 +13,13 @@ $debloatStamp = Join-Path $workDir 'debloat.done'
 $lgService = '{{.LGService}}'
 $taskName = 'orthogonals-provision'
 $lgRestartTask = 'orthogonals-lg-restart'
+$stockFsService = 'VirtioFsSvc'
+# one entry per host directory exported over virtiofs, in drive-letter order
+$shares = @(
+{{- range .Shares}}
+    @{ Service = '{{ps .Service}}'; Tag = '{{ps .Tag}}'; Drive = '{{ps .Drive}}' }
+{{- end}}
+)
 
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 Start-Transcript -Path (Join-Path $workDir 'provision.log') -Append | Out-Null
@@ -58,6 +65,28 @@ function Add-TrustedPublisher([string]$Path) {
     $store.Open('ReadWrite'); $store.Add($signer); $store.Close()
 }
 
+# virtiofs.exe's path comes from the shipped service's ImagePath, never a
+# hardcoded one: unquoted as the MSI registers it, quoted once we rewrite it.
+function Get-VirtioFsExe {
+    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $stockFsService
+    $img = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).ImagePath
+    if (-not $img) { throw "$stockFsService is not installed - the virtio-win guest tools left out the virtiofs component" }
+    $img = $img.Trim()
+    if ($img.StartsWith('"')) { return $img.Substring(1, $img.IndexOf('"', 1) - 1) }
+    if ($img -match '^(?<p>.+?\.exe)(\s|$)') { return $Matches['p'] }
+    throw "cannot find virtiofs.exe in the $stockFsService command line: $img"
+}
+
+# Automatic (delayed start) is Start=2 plus DelayedAutostart=1, which
+# Get-Service reports as plain Automatic — hence reading the key.
+function Test-FsService($Share) {
+    $svc = Get-Service -Name $Share.Service -ErrorAction SilentlyContinue
+    if (-not $svc -or $svc.Status -ne 'Running') { return $false }
+    $p = Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $Share.Service) -ErrorAction SilentlyContinue
+    return $p -and $p.Start -eq 2 -and $p.DelayedAutostart -eq 1 -and
+        $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
+}
+
 Write-Status -Stage 'start' -Ok $true
 
 # Windows Update ships its own NVIDIA driver and races the pinned one: the
@@ -96,6 +125,20 @@ $script:needReboot = $false
 
 $stages = @(
     @{
+        # before the guest tools: their VirtioFsSvc links against WinFsp and
+        # starts at install time, and with no FUSE layer under it that first
+        # start fails with nothing retrying until the guest reboots.
+        Name = 'winfsp'
+        Done = { Get-Service -Name 'WinFsp.Launcher' -ErrorAction SilentlyContinue }
+        Run  = {
+            # default feature set: the developer, .NET and Cygwin features are
+            # INSTALLLEVEL 10 or higher and nothing in this guest links them
+            $code = Invoke-Installer 'msiexec.exe' ('/i "' + (Find-CDFile 'winfsp.msi') + '" /qn /norestart')
+            if ($code -eq 3010) { $script:needReboot = $true }   # ERROR_SUCCESS_REBOOT_REQUIRED
+            elseif ($code -ne 0) { throw "WinFsp installer exit code $code" }
+        }
+    },
+    @{
         # the guest-tools bundle chains the driver MSI, QEMU-GA and the SPICE
         # vdagent; the bare virtio-win-gt MSI is drivers only — no vdagent, no
         # clipboard. QEMU-GA is the only channel the host polls provisioning
@@ -110,6 +153,46 @@ $stages = @(
             elseif ($code -ne 0) { throw "virtio guest tools exit code $code" }
         }
     },
+{{- if .Shares}}
+    @{
+        # VirtioFsSvc mounts exactly one device and takes its tag from the
+        # service command line, never its registry key: the first share
+        # reconfigures the shipped service, the rest get clones of it. Untagged,
+        # they would all race for whichever device enumerates first.
+        Name = 'virtiofs'
+        Done = {
+            $ok = $true
+            foreach ($s in $shares) { if (-not (Test-FsService $s)) { $ok = $false } }
+            $ok
+        }
+        # The command line never crosses an argv boundary: virtiofs.exe lives
+        # under "Program Files", so the binPath carries both quotes and spaces,
+        # and Windows PowerShell wraps such an argument in one more pair of
+        # quotes without escaping the inner ones - sc.exe then reads a path that
+        # ends at "C:\Program". New-Service and the registry take strings.
+        Run  = {
+            $exe = Get-VirtioFsExe
+            foreach ($s in $shares) {
+                $bin = '"' + $exe + '" -t ' + $s.Tag + ' -m ' + $s.Drive
+                $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $s.Service
+                if (Get-Service -Name $s.Service -ErrorAction SilentlyContinue) {
+                    # a command line only takes effect on the next start
+                    Stop-Service -Name $s.Service -Force -ErrorAction SilentlyContinue
+                } else {
+                    New-Service -Name $s.Service -BinaryPathName $bin -DisplayName ('VirtIO-FS ' + $s.Tag) | Out-Null
+                }
+                # ExpandString is the type sc.exe gives ImagePath, and what the
+                # SCM expects; DelayedAutostart is only read when Start is 2.
+                Set-ItemProperty -Path $key -Name ImagePath -Value $bin -Type ExpandString
+                # delayed: an automatic start races device enumeration and
+                # WinFsp's driver load, both of which the mount needs
+                Set-ItemProperty -Path $key -Name Start -Value 2 -Type DWord
+                Set-ItemProperty -Path $key -Name DelayedAutostart -Value 1 -Type DWord
+                Start-Service -Name $s.Service
+            }
+        }
+    },
+{{- end}}
     @{
         # before the driver lands the GPU shows as Microsoft Basic Display
         # Adapter, never as NVIDIA - that is the done-check

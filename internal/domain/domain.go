@@ -56,7 +56,14 @@ const (
 
 	// WideAddressWidthBits is the IOMMU address-width threshold for the maxphysaddr fix.
 	WideAddressWidthBits = 40
+
+	// MaxShareTag is the longest virtiofs mount tag the guest service accepts.
+	MaxShareTag = 36
 )
+
+// shareDrives are the guest drive letters shares take, in order: counting down
+// from Z keeps clear of C and the install CDs.
+const shareDrives = "ZYXWVUTSRQPONMLKJIHGFE"
 
 // DefaultGuestRAMGiB is the default guest RAM in GiB for a host of hostBytes:
 // DefaultRAMNum/DefaultRAMDen (5/8) of host RAM, scaling with the host.
@@ -86,6 +93,90 @@ type Options struct {
 	// is built for the running kernel. NewProfile still refuses a buffer too
 	// large to vmalloc, so compare with Profile.KVMFR to detect the downgrade.
 	KVMFR bool
+	// Shares are absolute host directories to export over virtiofs, in
+	// drive-letter order; the caller has checked each exists and is a directory.
+	Shares []string
+}
+
+// Share is one host directory exported to the guest over virtiofs.
+type Share struct {
+	Dir   string // host path <source dir=> names
+	Tag   string // virtiofs mount tag, and the volume name the guest shows
+	Drive string // guest drive letter, "Z:" form
+	// Service mounts this share. VirtioFsSvc holds one filesystem object and
+	// reads its tag from the command line, never its registry key, so it serves
+	// exactly one share and the rest need clones of it.
+	Service string
+}
+
+// stockShareService is the service virtio-win installs; the first share reuses it.
+const stockShareService = "VirtioFsSvc"
+
+// NewShares derives each share's tag, drive letter and guest service name from
+// the order given, so a converge that re-reads the registered directories
+// reproduces the same letters.
+func NewShares(dirs []string) ([]Share, error) {
+	if len(dirs) > len(shareDrives) {
+		return nil, fmt.Errorf("%d shared directories is more than the %d drive letters a guest has for them",
+			len(dirs), len(shareDrives))
+	}
+	out := make([]Share, 0, len(dirs))
+	seen := map[string]bool{}
+	tags := map[string]bool{}
+	for i, dir := range dirs {
+		if !filepath.IsAbs(dir) {
+			return nil, fmt.Errorf("shared directory %q is not an absolute path", dir)
+		}
+		dir = filepath.Clean(dir)
+		if strings.ContainsAny(dir, `<>&'"`) {
+			return nil, fmt.Errorf("shared directory %q contains characters unsupported in libvirt XML", dir)
+		}
+		if seen[dir] {
+			return nil, fmt.Errorf("shared directory %q is listed twice", dir)
+		}
+		seen[dir] = true
+		tag := shareTag(dir, tags)
+		tags[tag] = true
+		svc := stockShareService
+		if i > 0 {
+			svc = stockShareService + "-" + tag
+		}
+		out = append(out, Share{Dir: dir, Tag: tag, Drive: shareDrives[i:i+1] + ":", Service: svc})
+	}
+	return out, nil
+}
+
+// shareTag builds a mount tag from a directory's base name, ASCII only: the tag
+// crosses the QEMU command line, the domain XML and a wide-string compare in the
+// guest service. Collisions take a numeric suffix.
+func shareTag(dir string, taken map[string]bool) string {
+	var b strings.Builder
+	for _, r := range filepath.Base(dir) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	tag := strings.Trim(b.String(), "-.")
+	if tag == "" {
+		tag = "share"
+	}
+	base := truncateTag(tag, MaxShareTag)
+	tag = base
+	for n := 2; taken[tag]; n++ {
+		suffix := "-" + strconv.Itoa(n)
+		tag = truncateTag(base, MaxShareTag-len(suffix)) + suffix
+	}
+	return tag
+}
+
+func truncateTag(tag string, max int) string {
+	if len(tag) <= max {
+		return tag
+	}
+	return strings.Trim(tag[:max], "-.")
 }
 
 // BDF is a PCI address split into the hostdev XML address fields.
@@ -126,6 +217,8 @@ type Profile struct {
 	UUID          string
 	ROMFile       string
 	ROMContent    []byte
+	// Shares are the virtiofs exports; any at all force shared memory backing.
+	Shares []Share
 }
 
 // NewProfile derives the domain profile from a detect result.
@@ -152,6 +245,9 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		ROMFile:     o.ROMFile, ROMContent: o.ROMContent,
 	}
 	if err := checkROM(o.ROMFile, o.ROMContent); err != nil {
+		return Profile{}, err
+	}
+	if p.Shares, err = NewShares(o.Shares); err != nil {
 		return Profile{}, err
 	}
 	if p.DiskSizeGiB == 0 {
@@ -361,6 +457,9 @@ type GuestConfig struct {
 	Resolution string `xml:"metadata>guest>resolution"`
 	Win11ISO   string `xml:"metadata>guest>win11-iso"`
 	GPURom     string `xml:"metadata>guest>gpu-rom"`
+	// Shares are the registered virtiofs directories, in drive-letter order.
+	// Tags and letters are not stored — NewShares derives them from this order.
+	Shares []string `xml:"metadata>guest>share"`
 }
 
 // ReadGuestConfig loads the guest config from the VM's registry XML under root.

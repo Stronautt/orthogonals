@@ -393,6 +393,12 @@ func volumePool(l *libvirt.Libvirt, dir string) (pool libvirt.StoragePool, trans
 		return pool, false, fmt.Errorf("storage pool %q owns %s but is not running — `virsh pool-start %s`, or point --disk elsewhere",
 			pool.Name, dir, pool.Name)
 	}
+	// libvirt caches the pool's volume list, so a disk deleted outside libvirt
+	// leaves a name whose file is gone and the next create of it is refused as
+	// already existing. Refreshing re-reads the directory and writes nothing.
+	if err := l.StoragePoolRefresh(pool, 0); err != nil {
+		return pool, false, fmt.Errorf("refresh storage pool %q over %s: %w", pool.Name, dir, err)
+	}
 	return pool, false, nil
 }
 

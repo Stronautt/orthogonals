@@ -40,6 +40,14 @@ var (
 		SHA256:  "e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331",
 		File:    "virtio-win.iso",
 	}
+	// WinFSP is the FUSE layer VirtioFsSvc links against; no share mounts without it.
+	WinFSP = Download{
+		Name:    "WinFsp",
+		Version: "2.1.25156",
+		URL:     "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi",
+		SHA256:  "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a",
+		File:    "winfsp.msi",
+	}
 	// NVIDIADriver is the pinned known-good Windows driver.
 	NVIDIADriver = Download{
 		Name:    "NVIDIA Windows driver",
@@ -84,7 +92,7 @@ var (
 
 // Downloads is everything media fetches into the cache.
 func Downloads() []Download {
-	return []Download{VirtioWin, NVIDIADriver, LookingGlassHost, VDD, Nefcon, Win11Debloat}
+	return []Download{VirtioWin, WinFSP, NVIDIADriver, LookingGlassHost, VDD, Nefcon, Win11Debloat}
 }
 
 // OnProvisionISO reports whether a download belongs on the provision ISO.

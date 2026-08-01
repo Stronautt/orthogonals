@@ -140,6 +140,22 @@ since they all source `lib.sh` and without it shellcheck sees none of it.
   where nothing else survives. `vm launch` passes `-f` for a `/dev/shm` domain,
   because the client prefers `/dev/kvmfr0` whenever it exists and would
   otherwise attach to a stale buffer and wait forever.
+- **Shared folders are `--share <dir>`, repeatable, and cost the domain its
+  private memory.** virtiofsd maps guest RAM out of process, so a share adds
+  `<source type='memfd'/><access mode='shared'/>` to the hugepage backing —
+  libvirt refuses a virtiofs domain without it. The dirs are the only thing
+  registered (`<orthogonals:share>` in the metadata); `domain.NewShares` derives
+  tag, drive letter (Z down) and guest service name from their **order**, so
+  there is one place those can be wrong rather than two that disagree, and a
+  flag-less converge reproduces them. Guest side: **virtio-win's `VirtioFsSvc`
+  mounts exactly one device** — it holds a single filesystem object and reads
+  its tag from the service command line, never from its registry key — so
+  provisioning reconfigures the shipped service for share one and `sc.exe
+  create`s a clone per extra share, each `start= delayed-auto` and pinned with
+  `-t`/`-m`. Untagged services would race for whichever device enumerates
+  first. Those services are made during provisioning only: a share added to an
+  installed guest reaches the domain but nothing mounts it, which `vm define`
+  says out loud rather than leaving silent.
 - **Every host mutation routes through the apply engine** (`internal/steps`):
   journaled to `/var/lib/orthogonals/manifest.json` with original bytes
   backed up, so `undo` restores byte-identically. The journal is

@@ -54,10 +54,13 @@ type Profile struct {
 	Width, Height int
 	Modes         []Mode
 	Edition       string
+	// Shares get a guest mount service each. Baked into the media, so a share
+	// added after the install does not reach the guest.
+	Shares []domain.Share
 }
 
 // NewProfile validates the guest options.
-func NewProfile(user, password, locale string, width, height int) (Profile, error) {
+func NewProfile(user, password, locale string, width, height int, shares []domain.Share) (Profile, error) {
 	if user == "" {
 		return Profile{}, errors.New("guest user name is empty")
 	}
@@ -85,7 +88,7 @@ func NewProfile(user, password, locale string, width, height int) (Profile, erro
 	return Profile{
 		GuestUser: user, GuestPassword: password, Locale: locale,
 		Width: width, Height: height, Modes: guestModes(width, height),
-		Edition: Edition,
+		Edition: Edition, Shares: shares,
 	}, nil
 }
 

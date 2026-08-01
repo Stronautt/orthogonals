@@ -153,6 +153,13 @@ case "$COUNT" in
 	virsh --connect qemu:///system pool-start tier-images >/dev/null ||
 		fail "could not start the pool over the default disk directory"
 
+	# Seed the pool with a volume and remove its file behind libvirt's back, as
+	# an undo or a hand rm does. The cached name outlives the file and refuses
+	# the next create as already existing, so the volume step must refresh first.
+	virsh --connect qemu:///system vol-create-as tier-images "$VM_NAME.qcow2" 1M >/dev/null ||
+		fail "could not seed the pool with a volume"
+	rm -f "/var/lib/libvirt/images/$VM_NAME.qcow2"
+
 	# VerifyBoot now reads a real /proc/cmdline; DefineVM
 	# reaches a live libvirtd. BuildMedia then stops on the placeholder ISO,
 	# which is the expected terminus, so the exit status is not 0.
@@ -165,7 +172,7 @@ case "$COUNT" in
 	virsh --connect qemu:///system vol-list tier-images >"$WORK/vols.txt"
 	grep -q "$VM_NAME.qcow2" "$WORK/vols.txt" ||
 		fail "the disk was not created in the pool that owns its directory: $(cat "$WORK/vols.txt")"
-	pass "the disk went through the pool that already owned its directory"
+	pass "the disk went through the pool that already owned its directory, past its stale volume entry"
 
 	[ "$(pipeline_state)" = vm-defined ] ||
 		fail "pipeline state is $(pipeline_state), want vm-defined — the reboot did not advance it"

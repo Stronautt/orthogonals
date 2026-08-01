@@ -24,6 +24,7 @@ import (
 	"github.com/kdomanski/iso9660"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
@@ -31,7 +32,7 @@ var update = flag.Bool("update", false, "rewrite golden files")
 
 func referenceProfile(t *testing.T) Profile {
 	t.Helper()
-	p, err := NewProfile("user", "s3cretPassw0rd16", "", 0, 0)
+	p, err := NewProfile("user", "s3cretPassw0rd16", "", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +167,58 @@ func TestProvisionInstallsGuestAgent(t *testing.T) {
 	}
 }
 
+func TestProvisionInstallsWinFspBeforeGuestTools(t *testing.T) {
+	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
+	winfsp := strings.Index(s, "Name = 'winfsp'")
+	tools := strings.Index(s, "Name = 'virtio-guest-tools'")
+	if winfsp == -1 {
+		t.Fatal("provision.ps1 never installs WinFsp — virtiofs shares will not mount")
+	}
+	if winfsp > tools {
+		t.Error("winfsp must run before virtio-guest-tools, or VirtioFsSvc fails its first start")
+	}
+}
+
+func TestProvisionMountsEveryShare(t *testing.T) {
+	shares, err := domain.NewShares([]string{"/home/user/Documents", "/srv/media"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProfile("user", "s3cretPassw0rd16", "", 0, 0, shares)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRender(t, p)["provision.ps1"])
+	for _, want := range []string{
+		"Name = 'virtiofs'",
+		"Service = 'VirtioFsSvc'; Tag = 'Documents'; Drive = 'Z:'",
+		"Service = 'VirtioFsSvc-media'; Tag = 'media'; Drive = 'Y:'",
+		"New-Service -Name $s.Service -BinaryPathName $bin",
+		"Set-ItemProperty -Path $key -Name ImagePath -Value $bin -Type ExpandString",
+		"Set-ItemProperty -Path $key -Name DelayedAutostart -Value 1 -Type DWord",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("provision.ps1 is missing %q", want)
+		}
+	}
+	// $bin holds a quoted "Program Files" path plus arguments. Windows
+	// PowerShell re-quotes such an argument without escaping the inner quotes,
+	// so no argv-passing tool can receive it whole - the service configuration
+	// has to stay on cmdlets and the registry.
+	for _, banned := range []string{"sc.exe config", "sc.exe create"} {
+		if strings.Contains(s, banned) {
+			t.Errorf("provision.ps1 passes the virtiofs binPath through %q; it arrives truncated at \"C:\\Program\"", banned)
+		}
+	}
+	// the service is a virtio-win component, so it does not exist before then
+	if i, j := strings.Index(s, "Name = 'virtiofs'"), strings.Index(s, "Name = 'virtio-guest-tools'"); i < j {
+		t.Error("the virtiofs stage must run after virtio-guest-tools installs VirtioFsSvc")
+	}
+	if plain := string(mustRender(t, referenceProfile(t))["provision.ps1"]); strings.Contains(plain, "Name = 'virtiofs'") {
+		t.Error("a guest with no shares must not get a mount service for a device it does not have")
+	}
+}
+
 func TestAutounattendContent(t *testing.T) {
 	b := mustRender(t, referenceProfile(t))["autounattend.xml"]
 	wellFormedXML(t, b)
@@ -195,7 +248,7 @@ func TestAutounattendContent(t *testing.T) {
 }
 
 func TestAutounattendEscaping(t *testing.T) {
-	p, err := NewProfile("user", `p<&>"pass`, "", 0, 0)
+	p, err := NewProfile("user", `p<&>"pass`, "", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +296,7 @@ func TestProvisionContent(t *testing.T) {
 }
 
 func TestProvisionUserEscaping(t *testing.T) {
-	p, err := NewProfile("o'user", "pw", "", 0, 0)
+	p, err := NewProfile("o'user", "pw", "", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,20 +306,33 @@ func TestProvisionUserEscaping(t *testing.T) {
 	}
 }
 
-// TestProvisionPwshParse parse-checks the rendered script when pwsh is installed.
+// TestProvisionPwshParse parse-checks the rendered script when pwsh is
+// installed. Both share counts: only a rendering with shares in it exercises
+// the separators of their templated loop.
 func TestProvisionPwshParse(t *testing.T) {
 	if _, err := exec.LookPath("pwsh"); err != nil {
 		t.Skip("pwsh not installed")
 	}
-	b := mustRender(t, referenceProfile(t))["provision.ps1"]
-	path := filepath.Join(t.TempDir(), "provision.ps1")
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	shares, err := domain.NewShares([]string{"/home/user/Documents", "/srv/media"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	check := fmt.Sprintf(`$errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('%s', [ref]$null, [ref]$errs); if ($errs.Count) { $errs | Out-String | Write-Output; exit 1 }`, path)
-	out, err := exec.Command("pwsh", "-NoProfile", "-Command", check).CombinedOutput()
+	shared, err := NewProfile("user", "s3cretPassw0rd16", "", 0, 0, shares)
 	if err != nil {
-		t.Errorf("provision.ps1 does not parse: %v\n%s", err, out)
+		t.Fatal(err)
+	}
+	for name, p := range map[string]Profile{"no shares": referenceProfile(t), "two shares": shared} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "provision.ps1")
+			if err := os.WriteFile(path, mustRender(t, p)["provision.ps1"], 0o644); err != nil {
+				t.Fatal(err)
+			}
+			check := fmt.Sprintf(`$errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('%s', [ref]$null, [ref]$errs); if ($errs.Count) { $errs | Out-String | Write-Output; exit 1 }`, path)
+			out, err := exec.Command("pwsh", "-NoProfile", "-Command", check).CombinedOutput()
+			if err != nil {
+				t.Errorf("provision.ps1 does not parse: %v\n%s", err, out)
+			}
+		})
 	}
 }
 
@@ -334,7 +400,7 @@ func TestGuestExecStderr(t *testing.T) {
 }
 
 func TestVDDSettingsContent(t *testing.T) {
-	p, err := NewProfile("user", "pw", "", 3840, 2160)
+	p, err := NewProfile("user", "pw", "", 3840, 2160, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +432,7 @@ func TestGuestModes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := NewProfile("user", "pw", "", tc.width, tc.height)
+			p, err := NewProfile("user", "pw", "", tc.width, tc.height, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -391,7 +457,7 @@ func TestNewProfileValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := NewProfile(c.user, c.pass, "", c.width, c.height); err == nil {
+			if _, err := NewProfile(c.user, c.pass, "", c.width, c.height, nil); err == nil {
 				t.Error("want error, got nil")
 			}
 		})
@@ -617,6 +683,7 @@ func TestBuildISO(t *testing.T) {
 		"autounattend.xml": true, "provision.ps1": true, "vdd_settings.xml": true,
 		"nvidia-driver.exe": true, "looking-glass-host.zip": true,
 		"vdd-driver.zip": true, "nefcon.zip": true, "win11debloat.zip": true,
+		"winfsp.msi": true,
 	}
 	for name := range want {
 		if !got[name] {

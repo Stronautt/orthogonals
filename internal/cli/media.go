@@ -80,7 +80,11 @@ func runMedia(cfg *Config, o mediaOpts, stdout, stderr io.Writer) error {
 	if loc == "" {
 		loc = info.DefaultLanguage
 	}
-	p, err := media.NewProfile(user, pass, loc, w, h)
+	shares, err := domain.NewShares(meta.Shares)
+	if err != nil {
+		return err
+	}
+	p, err := media.NewProfile(user, pass, loc, w, h, shares)
 	if err != nil {
 		return err
 	}

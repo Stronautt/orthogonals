@@ -20,12 +20,14 @@ func FuzzManifestLoad(f *testing.F) {
 	f.Add(`[]`)
 	f.Add(`{"records":[{"id":"a","kind":"op","op_args":{"a":"b"}}]}`)
 
+	// made once for the whole run: a t.TempDir() per execution costs more I/O
+	// than the parse under test, and stalls every worker on a loaded runner
+	root := f.TempDir()
+	path := ManifestPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		f.Fatal(err)
+	}
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		path := ManifestPath(root)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}

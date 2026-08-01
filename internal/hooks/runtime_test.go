@@ -219,6 +219,49 @@ func TestDetachHolderRefusal(t *testing.T) {
 	}
 }
 
+// A "did not start" notification has to outlive the optimistic "VM is starting"
+// one before it. Normal urgency auto-hides, leaving only the promise of a screen
+// that never came — why a desktop-shortcut launch looks like it hung.
+func TestAbortNotificationsAreUrgent(t *testing.T) {
+	t.Run("holder gate", func(t *testing.T) {
+		root := hookRoot(t)
+		stubDeviceDriver(t, driverFromOverride)
+		stubDeleteModule(t, nil)
+		notes := stubNotify(t)
+		fakeBin(t, "modprobe", "")
+		seedHolder(t, root, 4242, "chrome")
+
+		_ = Detach(root, "tester", &sysdtest.Fake{})
+		assertUrgent(t, notes)
+	})
+	t.Run("handover", func(t *testing.T) {
+		root := hookRoot(t)
+		stubDeviceDriver(t, driverFromOverride)
+		stubDeleteModule(t, unix.EWOULDBLOCK)
+		notes := stubNotify(t)
+		fakeBin(t, "modprobe", "")
+
+		_ = Detach(root, "tester", &sysdtest.Fake{})
+		assertUrgent(t, notes)
+	})
+	t.Run("hugepages", func(t *testing.T) {
+		notes := stubNotify(t)
+		_ = hugepageAbort("tester", func(string, ...any) {}, "fragmented")
+		assertUrgent(t, notes)
+	})
+}
+
+// assertUrgent checks the last notification, the one the desktop keeps on screen.
+func assertUrgent(t *testing.T, notes *[]string) {
+	t.Helper()
+	if len(*notes) == 0 {
+		t.Fatal("the abort sent no notification at all")
+	}
+	if last := (*notes)[len(*notes)-1]; !strings.HasPrefix(last, "critical: ") {
+		t.Errorf("the last notification auto-hides: %q", last)
+	}
+}
+
 func TestDetachBusyModuleAborts(t *testing.T) {
 	root := hookRoot(t)
 	stubDeviceDriver(t, driverFromOverride)

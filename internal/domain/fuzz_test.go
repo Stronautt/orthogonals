@@ -9,6 +9,19 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
+// fuzzDomainXML makes the registry directory once, for the whole run: a
+// t.TempDir() per execution costs more I/O than the xml.Unmarshal under test,
+// enough on a loaded runner to stall every worker and time the run out.
+func fuzzDomainXML(f *testing.F) (root, path string) {
+	f.Helper()
+	root = f.TempDir()
+	path = filepath.Join(root, xmlPath("win11"))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		f.Fatal(err)
+	}
+	return root, path
+}
+
 // FuzzReadMemoryMiB asserts arbitrary domain XML never panics and never yields
 // a memory size the caller could mis-scale a hugepage pool from.
 func FuzzReadMemoryMiB(f *testing.F) {
@@ -21,12 +34,8 @@ func FuzzReadMemoryMiB(f *testing.F) {
 	f.Add(`not xml at all`)
 	f.Add(``)
 
+	root, path := fuzzDomainXML(f)
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		path := filepath.Join(root, xmlPath("win11"))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -61,12 +70,8 @@ func FuzzKVMFRSizeMiB(f *testing.F) {
 	f.Add(`not xml at all`)
 	f.Add(``)
 
+	root, path := fuzzDomainXML(f)
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		path := filepath.Join(root, xmlPath("win11"))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -91,12 +96,8 @@ func FuzzReadGuestConfig(f *testing.F) {
 	f.Add(`<domain>`)
 	f.Add(``)
 
+	root, path := fuzzDomainXML(f)
 	f.Fuzz(func(t *testing.T, content string) {
-		root := t.TempDir()
-		path := filepath.Join(root, xmlPath("win11"))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}

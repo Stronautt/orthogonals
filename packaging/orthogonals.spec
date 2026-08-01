@@ -15,6 +15,8 @@ Requires:       qemu-kvm
 Requires:       libvirt
 Requires:       edk2-ovmf
 Requires:       swtpm-tools
+# libvirt spawns virtiofsd for a --share domain; it is not a qemu-kvm dependency
+Requires:       virtiofsd
 # host configuration binaries the apply steps invoke
 Requires:       dracut
 Requires:       policycoreutils
