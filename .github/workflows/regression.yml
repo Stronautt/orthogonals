@@ -38,11 +38,32 @@ jobs:
           go-version: stable
       - name: Fuzz every target in internal/${{ matrix.package }}
         run: |
-          echo "### Fuzz — internal/${{ matrix.package }}" >> "$GITHUB_STEP_SUMMARY"
-          for t in $(go test ./internal/${{ matrix.package }} -list 'Fuzz.*' | grep '^Fuzz'); do
+          pkg=internal/${{ matrix.package }}
+          echo "### Fuzz — $pkg" >> "$GITHUB_STEP_SUMMARY"
+          for t in $(go test ./$pkg -list 'Fuzz.*' | grep '^Fuzz'); do
             echo "::group::$t"
-            go test ./internal/${{ matrix.package }} -run "$t" -fuzz "$t" -fuzztime=120s
+            go test ./$pkg -run "$t" -fuzz "$t" -fuzztime=120s 2>&1 | tee fuzz.log
+            status=${PIPESTATUS[0]}
             echo "::endgroup::"
+            # Go's fuzz coordinator reports its own -fuzztime deadline as a test
+            # failure whenever it wakes on that deadline before the cancellation
+            # has reached the worker context it compares itself against
+            # (internal/fuzz/fuzz.go, `stop(ctx.Err())`): the parent closes its
+            # done channel before propagating to the child, so the suppression
+            # loses a race it is expected to win. testdeps' own guard cannot
+            # catch it — that one holds the signal context, and the deadline
+            # context is created inside CoordinateFuzzing where it cannot reach.
+            # The crasher tree, not the exit status, is therefore the verdict:
+            # a crasher found in the same window IS written to testdata, but the
+            # deferred writer only replaces the returned error when it is nil,
+            # so a real finding can carry this exact message too.
+            if [ "$status" -ne 0 ] &&
+               grep -q '^    context deadline exceeded$' fuzz.log &&
+               [ -z "$(ls -A $pkg/testdata/fuzz 2>/dev/null)" ]; then
+              echo "- ⚠️ \`$t\` (120s, no crashers; upstream deadline flake)" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            [ "$status" -eq 0 ] || exit "$status"
             echo "- ✅ \`$t\` (120s, no crashers)" >> "$GITHUB_STEP_SUMMARY"
           done
       - name: Upload any crashers
