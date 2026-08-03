@@ -12,13 +12,12 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps/stepstest"
 )
 
-// propIDs is a deliberately cramped id alphabet: "a b", "a_b", and "a/b" all
-// collapse to the same backup name, so collisions — the case Apply must refuse
-// rather than corrupt — actually occur.
+// A cramped alphabet on purpose: "a b", "a_b" and "a/b" collapse to the same
+// backup name, so the collision Apply must refuse actually occurs.
 var propIDs = []string{"a", "b", "a.b", "a-b", "a b", "a_b", "a/b", "A"}
 
-// propPaths is small enough that steps routinely target the same file and the
-// same not-yet-existing directory.
+// Small enough that steps routinely target the same file and the same
+// not-yet-existing directory.
 var propPaths = []string{
 	"/etc/one.conf",
 	"/etc/two.conf",
@@ -60,8 +59,8 @@ func genStepList(t *rapid.T) []Step {
 	return list
 }
 
-// propStepRoot seeds a tree where some target paths already exist, so the
-// backup-and-restore path is exercised rather than only file creation.
+// propStepRoot seeds a tree where some target paths already exist, so
+// backup-and-restore is exercised rather than only file creation.
 func propStepRoot(t *rapid.T) string {
 	t.Helper()
 	root, err := os.MkdirTemp("", "orthogonals-steps-prop")
@@ -100,9 +99,8 @@ func snap(t *rapid.T, root string) string {
 	return s
 }
 
-// TestApplyUndoRestoresAnyStepList reaches step combinations the host-config
-// plan never produces. A list Apply refuses must leave the tree untouched; a
-// list it accepts must undo byte for byte.
+// A list Apply refuses must leave the tree untouched; a list it accepts must
+// undo byte for byte.
 func TestApplyUndoRestoresAnyStepList(t *testing.T) {
 	t.Setenv("PATH", hwtest.FakeTools(t, "testtool"))
 	rapid.Check(t, func(rt *rapid.T) {
@@ -128,8 +126,8 @@ func TestApplyUndoRestoresAnyStepList(t *testing.T) {
 	})
 }
 
-// TestManifestSurvivesAFreshProcess asserts the journal round-trips through
-// disk unchanged: undo has to work from a process that never saw the apply.
+// The journal must round-trip through disk unchanged: undo has to work from a
+// process that never saw the apply.
 func TestManifestSurvivesAFreshProcess(t *testing.T) {
 	t.Setenv("PATH", hwtest.FakeTools(t, "testtool"))
 	rapid.Check(t, func(rt *rapid.T) {

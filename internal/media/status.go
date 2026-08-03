@@ -18,13 +18,11 @@ type Status struct {
 	Error string `json:"error"`
 }
 
-// Done reports whether every provisioning stage finished.
 func (s Status) Done() bool { return s.OK && s.Stage == "done" }
 
-// errNoStatus means the guest agent responded but the status file does not exist yet.
+// errNoStatus means the agent responded but the status file does not exist yet.
 var errNoStatus = errors.New("guest has no provision status yet")
 
-// ProvisionStatus reads the guest's provision-status.json through the qemu guest agent.
 func ProvisionStatus(c virt.Client, vm string) (Status, error) {
 	out, _, code, err := GuestExec(c, vm, "cmd.exe", "/c", "type", `C:\orthogonals\provision-status.json`)
 	if err != nil {
@@ -40,13 +38,12 @@ func ProvisionStatus(c virt.Client, vm string) (Status, error) {
 	return st, nil
 }
 
-// guestExecTries * guestExecInterval bounds how long GuestExec polls for the guest command to exit.
+// guestExecTries * guestExecInterval bounds how long GuestExec polls.
 var (
 	guestExecTries    = 50
 	guestExecInterval = 200 * time.Millisecond
 )
 
-// GuestExec runs a command in the guest through the qemu guest agent and returns its stdout, stderr, and exit code.
 func GuestExec(c virt.Client, vm, path string, args ...string) (out, errOut []byte, exit int, err error) {
 	var started struct {
 		Return struct {
@@ -96,13 +93,11 @@ func GuestExec(c virt.Client, vm, path string, args ...string) (out, errOut []by
 	return nil, nil, 0, fmt.Errorf("guest command %s did not exit within %v", path, time.Duration(guestExecTries)*guestExecInterval)
 }
 
-// AgentPing sends one guest-ping.
 func AgentPing(c virt.Client, vm string) error {
 	var resp map[string]any
 	return agentCommand(c, vm, map[string]any{"execute": "guest-ping"}, &resp)
 }
 
-// agentCommand sends one qemu-guest-agent request and decodes the JSON reply into resp.
 func agentCommand(c virt.Client, vm string, req any, resp any) error {
 	b, err := json.Marshal(req)
 	if err != nil {

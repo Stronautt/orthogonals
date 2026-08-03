@@ -10,7 +10,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// newStatusCmd reports whether the applied setup is still intact.
 func newStatusCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",

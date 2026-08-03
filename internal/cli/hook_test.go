@@ -19,9 +19,9 @@ func TestHookUnmanagedPassesThrough(t *testing.T) {
 	}
 }
 
-// TestHookDefaultsAnEmptyPATH: libvirtd invokes hooks with a minimal
-// environment, and modprobe, nvidia-smi and notify-send must resolve during
-// the handover. The failure would land halfway through moving the GPU.
+// libvirtd invokes hooks with a minimal environment, and modprobe, nvidia-smi
+// and notify-send must resolve during the handover — a failure lands halfway
+// through moving the GPU.
 func TestHookDefaultsAnEmptyPATH(t *testing.T) {
 	t.Setenv("PATH", "")
 	fakeSysd(t, &sysdtest.Fake{})
@@ -34,8 +34,8 @@ func TestHookDefaultsAnEmptyPATH(t *testing.T) {
 	}
 }
 
-// TestHookKeepsAnInheritedPATH: the fallback must not override a PATH libvirtd
-// did pass, or a host with tools outside the default directories breaks.
+// The fallback must not override a PATH libvirtd did pass, or a host with tools
+// outside the default directories breaks.
 func TestHookKeepsAnInheritedPATH(t *testing.T) {
 	t.Setenv("PATH", "/opt/custom/bin")
 	fakeSysd(t, &sysdtest.Fake{})

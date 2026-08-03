@@ -11,21 +11,18 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
 
-// CPU-isolation paths and the pre-VM restore marker.
 const (
 	cpusetSaveFile        = "/run/orthogonals-cpuset"
 	cgroupControllersPath = "/sys/fs/cgroup/cgroup.controllers"
 )
 
 // isolationUnits are the host slices confined to the housekeeping cores while a
-// VM runs. user.slice is deliberately excluded — the Looking Glass client runs
-// there and needs full CPU. machine.slice (QEMU) is a separate top-level sibling
-// and is never touched; libvirt places orthogonals domains there.
+// VM runs. user.slice is excluded — the Looking Glass client runs there and
+// needs full CPU — and so is machine.slice, where libvirt places the domain.
 var isolationUnits = []string{"system.slice", "init.scope"}
 
-// isolateCPUs confines host background daemons to the cores the VM does not pin,
-// keeping the guest's vCPU/emulator/iothread cores free of host jitter. Every
-// step is best-effort and log-only: a cgroup tweak must never block a VM start.
+// isolateCPUs confines host background daemons to the cores the VM does not pin.
+// Every step is log-only: a cgroup tweak must never block a VM start.
 func isolateCPUs(root string, sd sysd.Client, vm string) {
 	log := hookLog(root, "cpu-isolate")
 	if !cpusetControllerAvailable(root) {
@@ -55,8 +52,8 @@ func isolateCPUs(root string, sd sysd.Client, vm string) {
 	log("host confined to CPUs %s", hw.FormatCPUList(hk))
 }
 
-// unisolateCPUs lifts a prior isolation by restoring an unrestricted cpuset.
-// No-op when the marker is absent. Best-effort; never blocks teardown.
+// unisolateCPUs restores an unrestricted cpuset. No-op without the marker, and
+// never blocks teardown.
 func unisolateCPUs(root string, sd sysd.Client) {
 	log := hookLog(root, "cpu-isolate")
 	save := filepath.Join(root, cpusetSaveFile)
@@ -78,9 +75,9 @@ func unisolateCPUs(root string, sd sysd.Client) {
 	log("host cpuset restored")
 }
 
-// housekeepingCPUs is the present CPUs minus every core the VM pins to guest
-// threads — what is left for the host. Empty when the pinning leaves the host no
-// dedicated core (e.g. a no-E-core host sharing cores with the emulator).
+// housekeepingCPUs is the present CPUs minus every core the VM pins. Empty when
+// the pinning leaves the host none — a no-E-core host shares cores with the
+// emulator.
 func housekeepingCPUs(root, vm string, present []int) []int {
 	pinned, err := domain.ReadPinnedCPUs(root, vm)
 	if err != nil {
@@ -99,7 +96,6 @@ func housekeepingCPUs(root, vm string, present []int) []int {
 	return hk
 }
 
-// cpusetControllerAvailable reports cgroup v2 with the cpuset controller present.
 func cpusetControllerAvailable(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root, cgroupControllersPath))
 	if err != nil {

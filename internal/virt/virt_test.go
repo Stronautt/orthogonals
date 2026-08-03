@@ -38,7 +38,6 @@ func TestParseSpiceDisplay(t *testing.T) {
 			wantNoDisplay: true,
 		},
 		{
-			// Port 0 is how the client is told the host argument is a path.
 			name: "socket listen",
 			xml:  `<domain><devices><graphics type='spice'><listen type='socket' socket='/run/orthogonals/win11/spice.sock'/></graphics></devices></domain>`,
 			host: "/run/orthogonals/win11/spice.sock", port: "0",
@@ -51,8 +50,6 @@ func TestParseSpiceDisplay(t *testing.T) {
 			wantNoDisplay: true,
 		},
 		{
-			// A port left over from a definition made before the socket switch
-			// must not win over the socket the running domain actually has.
 			name: "socket listen alongside a stale port",
 			xml:  `<domain><devices><graphics type='spice' port='5901'><listen type='socket' socket='/run/orthogonals/win11/spice.sock'/></graphics></devices></domain>`,
 			host: "/run/orthogonals/win11/spice.sock", port: "0",

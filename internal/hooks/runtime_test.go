@@ -18,7 +18,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// TestMain silences the hook progress mirror.
 func TestMain(m *testing.M) {
 	LogWriter = io.Discard
 	os.Exit(m.Run())
@@ -29,7 +28,6 @@ const (
 	audAddr = "0000:01:00.1"
 )
 
-// hookRoot is a reference host wired for the runtime hooks.
 func hookRoot(t *testing.T) string {
 	t.Helper()
 	root := hwtest.ReferenceRoot(t)
@@ -49,7 +47,6 @@ func hookRoot(t *testing.T) string {
 	return root
 }
 
-// driverFromOverride reflects what Detach wrote to driver_override.
 func driverFromOverride(root, addr string) string {
 	b, _ := os.ReadFile(filepath.Join(root, "sys/bus/pci/devices", addr, "driver_override"))
 	if strings.Contains(string(b), "vfio-pci") {
@@ -72,8 +69,8 @@ func stubRuntimeStatus(t *testing.T, fn func(root, addr string) string) {
 	t.Cleanup(func() { runtimeStatus = old })
 }
 
-// stubRuntimeStatusFromControl reports a device suspended until its power/control
-// is pinned "on", simulating the kernel's D3cold→D0 transition without a kernel.
+// stubRuntimeStatusFromControl reports suspended until power/control is pinned
+// "on", simulating the kernel's D3cold→D0 transition without a kernel.
 func stubRuntimeStatusFromControl(t *testing.T) {
 	t.Helper()
 	stubRuntimeStatus(t, func(root, addr string) string {
@@ -112,8 +109,7 @@ func stubNotify(t *testing.T) *[]string {
 	return &got
 }
 
-// stubSync swaps the global filesystem sync with a counter so unit tests never
-// flush the developer machine's disks.
+// stubSync counts syncs so a unit test never flushes the developer's disks.
 func stubSync(t *testing.T) *int {
 	t.Helper()
 	n := 0
@@ -123,7 +119,6 @@ func stubSync(t *testing.T) *int {
 	return &n
 }
 
-// fakeBin installs an argv-logging stub on PATH and returns its log path.
 func fakeBin(t *testing.T, name, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -220,8 +215,8 @@ func TestDetachHolderRefusal(t *testing.T) {
 }
 
 // A "did not start" notification has to outlive the optimistic "VM is starting"
-// one before it. Normal urgency auto-hides, leaving only the promise of a screen
-// that never came — why a desktop-shortcut launch looks like it hung.
+// one before it: normal urgency auto-hides, leaving only the promise of a screen
+// that never came.
 func TestAbortNotificationsAreUrgent(t *testing.T) {
 	t.Run("holder gate", func(t *testing.T) {
 		root := hookRoot(t)
@@ -251,7 +246,7 @@ func TestAbortNotificationsAreUrgent(t *testing.T) {
 	})
 }
 
-// assertUrgent checks the last notification, the one the desktop keeps on screen.
+// assertUrgent checks the last notification, the one left on screen.
 func assertUrgent(t *testing.T, notes *[]string) {
 	t.Helper()
 	if len(*notes) == 0 {
@@ -493,11 +488,10 @@ func TestNvidiaHolders(t *testing.T) {
 	}
 }
 
-// TestNvidiaHoldersIgnoresTheWorkingDirectory pins the leading slash on the
-// /proc join. filepath.Join drops an empty root, so a bare "proc" is relative:
-// with no --root the scan would read whatever ./proc happened to be, find
-// nothing, and wave the handover through. Every other test here passes an
-// absolute temp root, which makes the join absolute either way.
+// Pins the leading slash on the /proc join: with no --root a bare "proc" is
+// relative, so the scan would read whatever ./proc happened to be, find nothing,
+// and wave the handover through. Every other test here passes an absolute temp
+// root, which makes the join absolute either way.
 func TestNvidiaHoldersIgnoresTheWorkingDirectory(t *testing.T) {
 	decoy := t.TempDir()
 	seedHolder(t, decoy, 1, "decoy")
@@ -526,7 +520,6 @@ func TestGovernorRoundTrip(t *testing.T) {
 	}
 }
 
-// seedHugepages writes a starting 2M pool size and a compaction sink under root.
 func seedHugepages(t *testing.T, root, nr string) {
 	t.Helper()
 	hwtest.WriteFile(t, root, "sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", nr+"\n")
@@ -590,7 +583,7 @@ func TestReserveHugepagesShortfall(t *testing.T) {
 	if len(*notes) != 1 {
 		t.Errorf("want one desktop notification, got %v", *notes)
 	}
-	// The two retries after the first short compaction each escalate to a cache drop.
+	// Each retry after the first short compaction escalates to a cache drop.
 	if *syncs != hugepageAllocTries-1 {
 		t.Errorf("escalated sync count = %d, want %d", *syncs, hugepageAllocTries-1)
 	}
@@ -617,8 +610,7 @@ func TestReserveHugepagesReadError(t *testing.T) {
 }
 
 // requireRealHugepages skips unless this process can move the running kernel's
-// 2M pool, and guarantees the pool goes back however the test ends. Writing
-// nr_hugepages needs root, so `make test-vm` is where these run live.
+// 2M pool, and guarantees the pool goes back however the test ends.
 func requireRealHugepages(t *testing.T) uint64 {
 	t.Helper()
 	if os.Geteuid() != 0 {
@@ -635,10 +627,9 @@ func requireRealHugepages(t *testing.T) uint64 {
 	return prior
 }
 
-// TestReserveHugepagesAgainstTheRealPool exercises what a --root prefix cannot:
-// nr_hugepages does not store what is written to it. The kernel allocates what
-// it can and reads back the total it reached, which is why reserveHugepages
-// loops on the readback instead of trusting the write.
+// Exercises what a --root prefix cannot: nr_hugepages does not store what is
+// written to it. The kernel allocates what it can and reads back the total it
+// reached, which is why reserveHugepages loops on the readback.
 func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
 	prior := requireRealHugepages(t)
 	const ramMiB = 128
@@ -667,9 +658,8 @@ func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
 	}
 }
 
-// TestReserveHugepagesShortfallAgainstTheRealPool reaches the rollback path by
-// letting the kernel refuse; the synthetic version has to chmod the file
-// unwritable to get there.
+// Reaches the rollback path by letting the kernel refuse; the synthetic version
+// has to chmod the file unwritable to get there.
 func TestReserveHugepagesShortfallAgainstTheRealPool(t *testing.T) {
 	prior := requireRealHugepages(t)
 	notes := stubNotify(t)
@@ -752,7 +742,6 @@ func TestResetTransientState(t *testing.T) {
 	}
 }
 
-// seedHolder makes pid look like it holds /dev/nvidia0 open, with comm.
 func seedHolder(t *testing.T, root string, pid int, comm string) {
 	t.Helper()
 	base := "proc/" + strconv.Itoa(pid)

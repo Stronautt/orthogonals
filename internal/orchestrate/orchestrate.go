@@ -15,7 +15,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// Banner sets operator instructions apart from step logs.
 func Banner(w io.Writer, lines ...string) {
 	rule := strings.Repeat("═", 72)
 	fmt.Fprintln(w)
@@ -40,13 +39,11 @@ const (
 	StateVerified    State = "verified"
 )
 
-// stateOrder is the pipeline sequence.
 var stateOrder = []State{
 	StateFresh, StateHostApplied, StateRebooted, StateVMDefined,
 	StateMediaBuilt, StateInstalling, StateProvisioned, StateVerified,
 }
 
-// Before reports whether s comes earlier in the pipeline than t.
 func (s State) Before(t State) bool {
 	return slices.Index(stateOrder, s) < slices.Index(stateOrder, t)
 }
@@ -80,7 +77,6 @@ func writePersisted(root string, p persisted) error {
 	return utils.WriteAtomic(steps.StatePath(root), append(b, '\n'), 0o600)
 }
 
-// LoadState reads the persisted pipeline state.
 func LoadState(root string) (State, error) {
 	p, err := loadPersisted(root)
 	if err != nil {
@@ -95,7 +91,6 @@ func LoadState(root string) (State, error) {
 	return p.State, nil
 }
 
-// SavedVMName returns the domain name up persisted at first run, or "" if none.
 func SavedVMName(root string) (string, error) {
 	p, err := loadPersisted(root)
 	return p.Name, err
@@ -121,7 +116,6 @@ func SaveVMName(root, name string) error {
 	return writePersisted(root, p)
 }
 
-// Stages are the pipeline stage implementations.
 type Stages struct {
 	Apply      func() error
 	VerifyBoot func() error
@@ -205,7 +199,6 @@ func (m *Machine) Run() error {
 	}
 }
 
-// stageErr names the stage and points at the diagnostics bundle.
 func stageErr(stage string, err error) error {
 	return fmt.Errorf("%s failed: %w\ncollect diagnostics with: orthogonals bundle orthogonals-diagnostics.tar.gz", stage, err)
 }

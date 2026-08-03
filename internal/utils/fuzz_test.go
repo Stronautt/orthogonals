@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// FuzzXMLEscape asserts escaped text always parses back as XML character data
-// and survives the round trip unchanged: the domain and media templates interpolate user
-// strings (VM name, password, locale) through it.
+// FuzzXMLEscape asserts escaped text always parses back as XML character data:
+// the domain and media templates interpolate user strings through it.
 func FuzzXMLEscape(f *testing.F) {
 	f.Add("plain")
 	f.Add("<script>alert(1)</script>")

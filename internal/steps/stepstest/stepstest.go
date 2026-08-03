@@ -12,10 +12,9 @@ import (
 	"strings"
 )
 
-// Snapshot renders a deterministic listing of every path under root: relative
-// path, permission bits, kind, and — for regular files — a content hash, so a
-// comparison catches content, mode, and type changes alike. WalkDir yields
-// lexical order, so the result is stable without an explicit sort.
+// Snapshot lists every path under root with its permission bits, kind and — for
+// regular files — a content hash, so a comparison catches content, mode, and
+// type changes alike. WalkDir yields lexical order, so no sort is needed.
 func Snapshot(root string) (string, error) {
 	var b strings.Builder
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -58,8 +57,7 @@ func Snapshot(root string) (string, error) {
 }
 
 // Diff reports the lines present in only one of two snapshots, "" when they
-// match. Lines keep snapshot order so a failure reads top-down: "+" appeared,
-// "-" vanished.
+// match: "+" appeared, "-" vanished.
 func Diff(before, after string) string {
 	beforeLines := strings.Split(strings.TrimRight(before, "\n"), "\n")
 	afterLines := strings.Split(strings.TrimRight(after, "\n"), "\n")

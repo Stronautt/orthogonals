@@ -21,7 +21,7 @@ import (
 
 // Exists reports whether path exists. A stat error other than fs.ErrNotExist —
 // most often a parent directory that is not searchable — is returned rather
-// than folded into false: "cannot tell" is not "absent".
+// than folded into false.
 func Exists(path string) (bool, error) {
 	switch _, err := os.Stat(path); {
 	case err == nil:
@@ -33,9 +33,9 @@ func Exists(path string) (bool, error) {
 	}
 }
 
-// ReadTrim reads a one-line file, returning "" for any error. Sized for sysfs
-// and procfs, where an absent attribute and an empty one mean the same thing;
-// callers that must tell them apart should use os.ReadFile.
+// ReadTrim reads a one-line file, returning "" for any error. Sized for sysfs,
+// where absent and empty mean the same thing; callers that must tell them apart
+// need os.ReadFile.
 func ReadTrim(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -44,7 +44,6 @@ func ReadTrim(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// ReadUint reads a file holding a single unsigned integer.
 func ReadUint(path string) (uint64, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -54,8 +53,7 @@ func ReadUint(path string) (uint64, error) {
 }
 
 // LinkBase is the last element of a symlink's target, "" for any error. Sized
-// for sysfs, where a link is how the kernel names a binding (a device's driver,
-// its iommu_group) and an absent link means unbound.
+// for sysfs, where an absent link means unbound.
 func LinkBase(path string) string {
 	target, err := os.Readlink(path)
 	if err != nil {
@@ -64,8 +62,6 @@ func LinkBase(path string) string {
 	return filepath.Base(target)
 }
 
-// IsTerminal reports whether w is a terminal, the usual test for whether a
-// human is reading the output directly.
 func IsTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
@@ -75,9 +71,8 @@ func IsTerminal(w io.Writer) bool {
 	return err == nil
 }
 
-// SyncDir fsyncs a directory so a rename into it survives power loss. Without
-// it a renamed file's data can reach disk while the directory entry naming it
-// does not.
+// SyncDir fsyncs a directory so a rename into it survives power loss: without
+// it a renamed file's data can reach disk while the directory entry does not.
 func SyncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -118,12 +113,10 @@ func WriteSync(path string, content []byte, mode fs.FileMode) error {
 // from anything else sharing the directory.
 const TempPrefix = ".orthogonals-tmp-"
 
-// SweepTemps deletes WriteAtomic temporaries stranded in dir by a process that
-// died between creating one and renaming it into place: a deferred cleanup does
-// not run on SIGKILL. Best-effort and silent — these are litter, never state.
-//
-// Callers that write into dir get this for free from WriteAtomic. It is exported
-// for the paths that remove rather than write, where nothing else would look.
+// SweepTemps deletes WriteAtomic temporaries stranded in dir by a process
+// SIGKILLed between creating one and renaming it into place. Best-effort and
+// silent — these are litter, never state. WriteAtomic calls it itself; it is
+// exported for the paths that remove rather than write.
 //
 // ponytail: unconditional, so it assumes no second orthogonals process is
 // mid-write in the same directory. Apply is sequential and single-process today;
@@ -141,16 +134,16 @@ func SweepTemps(dir string) {
 }
 
 // WriteAtomic writes content to path via a temp file in the same directory,
-// renaming it into place and creating parent directories. Both the file and its
-// directory are fsynced, so a reader sees either the old contents or the new
-// ones across a power loss, never a partial write.
+// creating parent directories. File and directory are both fsynced, so a reader
+// sees the old contents or the new ones across a power loss, never a partial
+// write.
 func WriteAtomic(path string, content []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	// Before adding one of our own, so a temp a killed run left here goes even
-	// when this write later fails.
+	// Before adding one of our own, so an older leftover goes even when this
+	// write later fails.
 	SweepTemps(dir)
 	f, err := os.CreateTemp(dir, TempPrefix+"*")
 	if err != nil {

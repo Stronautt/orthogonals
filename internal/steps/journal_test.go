@@ -9,8 +9,8 @@ import (
 )
 
 // toolThatReadsManifest installs a fake binary that copies the manifest to
-// witness, so a test can see what the journal held at the moment the command
-// ran, and returns the dir to put on PATH.
+// witness — what the journal held at the moment the command ran — and returns a
+// PATH with it in front.
 func toolThatReadsManifest(t *testing.T, name, root, witness string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -22,9 +22,8 @@ func toolThatReadsManifest(t *testing.T, name, root, witness string) string {
 	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
-// TestRunCmdIsJournaledBeforeItRuns pins the write-ahead ordering: the record
-// must already be on disk when the command executes, or a process killed
-// between the two leaves an unjournaled host mutation that undo cannot reverse.
+// Write-ahead ordering: a process killed between the record and the command
+// would otherwise leave a host mutation undo cannot reverse.
 func TestRunCmdIsJournaledBeforeItRuns(t *testing.T) {
 	root := t.TempDir()
 	witness := filepath.Join(t.TempDir(), "seen.json")
@@ -46,8 +45,7 @@ func TestRunCmdIsJournaledBeforeItRuns(t *testing.T) {
 	}
 }
 
-// TestOpIsJournaledBeforeItRuns is the same contract for op steps, the kind
-// that carries the kernel-args edit.
+// The same contract for op steps, the kind that carries the kernel-args edit.
 func TestOpIsJournaledBeforeItRuns(t *testing.T) {
 	root := t.TempDir()
 	seenDuringOp := ""
@@ -67,9 +65,8 @@ func TestOpIsJournaledBeforeItRuns(t *testing.T) {
 	}
 }
 
-// TestFailedStepLeavesNoRecord is the other half of write-ahead journaling: a
-// step whose mutation failed must not stay in the manifest, or the next apply
-// would report it "already applied" and never retry it.
+// The other half of write-ahead journaling: a step left in the manifest after
+// its mutation failed reads as "already applied" and is never retried.
 func TestFailedStepLeavesNoRecord(t *testing.T) {
 	root := t.TempDir()
 	dir := t.TempDir()

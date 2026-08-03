@@ -15,11 +15,10 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps/stepstest"
 )
 
-// fixtureBuilders are the synthetic host topologies a script can materialize.
-// Same registry test/fixture wraps: the trees live in internal/hw/hwtest only.
+// fixtureBuilders is the same registry test/fixture wraps: the synthetic trees
+// live in internal/hw/hwtest only.
 var fixtureBuilders = hwtest.Roots
 
-// TestScript runs the CLI contract scripts in testdata/script.
 func TestScript(t *testing.T) {
 	testscript.Run(t, testscript.Params{
 		Dir: filepath.Join("testdata", "script"),
@@ -33,8 +32,7 @@ func TestScript(t *testing.T) {
 }
 
 // cmdWantExit asserts an exact exit status, which the builtin exec cannot
-// express: wantexit <code> <cmd> [args...]. Captured output stays available
-// to the stdout/stderr assertions that follow.
+// express: wantexit <code> <cmd> [args...].
 func cmdWantExit(ts *testscript.TestScript, neg bool, args []string) {
 	if neg {
 		ts.Fatalf("wantexit does not support negation")

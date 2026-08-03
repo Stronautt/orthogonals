@@ -11,6 +11,7 @@ import (
 	godbus "github.com/godbus/dbus/v5"
 
 	"github.com/stronautt/orthogonals/internal/bls"
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/utils"
@@ -31,9 +32,8 @@ type Facts struct {
 	BLSError string `json:"bls_error,omitempty"`
 	// BLSUnreadable marks that directory as root-only (0700 on Fedora): an
 	// unprivileged preflight cannot judge the boot entries either way.
-	BLSUnreadable bool `json:"bls_unreadable,omitempty"`
-	// Signing answers whether the kvmfr module will load under Secure Boot.
-	Signing ModuleSigning `json:"module_signing"`
+	BLSUnreadable bool          `json:"bls_unreadable,omitempty"`
+	Signing       ModuleSigning `json:"module_signing"`
 }
 
 // GatherFacts reads the live host (prefixed by root, the test seam). Every
@@ -49,7 +49,7 @@ func GatherFacts(root string) Facts {
 		PersistencedEnabled: steps.UnitEnabled(root, hostcfg.UnitPersistenced),
 		DefaultNetActive:    netActive,
 		FreeDiskBytes: freeDisk(
-			filepath.Join(root, "/var/lib/libvirt/images"),
+			filepath.Join(root, domain.ImagesDir),
 			filepath.Join(root, "/var/lib"),
 			filepath.Join(root, "/"),
 		),
@@ -70,7 +70,6 @@ func GatherFacts(root string) Facts {
 	return f
 }
 
-// scanForeignVFIO finds vfio configuration orthogonals did not write.
 func scanForeignVFIO(root string) []string {
 	var found []string
 	for _, pattern := range []string{"/etc/modprobe.d/*.conf", "/etc/dracut.conf.d/*.conf"} {
@@ -91,7 +90,6 @@ func scanForeignVFIO(root string) []string {
 	return found
 }
 
-// vfioLines returns non-comment lines mentioning vfio.
 func vfioLines(path string) []string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -108,7 +106,6 @@ func vfioLines(path string) []string {
 	return out
 }
 
-// switcherooListsNVIDIA reports whether the daemon lists the NVIDIA GPU for offload.
 var switcherooListsNVIDIA = func(root string) bool {
 	if root != "" {
 		return false
@@ -136,7 +133,6 @@ var switcherooListsNVIDIA = func(root string) bool {
 	return false
 }
 
-// libvirtReachable probes the local libvirt socket.
 func libvirtReachable(root string) bool {
 	if root != "" {
 		return true

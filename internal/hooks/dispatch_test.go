@@ -24,8 +24,8 @@ func currentUser(t *testing.T) string {
 	return u.Username
 }
 
-// registerVM registers a managed VM with the minimal XML the hook reads back
-// (the <memory> element the hugepage reservation sizes from).
+// registerVM writes the minimal XML the hook reads back: the <memory> element
+// the hugepage reservation sizes from.
 func registerVM(t *testing.T, root, vm string) {
 	t.Helper()
 	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml",
@@ -55,7 +55,6 @@ func TestDispatchOneVMAtATime(t *testing.T) {
 	}
 }
 
-// shortSpiceWait keeps the socket poll from stretching a test out.
 func shortSpiceWait(t *testing.T) {
 	t.Helper()
 	oldSettle, oldTimeout := SpiceSettle, SpiceTimeout
@@ -63,7 +62,6 @@ func shortSpiceWait(t *testing.T) {
 	t.Cleanup(func() { SpiceSettle, SpiceTimeout = oldSettle, oldTimeout })
 }
 
-// spiceSocket binds a real socket where QEMU would, with the mode it leaves.
 func spiceSocket(t *testing.T, root, vm string) string {
 	t.Helper()
 	path := filepath.Join(root, steps.SpiceSocketPath(vm))
@@ -82,8 +80,6 @@ func spiceSocket(t *testing.T, root, vm string) string {
 	return path
 }
 
-// TestDispatchStartedNarrowsTheSpiceSocket: QEMU leaves the socket
-// world-readable; the started hook is what makes its mode match the directory.
 func TestDispatchStartedNarrowsTheSpiceSocket(t *testing.T) {
 	root := hookRoot(t)
 	registerVM(t, root, "win11")
@@ -103,8 +99,6 @@ func TestDispatchStartedNarrowsTheSpiceSocket(t *testing.T) {
 	}
 }
 
-// TestDispatchStartedSurvivesAMissingSocket: the VM is already running and the
-// directory still restricts it, so a miss is logged, never fatal.
 func TestDispatchStartedSurvivesAMissingSocket(t *testing.T) {
 	root := hookRoot(t)
 	registerVM(t, root, "win11")
@@ -122,8 +116,6 @@ func TestDispatchStartedSurvivesAMissingSocket(t *testing.T) {
 	}
 }
 
-// TestDispatchStartedLeavesANonSocketAlone: only the qemu account can put
-// something else at that path, and not trusting it is the point.
 func TestDispatchStartedLeavesANonSocketAlone(t *testing.T) {
 	root := hookRoot(t)
 	registerVM(t, root, "win11")
@@ -183,9 +175,8 @@ func TestDispatchPrepareFailureWraps(t *testing.T) {
 	}
 }
 
-// TestDispatchPrepareFailsOnUnreadableGuestRAM: this arm fires after Detach has
-// already pulled the GPU off the host driver, so it has to say what went wrong
-// rather than let QEMU surface it as an opaque out-of-memory later.
+// This arm fires after Detach has already pulled the GPU off the host driver, so
+// it has to name the cause rather than let QEMU surface an opaque out-of-memory.
 func TestDispatchPrepareFailsOnUnreadableGuestRAM(t *testing.T) {
 	root := hookRoot(t)
 	// Registered, so the hook answers for it — but with no <memory> to size the

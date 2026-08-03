@@ -19,7 +19,6 @@ const (
 	akmodsKey  = "/etc/pki/akmods/private"
 )
 
-// SigningKey is a key pair on the host and whether Secure Boot already trusts it.
 type SigningKey struct {
 	Cert     string `json:"cert"`
 	Key      string `json:"key"`
@@ -87,7 +86,6 @@ func KVMFRWillLoad(root string, secureBoot bool) bool {
 	return plan == SigningReady || plan == SigningReuseAkmods
 }
 
-// gatherSigning reads the host's signing keys and their enrollment.
 func gatherSigning(root string) ModuleSigning {
 	if root != "" || !haveMokutil() {
 		return ModuleSigning{}
@@ -110,16 +108,13 @@ func gatherSigning(root string) ModuleSigning {
 	return s
 }
 
-// keyEnrolled reports whether Secure Boot trusts a certificate.
-//
-// mokutil exits 1 when the key IS enrolled and 0 when it is not, so the verdict
-// has to be read out of its output rather than its status.
+// keyEnrolled reads the verdict out of mokutil's output rather than its status:
+// mokutil exits 1 when the key IS enrolled and 0 when it is not.
 var keyEnrolled = func(cert string) bool {
 	out, _ := exec.Command("mokutil", "--test-key", cert).Output()
 	return strings.Contains(string(out), "is already enrolled")
 }
 
-// otherDKMSModules reports whether dkms carries anything besides kvmfr.
 var otherDKMSModules = func() bool {
 	out, err := exec.Command("dkms", "status").Output()
 	if err != nil {

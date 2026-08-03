@@ -17,7 +17,6 @@ var RequiredTools = []string{
 	"dracut", "semanage", "restorecon", "nvidia-smi", "systemd-tmpfiles",
 }
 
-// Platform holds host facts that gate or shape the passthrough setup.
 type Platform struct {
 	IOMMUAddressWidth int `json:"iommu_address_width"`
 	// IOMMUTable names the ACPI table the firmware exposes its IOMMU through:
@@ -27,15 +26,13 @@ type Platform struct {
 	SecureBoot  bool   `json:"secure_boot"`
 	ChassisType int    `json:"chassis_type"`
 	// GPUMux is the ASUS display MUX mode ("hybrid"/"discrete"/"").
-	GPUMux string `json:"gpu_mux,omitempty"`
-	// FirmwareIOMMU are BIOS attributes controlling the IOMMU, when exposed.
+	GPUMux        string          `json:"gpu_mux,omitempty"`
 	FirmwareIOMMU []FirmwareAttr  `json:"firmware_iommu,omitempty"`
 	MemTotalBytes uint64          `json:"mem_total_bytes"`
 	NVIDIA        NVIDIADriver    `json:"nvidia"`
 	Tools         map[string]bool `json:"tools"`
 }
 
-// NVIDIADriver describes the loaded NVIDIA kernel module.
 type NVIDIADriver struct {
 	Loaded  bool   `json:"loaded"`
 	Version string `json:"version,omitempty"`
@@ -44,7 +41,6 @@ type NVIDIADriver struct {
 	Fbdev   string `json:"fbdev,omitempty"`
 }
 
-// detectPlatform gathers platform facts.
 func detectPlatform(root string) Platform {
 	p := Platform{
 		IOMMUAddressWidth: iommuAddressWidth(root),
@@ -65,13 +61,11 @@ func detectPlatform(root string) Platform {
 	return p
 }
 
-// Platform.IOMMUTable values: the firmware IOMMU ACPI table names.
 const (
 	IOMMUTableDMAR = "DMAR"
 	IOMMUTableIVRS = "IVRS"
 )
 
-// iommuTable stats the firmware IOMMU ACPI tables and names the one present.
 func iommuTable(root string) string {
 	for _, table := range []string{IOMMUTableDMAR, IOMMUTableIVRS} {
 		if _, err := os.Stat(filepath.Join(root, "/sys/firmware/acpi/tables", table)); err == nil {
@@ -128,13 +122,10 @@ func MeminfoKiB(root, key string) uint64 {
 	return 0
 }
 
-// memTotalBytes is the host's total RAM from /proc/meminfo.
 func memTotalBytes(root string) uint64 { return MeminfoKiB(root, "MemTotal:") * utils.BytesPerKiB }
 
-// nvidiaVersionRe matches a driver version token like 570.153.02.
 var nvidiaVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)+$`)
 
-// KernelVersion is the running kernel release.
 func KernelVersion(root string) string {
 	return utils.ReadTrim(filepath.Join(root, "/proc/sys/kernel/osrelease"))
 }
@@ -165,7 +156,6 @@ func KVMFRAvailable(root string) bool {
 	return false
 }
 
-// DetectNVIDIA reads the loaded NVIDIA module's flavor and version.
 func DetectNVIDIA(root string) NVIDIADriver {
 	var d NVIDIADriver
 	b, err := os.ReadFile(filepath.Join(root, "/proc/driver/nvidia/version"))
@@ -207,10 +197,11 @@ func selinuxMode(root string) string {
 	}
 }
 
-// secureBootEnabled reads the SecureBoot efivar.
 func secureBootEnabled(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root,
 		"/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"))
+	// efivars prefixes every variable with its 4-byte attribute mask, so the
+	// flag is byte 4 and the whole read is 5 bytes, not 1.
 	return err == nil && len(b) == 5 && b[4] == 1
 }
 
@@ -220,24 +211,20 @@ func ChassisType(root string) int {
 	return n
 }
 
-// laptopChassisTypes are the portable SMBIOS chassis types.
 var laptopChassisTypes = map[int]bool{
 	8: true, 9: true, 10: true, 11: true, 14: true, 30: true, 31: true, 32: true,
 }
 
-// IsLaptopChassis reports whether an SMBIOS chassis type is a portable machine.
 func IsLaptopChassis(t int) bool {
 	return laptopChassisTypes[t]
 }
 
-// chassisNames labels the SMBIOS chassis types, like laptopChassisTypes above.
 var chassisNames = map[int]string{
 	3: "desktop", 4: "low-profile desktop", 6: "mini tower", 7: "tower",
 	9: "laptop", 10: "notebook", 13: "all-in-one", 14: "sub notebook",
 	30: "tablet", 31: "convertible", 32: "detachable",
 }
 
-// ChassisName maps the SMBIOS chassis type to a human label.
 func ChassisName(t int) string {
 	if n, ok := chassisNames[t]; ok {
 		return n

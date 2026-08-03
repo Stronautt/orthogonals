@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,16 +43,35 @@ func FuzzManifestLoad(f *testing.F) {
 		if m == nil {
 			t.Fatal("Load returned neither a manifest nor an error")
 		}
-		// Load only parses; Apply is what rejects malformed steps. The
-		// contract here is that parsing stays total and lossless, so a
-		// re-marshal of what was read parses back to the same record count.
+		// Load only parses; Apply is what rejects malformed steps. What has to
+		// hold is that a manifest Load accepts survives being written back: the
+		// engine rewrites this file after every step, so a record that parses
+		// but does not re-marshal loses its undo data for a mutation already on
+		// disk. Re-reading the same bytes would prove only that reads are
+		// deterministic, which they are by construction.
+		if err := m.save(root); err != nil {
+			t.Fatalf("save a manifest Load accepted: %v", err)
+		}
+		canonical, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 		again, err := Load(root)
 		if err != nil {
-			t.Fatalf("second Load of the same file failed: %v", err)
+			t.Fatalf("reload of a saved manifest failed: %v", err)
 		}
-		if len(again.Records) != len(m.Records) {
-			t.Fatalf("Load is not deterministic: %d then %d records",
-				len(m.Records), len(again.Records))
+		if err := again.save(root); err != nil {
+			t.Fatal(err)
+		}
+		round, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Compared as written bytes, not with DeepEqual: a nil and an empty slice
+		// undo identically but are not deeply equal, and the contract is about the
+		// file, not the in-memory shape.
+		if !bytes.Equal(canonical, round) {
+			t.Fatalf("save∘load is not a fixed point:\n first:\n%s\n second:\n%s", canonical, round)
 		}
 	})
 }

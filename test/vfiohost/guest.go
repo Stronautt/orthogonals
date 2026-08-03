@@ -24,16 +24,15 @@ func managementMAC(name string) string {
 	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", h[0], h[1], h[2])
 }
 
-// createOverlay makes the guest's disk: a qcow2 backed by the pristine cloud
-// image, so a run never dirties the download. Through libvirt's storage API
-// rather than qemu-img, so this command spawns no subprocesses.
+// createOverlay backs the guest disk with the pristine cloud image, so a run
+// never dirties the download. Through libvirt's storage API rather than
+// qemu-img, so this command spawns no subprocesses.
 func createOverlay(l *libvirt.Libvirt, o options, base string) (string, error) {
 	poolXML := fmt.Sprintf(
 		"<pool type='dir'><name>orthogonals-vfio</name><target><path>%s</path></target></pool>", WorkDir)
 	pool, err := l.StoragePoolCreateXML(poolXML, 0)
 	if err != nil {
-		// A pool over the same directory may already be defined from an earlier
-		// run; reuse it rather than failing.
+		// A pool over the same directory may survive an earlier run; reuse it.
 		if pool, err = l.StoragePoolLookupByName("orthogonals-vfio"); err != nil {
 			return "", fmt.Errorf("create the storage pool at %s: %w", WorkDir, err)
 		}
@@ -60,15 +59,14 @@ func createOverlay(l *libvirt.Libvirt, o options, base string) (string, error) {
 //     intremap needs the QEMU ioapic, hence <ioapic driver='qemu'/>.
 //   - aw_bits sets the VT-d CAP register the address-width check decodes, so 39
 //     reproduces the maxphysaddr warning path against a real register.
-//   - The CPU is host-passthrough, deliberately: `vm define` needs /dev/kvm
-//     (libvirt offers no kvm domain type without it and autoselecting the
-//     rendered domain's secure-boot EFI firmware fails), and the guest's
-//     kvm_intel/kvm_amd only load on their own silicon with the host's real
-//     vendor string and vmx/svm nested in. A named model cannot deliver that
-//     on both fleets: KVM nests only the host's own virt extension, and
-//     kvm_amd refuses a non-AMD vendor. The suite no longer needs any
-//     particular vendor — the kernel-arg choice keys on the ACPI table the
-//     emulated IOMMU provides, not on the CPU.
+//   - The CPU is host-passthrough: `vm define` needs /dev/kvm (without it
+//     libvirt offers no kvm domain type, so autoselecting the rendered
+//     domain's secure-boot EFI firmware fails), and the guest's
+//     kvm_intel/kvm_amd only load with the host's real vendor string and
+//     vmx/svm nested in. No named model works on both fleets: KVM nests only
+//     the host's own virt extension, and kvm_amd refuses a non-AMD vendor. No
+//     particular vendor is needed otherwise — the kernel-arg choice keys on
+//     the ACPI table the emulated IOMMU provides, not on the CPU.
 //   - The two virtio-scsi controllers are the stand-in dGPU and its audio
 //     function: ordinary virtio-pci devices needing no backing resource, which
 //     advertise FLR (so the kernel publishes the `reset` preflight requires) and
@@ -146,8 +144,6 @@ func renderDomain(o options, disk, seed, mac string) (string, error) {
 	if o.vcpus < 6 || o.vcpus%2 != 0 {
 		return "", fmt.Errorf("--vcpus %d: need an even count of at least 6, or the profile has no threads left to assign after reserving a core for the host", o.vcpus)
 	}
-	// The 5/8 default guest RAM must clear the 8 GiB floor, so the guest needs
-	// at least 13 GiB before apply will run at all.
 	if o.memGiB*5/8 < 8 {
 		return "", fmt.Errorf("--memory %d GiB: the default guest RAM works out to %d GiB, below the 8 GiB minimum",
 			o.memGiB, o.memGiB*5/8)

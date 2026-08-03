@@ -19,7 +19,6 @@ func allTools(t *testing.T) string {
 	return hwtest.FakeTools(t, hw.RequiredTools...)
 }
 
-// preflight warns on the reference machine (exit 2).
 func TestPreflightReferenceWarns(t *testing.T) {
 	t.Setenv("PATH", allTools(t))
 	code, stdout, stderr := run(t, "preflight", "--root", hwtest.ReferenceRoot(t))

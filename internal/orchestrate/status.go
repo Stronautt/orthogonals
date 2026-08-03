@@ -1,6 +1,7 @@
 package orchestrate
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -13,14 +14,12 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// Check is one status or verify result.
 type Check struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// Healthy reports whether every check passed.
 func Healthy(cs []Check) bool {
 	for _, c := range cs {
 		if !c.OK {
@@ -30,7 +29,6 @@ func Healthy(cs []Check) bool {
 	return true
 }
 
-// Status is the health check behind orthogonals status.
 func Status(root string) []Check {
 	m, err := steps.Load(root)
 	if err != nil {
@@ -91,12 +89,19 @@ func Status(root string) []Check {
 				missing = append(missing, p)
 			}
 		}
-		var err error
+		// Joined, not reassigned: with one path absent and another unreadable,
+		// keeping only the second answer tells the user to re-run apply, which
+		// cannot fix an EACCES.
+		var reasons []string
 		if len(unreadable) > 0 {
-			err = fmt.Errorf("cannot read %s — run as root to check", strings.Join(unreadable, ", "))
+			reasons = append(reasons, "cannot read "+strings.Join(unreadable, ", ")+" — run as root to check")
 		}
 		if len(missing) > 0 {
-			err = fmt.Errorf("missing %s — re-run `orthogonals apply --yes`", strings.Join(missing, ", "))
+			reasons = append(reasons, "missing "+strings.Join(missing, ", ")+" — re-run `orthogonals apply --yes`")
+		}
+		var err error
+		if len(reasons) > 0 {
+			err = errors.New(strings.Join(reasons, "; "))
 		}
 		add("libvirt hooks", err)
 	}

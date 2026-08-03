@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"cmp"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/domain"
-	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -18,7 +19,6 @@ import (
 // vmFakeBins are every binary the vm step list still shells out to.
 var vmFakeBins = []string{"semanage", "restorecon", "systemd-tmpfiles"}
 
-// countCalls counts fake-client calls whose verb prefix matches.
 func countCalls(calls []string, prefix string) int {
 	n := 0
 	for _, c := range calls {
@@ -29,6 +29,17 @@ func countCalls(calls []string, prefix string) int {
 	return n
 }
 
+// mustRead fails the test rather than folding an unreadable registry into
+// "this VM has no settings".
+func mustRead(t *testing.T, root, vm string) domain.Settings {
+	t.Helper()
+	s, err := domain.ReadSettings(root, vm)
+	if err != nil {
+		t.Fatalf("read registered settings for %s: %v", vm, err)
+	}
+	return s
+}
+
 func fakeVMPath(t *testing.T) string {
 	t.Helper()
 	t.Setenv("SUDO_USER", "testuser")
@@ -36,7 +47,7 @@ func fakeVMPath(t *testing.T) string {
 }
 
 func TestVMDefineDryRun(t *testing.T) {
-	dir := fakeVMPath(t)
+	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
 	code, stdout, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "define")
 	if code != 0 {
@@ -54,7 +65,6 @@ func TestVMDefineDryRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/win11.xml")); err == nil {
 		t.Error("dry run wrote the domain XML")
 	}
-	_ = dir
 }
 
 func TestVMDefineApplies(t *testing.T) {
@@ -88,14 +98,12 @@ func TestVMDefineApplies(t *testing.T) {
 		}
 	}
 
-	before := len(f.Calls)
 	if code, _, _ := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("re-run exit %d", code)
 	}
 	if volCalls := countCalls(f.Calls, "vol-create"); volCalls != 1 {
 		t.Errorf("re-run created the volume again (%d creations)", volCalls)
 	}
-	_ = before
 }
 
 func TestVMDefineGPURom(t *testing.T) {
@@ -139,7 +147,11 @@ func TestVMDefineGPURom(t *testing.T) {
 	if !strings.Contains(string(xml), "<rom file='"+canonical+"'/>") {
 		t.Errorf("stage re-render dropped the vBIOS:\n%s", xml)
 	}
-	_ = f
+	// Rendering the XML is not defining the domain: without this the test passes
+	// on a run that never reached libvirt at all.
+	if n := countCalls(f.Calls, "define"); n != 2 {
+		t.Errorf("libvirt saw %d defines, want one per run: %v", n, f.Calls)
+	}
 }
 
 func TestVMDefineGPURomRefusals(t *testing.T) {
@@ -164,7 +176,6 @@ func TestVMDefineGPURomRefusals(t *testing.T) {
 	}
 }
 
-// a release rendering different domain XML converges an installed VM.
 func TestVMDefineRedefineConverges(t *testing.T) {
 	fakeVMPath(t)
 	f := fakeVirt(t, &virttest.Fake{UUID: "1c07f749-5d72-4e9e-9be1-178cb6d28cd3"})
@@ -192,27 +203,17 @@ func TestVMDefineRedefineConverges(t *testing.T) {
 	if got := countCalls(f.Calls, "vol-create"); got != 1 {
 		t.Errorf("volume created %d times, want 1", got)
 	}
-	defines := func() int {
-		n := 0
-		for _, c := range f.Calls {
-			if c == "define" {
-				n++
-			}
-		}
-		return n
-	}
-	if got := defines(); got != 2 {
+	if got := countCalls(f.Calls, "define"); got != 2 {
 		t.Errorf("define reached libvirt %d times, want 2 (install + final redefine)", got)
 	}
 	if code, _, _ := run(t, "vm", "--root", root, "--yes", "define"); code != 0 {
 		t.Fatal("converged re-run failed")
 	}
-	if got := defines(); got != 2 {
+	if got := countCalls(f.Calls, "define"); got != 2 {
 		t.Errorf("converged re-run re-defined again (%d invocations)", got)
 	}
 }
 
-// a fresh define with no journaled detach steps requires the ISO.
 func TestVMDefineFreshRequiresISO(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -235,7 +236,7 @@ func TestVMDefineRefusesForeignDisk(t *testing.T) {
 }
 
 func TestVMUndefine(t *testing.T) {
-	dir := fakeVMPath(t)
+	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
 		t.Fatalf("define failed: %s", stderr)
@@ -251,7 +252,6 @@ func TestVMUndefine(t *testing.T) {
 	if !strings.Contains(stdout, "removed /home/testuser/Desktop/win11.orthogonals.desktop") {
 		t.Errorf("undefine must remove the ~/Desktop link:\n%s", stdout)
 	}
-	_ = dir
 	m, err := steps.Load(root)
 	if err != nil {
 		t.Fatal(err)
@@ -270,9 +270,6 @@ func TestVMUndefine(t *testing.T) {
 	}
 }
 
-// TestVMUndefineRemovesProvisionISOWithoutPurge: the ISO holds the password in
-// cleartext and is regenerable, so it goes with the definition. --purge is for
-// the disk image, which is not.
 func TestVMUndefineRemovesProvisionISOWithoutPurge(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -310,7 +307,6 @@ func TestVMUndefineRemovesProvisionISOWithoutPurge(t *testing.T) {
 
 func TestVMUndefinePurgeRemovesEverything(t *testing.T) {
 	dir := fakeVMPath(t)
-	_ = dir
 	f := fakeVirt(t, &virttest.Fake{})
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
@@ -446,9 +442,8 @@ func TestVMBadArgs(t *testing.T) {
 	}
 }
 
-// TestVMNameValidatedOnEverySubcommand: --vm-name reaches ISOPath, the
-// registry and journal step ids from every subcommand, not just define. The
-// message matters too — a name rejected downstream fails for another reason.
+// The message matters as much as the exit code: a name rejected downstream
+// fails for another reason.
 func TestVMNameValidatedOnEverySubcommand(t *testing.T) {
 	root := hwtest.ReferenceRoot(t)
 	const hostile = "../../etc/passwd"
@@ -471,7 +466,7 @@ func TestVMNameValidatedOnEverySubcommand(t *testing.T) {
 	}
 }
 
-// vm define registers the domain name in the registry with no side config file.
+// The registry is the whole record: no config.json alongside it.
 func TestVMDefineRegistersName(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -496,7 +491,7 @@ func TestVMDefineWritesVMArtifacts(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\nstderr: %s", code, stderr)
 	}
-	if got := hostcfg.DisplayName(root, "work"); got != "Work PC" {
+	if got := mustRead(t, root, "work").DisplayName; got != "Work PC" {
 		t.Errorf("registered display name = %q, want Work PC", got)
 	}
 	desktop, err := os.ReadFile(filepath.Join(root, "/usr/share/applications/work.orthogonals.desktop"))
@@ -517,8 +512,10 @@ func TestVMDefineWritesVMArtifacts(t *testing.T) {
 			t.Errorf("manifest missing %s", id)
 		}
 	}
-	if st, err := os.Stat(filepath.Join(root, "/usr/share/applications/work.orthogonals.desktop")); err != nil || st.Mode().Perm() != 0o755 {
-		t.Errorf("desktop entry must be executable to launch from ~/Desktop, got %v %v", st.Mode().Perm(), err)
+	if st, err := os.Stat(filepath.Join(root, "/usr/share/applications/work.orthogonals.desktop")); err != nil {
+		t.Errorf("desktop entry not written: %v", err)
+	} else if st.Mode().Perm() != 0o755 {
+		t.Errorf("desktop entry mode = %04o, must be executable to launch from ~/Desktop", st.Mode().Perm())
 	}
 	// ~/Desktop gets a symlink, not a copy, so a re-rendered entry is picked up.
 	link := filepath.Join(root, "/home/testuser/Desktop/work.orthogonals.desktop")
@@ -584,8 +581,6 @@ func TestVMDefineSecondVMCoexists(t *testing.T) {
 	}
 }
 
-// Shares survive the flag-less re-define an `up` converge performs, and only a
-// lone empty --share clears them.
 func TestVMDefineSharesSticky(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -603,7 +598,7 @@ func TestVMDefineSharesSticky(t *testing.T) {
 	}
 	define(t, "--share", "/srv/docs", "--share", "/srv/media")
 	want := []string{"/srv/docs", "/srv/media"}
-	if got := domain.ReadGuestConfig(root, "win11").Shares; !reflect.DeepEqual(got, want) {
+	if got := mustRead(t, root, "win11").Shares; !reflect.DeepEqual(got, want) {
 		t.Fatalf("shares after define = %q, want %q", got, want)
 	}
 	xmlPath := filepath.Join(root, "/etc/orthogonals/vms/win11.xml")
@@ -618,16 +613,56 @@ func TestVMDefineSharesSticky(t *testing.T) {
 	}
 
 	define(t)
-	if got := domain.ReadGuestConfig(root, "win11").Shares; !reflect.DeepEqual(got, want) {
+	if got := mustRead(t, root, "win11").Shares; !reflect.DeepEqual(got, want) {
 		t.Errorf("a converge with no --share dropped the shares: %q", got)
 	}
 
 	define(t, "--share", "")
-	if got := domain.ReadGuestConfig(root, "win11").Shares; len(got) != 0 {
+	if got := mustRead(t, root, "win11").Shares; len(got) != 0 {
 		t.Errorf(`--share "" left shares %q`, got)
 	}
 	if b, err := os.ReadFile(xmlPath); err != nil || strings.Contains(string(b), "virtiofs") {
 		t.Errorf("clearing the shares left the virtiofs devices behind (err %v)", err)
+	}
+}
+
+// The guest mount services are made during provisioning only, so a share added
+// after the install reaches the domain and mounts nothing. Silence there looks
+// like success until the drive letter is missing in Windows.
+func TestVMDefineWarnsAboutSharesAddedAfterInstall(t *testing.T) {
+	fakeVMPath(t)
+	root := hwtest.ReferenceRoot(t)
+	for _, dir := range []string{"/srv/docs", "/srv/media"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	define := func(t *testing.T, extra ...string) string {
+		t.Helper()
+		args := append([]string{"vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes"}, extra...)
+		code, stdout, stderr := run(t, append(args, "define")...)
+		if code != 0 {
+			t.Fatalf("exit %d\nstderr: %s", code, stderr)
+		}
+		return stdout
+	}
+
+	if out := define(t, "--share", "/srv/docs"); strings.Contains(out, "already installed") {
+		t.Errorf("a share registered at install time provisions normally; no warning is due:\n%s", out)
+	}
+	out := define(t, "--stage", "final", "--share", "/srv/docs", "--share", "/srv/media")
+	if !strings.Contains(out, "already installed") {
+		t.Fatalf("a share added after the install warned nothing:\n%s", out)
+	}
+	// The service and drive come from the share's position, so the instructions
+	// are wrong for share two if it is described with share one's identity.
+	for _, frag := range []string{"/srv/media", "Y:"} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("the instructions do not name %q:\n%s", frag, out)
+		}
+	}
+	if out := define(t, "--stage", "final", "--share", ""); !strings.Contains(out, "sc.exe delete") {
+		t.Errorf("clearing the shares leaves orphan services in the guest unmentioned:\n%s", out)
 	}
 }
 
@@ -644,30 +679,122 @@ func TestVMDefineRefusesAMissingShare(t *testing.T) {
 	}
 }
 
-// guest settings given at define land in the domain XML and survive a re-define.
-func TestVMDefineGuestSettingsSticky(t *testing.T) {
+// settingsFlags gives every domain.Settings field the flag that sets it and the
+// value the flag registers.
+var settingsFlags = map[string]struct{ flag, arg, want string }{
+	"DisplayName":   {"--display-name", "Work PC", "Work PC"},
+	"User":          {"--user", "pavlo", "pavlo"},
+	"RAMGiB":        {"--ram", "12", "12"},
+	"Disk":          {"--disk", "/tank/win11.qcow2", "/tank/win11.qcow2"},
+	"DiskSizeGiB":   {"--disk-size", "222", "222"},
+	"Resolution":    {"--resolution", "2560x1440", "2560x1440"},
+	"GuestUser":     {"--guest-user", "pavlo", "pavlo"},
+	"GuestPassword": {"--guest-password", "s3cret", "s3cret"},
+	"Locale":        {"--locale", "uk-UA", "uk-UA"},
+	"Win11ISO":      {"--win11-iso", "/isos/Win11.iso", "/isos/Win11.iso"},
+	// registered as the installed copy, never the source the flag named
+	"GPUROM": {"--gpu-rom", "", "/var/lib/orthogonals/vbios/win11.rom"},
+	"Shares": {"--share", "/srv/docs", "[/srv/docs]"},
+}
+
+// Every knob given once must survive the flag-less converge `up` runs on a
+// defined VM. Walked by reflection against domain.Settings, so a knob that does
+// not exist yet is covered too.
+func TestVMSettingsAllSticky(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
-	code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes",
-		"--guest-user", "pavlo", "--guest-password", "s3cret", "--locale", "uk-UA",
-		"--resolution", "2560x1440", "define")
-	if code != 0 {
-		t.Fatalf("exit %d\nstderr: %s", code, stderr)
+	if err := os.MkdirAll(filepath.Join(root, "/srv/docs"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	want := domain.GuestConfig{User: "pavlo", Password: "s3cret", Locale: "uk-UA", Resolution: "2560x1440", Win11ISO: "/isos/Win11.iso"}
-	if got := domain.ReadGuestConfig(root, "win11"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("metadata after define = %+v, want %+v", got, want)
-	}
-	st, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Errorf("domain XML carries the password and must be 0600, got %v %v", st.Mode().Perm(), err)
+	rom := filepath.Join(t.TempDir(), "vbios.rom")
+	if err := os.WriteFile(rom, []byte{0x55, 0xaa, 0x01}, 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	if code, _, stderr := run(t, "vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes", "define"); code != 0 {
-		t.Fatalf("re-define exit %d\nstderr: %s", code, stderr)
+	fields := reflect.VisibleFields(reflect.TypeOf(domain.Settings{}))
+	args := []string{"vm", "--root", root, "--yes"}
+	for _, f := range fields {
+		tc, ok := settingsFlags[f.Name]
+		if !ok {
+			t.Fatalf("domain.Settings.%s has no entry in settingsFlags — add one, "+
+				"or the knob ships without anything proving it survives a converge", f.Name)
+		}
+		args = append(args, tc.flag, cmp.Or(tc.arg, rom))
 	}
-	if got := domain.ReadGuestConfig(root, "win11"); !reflect.DeepEqual(got, want) {
-		t.Errorf("metadata after re-define = %+v, want %+v", got, want)
+	if code, _, stderr := run(t, append(args, "define")...); code != 0 {
+		t.Fatalf("define exit %d\nstderr: %s", code, stderr)
+	}
+
+	registered := func(t *testing.T, when string) {
+		t.Helper()
+		v := reflect.ValueOf(mustRead(t, root, "win11"))
+		for _, f := range fields {
+			got := fmt.Sprintf("%v", v.FieldByIndex(f.Index).Interface())
+			if want := settingsFlags[f.Name].want; got != want {
+				t.Errorf("%s: %s = %q, want %q", when, f.Name, got, want)
+			}
+		}
+	}
+	registered(t, "after define")
+
+	// The converge: no flags at all, which is what `up --yes` reaches here with.
+	if code, _, stderr := run(t, "vm", "--root", root, "--yes", "define"); code != 0 {
+		t.Fatalf("converge exit %d\nstderr: %s", code, stderr)
+	}
+	registered(t, "after a flag-less converge")
+
+	// And through a stage transition, the other flag-less re-render `up` runs.
+	if code, _, stderr := run(t, "vm", "--root", root, "--stage", "final", "--yes", "define"); code != 0 {
+		t.Fatalf("stage re-render exit %d\nstderr: %s", code, stderr)
+	}
+	registered(t, "after a stage re-render")
+
+	// Re-resolving what was just registered must change nothing, or the next
+	// define renders different XML and the define op re-runs on every converge.
+	// This record is the only one carrying the vBIOS and the shares, the two
+	// knobs resolveSettings rewrites rather than copies.
+	m, err := steps.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := mustRead(t, root, "win11")
+	resolved, _, err := resolveSettings(root, m, vmOpts{vmName: "win11"}, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resolved, prev) {
+		t.Errorf("re-resolving the registered record changed it:\n got %+v\nwant %+v", resolved, prev)
+	}
+
+	st, err := os.Stat(filepath.Join(root, "/etc/orthogonals/vms/win11.xml"))
+	if err != nil {
+		t.Fatalf("domain XML not written: %v", err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("domain XML mode = %04o, want 0600: it carries the guest password", st.Mode().Perm())
+	}
+}
+
+// A later flag beats the registered value, and the record is not the only thing
+// that follows it — the rendered domain has to move too.
+func TestVMSettingsFlagOverridesRegistered(t *testing.T) {
+	fakeVMPath(t)
+	root := hwtest.ReferenceRoot(t)
+	define := func(extra ...string) {
+		t.Helper()
+		args := append([]string{"vm", "--root", root, "--win11-iso", "/isos/Win11.iso", "--yes"}, extra...)
+		if code, _, stderr := run(t, append(args, "define")...); code != 0 {
+			t.Fatalf("exit %d\nstderr: %s", code, stderr)
+		}
+	}
+	define("--ram", "12", "--locale", "uk-UA")
+	define("--ram", "10")
+	s := mustRead(t, root, "win11")
+	if s.RAMGiB != 10 || s.Locale != "uk-UA" {
+		t.Errorf("second define = ram %d locale %q, want ram 10 locale uk-UA", s.RAMGiB, s.Locale)
+	}
+	if got, err := domain.ReadMemoryMiB(root, "win11"); err != nil || got != 10*1024 {
+		t.Errorf("the domain still renders %d MiB (err %v), want %d", got, err, 10*1024)
 	}
 }
 

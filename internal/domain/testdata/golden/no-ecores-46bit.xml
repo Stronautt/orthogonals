@@ -4,13 +4,12 @@
     <libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'>
       <libosinfo:os id='http://microsoft.com/win/11'/>
     </libosinfo:libosinfo>
-    <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
-      <orthogonals:user></orthogonals:user>
-      <orthogonals:password></orthogonals:password>
-      <orthogonals:locale></orthogonals:locale>
-      <orthogonals:resolution>3840x2160</orthogonals:resolution>
-      <orthogonals:win11-iso></orthogonals:win11-iso>
-    </orthogonals:guest>
+    <settings xmlns="https://github.com/stronautt/orthogonals">
+      <ram-gib>40</ram-gib>
+      <disk>/var/lib/libvirt/images/win11.qcow2</disk>
+      <disk-size-gib>100</disk-size-gib>
+      <resolution>3840x2160</resolution>
+    </settings>
   </metadata>
   <memory unit='MiB'>40960</memory>
   <currentMemory unit='MiB'>40960</currentMemory>

@@ -10,7 +10,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// The WIM header layout: the XML data resource descriptor sits at a fixed offset, stored uncompressed UTF-16LE.
+// WIM header layout: the XML resource descriptor sits at a fixed offset, stored
+// uncompressed UTF-16LE.
 const (
 	wimMagic        = "MSWIM\x00\x00\x00"
 	wimHeaderSize   = 96
@@ -32,7 +33,6 @@ type wimXML struct {
 	} `xml:"IMAGE"`
 }
 
-// parseWIM reads the image names and languages out of install.wim/.esd.
 func parseWIM(path string) (wimXML, error) {
 	var w wimXML
 	f, err := os.Open(path)

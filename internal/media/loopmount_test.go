@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/kdomanski/iso9660"
+	"github.com/stronautt/orthogonals/internal/media/mediatest"
 )
 
-// requireLoopMount skips unless this process can drive the loop subsystem.
 // LOOP_CTL_GET_FREE and the mount(2) that follows both need CAP_SYS_ADMIN in
 // the initial user namespace, and iso9660/udf are not FS_USERNS_MOUNT, so no
 // unprivileged workaround exists — `make test-vm` is where these actually run.
@@ -25,7 +25,6 @@ func requireLoopMount(t *testing.T) {
 	}
 }
 
-// testISO writes a provision ISO through the real writer.
 func testISO(t *testing.T, files []Artifact) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "provision.iso")
@@ -35,8 +34,7 @@ func testISO(t *testing.T, files []Artifact) string {
 	return path
 }
 
-// loopDevices counts attached loop devices; the backing_file attribute only
-// exists while one is bound.
+// The backing_file attribute only exists while a loop device is bound.
 func loopDevices(t *testing.T) int {
 	t.Helper()
 	bound, err := filepath.Glob("/sys/block/loop*/loop/backing_file")
@@ -46,9 +44,9 @@ func loopDevices(t *testing.T) int {
 	return len(bound)
 }
 
-// TestMountISOCorruptImageLeaksNothing: ValidateWin11ISO loop-mounts whatever
-// --win11-iso named, so an unreadable file is ordinary input. It must not
-// strand a loop device — the host has a bounded number and nothing frees one.
+// A corrupt image is ordinary input: ValidateWin11ISO loop-mounts whatever
+// --win11-iso named. It must not strand a loop device — the host has a bounded
+// number and nothing frees one.
 func TestMountISOCorruptImageLeaksNothing(t *testing.T) {
 	requireLoopMount(t)
 	bad := filepath.Join(t.TempDir(), "corrupt.iso")
@@ -66,9 +64,8 @@ func TestMountISOCorruptImageLeaksNothing(t *testing.T) {
 	}
 }
 
-// TestMountISOWithoutPrivilegeExplainsWhy pins the unprivileged failure, which
-// is the path a user hits running `orthogonals media` without sudo. It must
-// name root rather than surface a bare EACCES from an ioctl.
+// The unprivileged failure is the path a user hits running `orthogonals media`
+// without sudo: it must name root rather than surface a bare EACCES.
 func TestMountISOWithoutPrivilegeExplainsWhy(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root — this asserts the unprivileged failure")
@@ -82,9 +79,8 @@ func TestMountISOWithoutPrivilegeExplainsWhy(t *testing.T) {
 	}
 }
 
-// TestMountISORoundTrip puts a BuildISO product through a real kernel
-// filesystem driver: everywhere else the writer's bytes are only compared to a
-// golden, which cannot say whether the kernel can mount them.
+// A real kernel filesystem driver: everywhere else the writer's bytes are only
+// compared to a golden, which cannot say whether the kernel can mount them.
 func TestMountISORoundTrip(t *testing.T) {
 	requireLoopMount(t)
 	want := []Artifact{
@@ -98,7 +94,6 @@ func TestMountISORoundTrip(t *testing.T) {
 		t.Fatalf("mountISOLoop: %v", err)
 	}
 	for _, a := range want {
-		// ISO9660 without Joliet upper-cases names and may append a version.
 		got, err := readISOFile(mnt, a.Name)
 		if err != nil {
 			t.Fatalf("%s: %v (mount contains %v)", a.Name, err, ls(t, mnt))
@@ -114,7 +109,7 @@ func TestMountISORoundTrip(t *testing.T) {
 	}
 
 	// A second attach proves cleanup released the loop device rather than
-	// leaking it: the free-device search would otherwise drift device by device.
+	// leaking it.
 	mnt2, cleanup2, err := mountISOLoop(iso)
 	if err != nil {
 		t.Fatalf("second mount failed — the first leaked a loop device: %v", err)
@@ -123,9 +118,8 @@ func TestMountISORoundTrip(t *testing.T) {
 	_ = mnt2
 }
 
-// TestValidateWin11ISOAgainstARealISO drives the whole validator over a real
-// mount instead of the fixture directory the unit tests swap in, so the seam's
-// contract is checked against the kernel rather than against itself.
+// The whole validator over a real mount instead of the fixture directory the
+// unit tests swap in, so the seam is checked against the kernel.
 func TestValidateWin11ISOAgainstARealISO(t *testing.T) {
 	requireLoopMount(t)
 
@@ -133,7 +127,7 @@ func TestValidateWin11ISOAgainstARealISO(t *testing.T) {
 	// validator looks for sources/install.wim, so drive the writer directly.
 	dir := t.TempDir()
 	wim := filepath.Join(dir, "install.wim")
-	writeTestWIM(t, wim, wimXMLProAndHome)
+	mediatest.WriteWIM(t, wim, mediatest.WimXMLProUkrainian)
 
 	w, err := iso9660.NewWriter()
 	if err != nil {

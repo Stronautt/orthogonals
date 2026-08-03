@@ -1,7 +1,6 @@
-// Package fault proves the apply journal is crash-consistent. Every host
-// mutation is journaled before it lands so an interrupted apply can still be
-// undone; nothing else in the suite ever interrupts one. These tests kill a
-// real apply process and then run a real undo against the wreckage.
+// Package fault proves the apply journal is crash-consistent: every host
+// mutation is journaled before it lands, so an interrupted apply can still be
+// undone. Nothing else in the suite ever interrupts one.
 package fault
 
 import (
@@ -27,8 +26,8 @@ import (
 const stateDir = "var/lib" + string(os.PathSeparator) + "orthogonals"
 
 // applyTools are the binaries apply shells out to under --root. A missing stub
-// makes the clean run fail loudly, so drift here surfaces rather than silently
-// running the developer's real dracut.
+// fails the clean run loudly, rather than silently running the developer's real
+// dracut.
 var applyTools = append([]string{"systemctl", "usermod", "bash"}, hw.RequiredTools...)
 
 // orthogonals is the binary under test: the RPM-installed one when
@@ -59,8 +58,6 @@ func run(m *testing.M) int {
 	return m.Run()
 }
 
-// host builds a fresh reference fixture and returns its root plus the PATH the
-// binary must run with.
 func host(t *testing.T) (root, path string) {
 	t.Helper()
 	root = t.TempDir()
@@ -94,7 +91,6 @@ func snap(t *testing.T, root string) string {
 	return strings.Join(keep, "\n")
 }
 
-// orth runs a subcommand to completion and returns its combined output.
 func orth(t *testing.T, path string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(orthogonals, args...)
@@ -103,9 +99,9 @@ func orth(t *testing.T, path string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// applyKilledAfter starts a real apply and SIGKILLs it once it has emitted n
-// lines, returning how many it actually got out. Where the kill lands within
-// the step is deliberately uncontrolled: undo must cope wherever it died.
+// applyKilledAfter SIGKILLs a real apply once it has emitted n lines and
+// returns how many it got out. Where the kill lands within the step is
+// deliberately uncontrolled: undo must cope wherever it died.
 func applyKilledAfter(t *testing.T, root, path string, n int) int {
 	t.Helper()
 	cmd := exec.Command(orthogonals, "apply", "--yes", "--root", root, "--user", "testuser")
@@ -132,8 +128,7 @@ func applyKilledAfter(t *testing.T, root, path string, n int) int {
 	return seen
 }
 
-// cleanRun counts the lines a complete apply emits, so the kill loop knows how
-// many interruption points exist.
+// cleanRun counts the lines a complete apply emits: one kill point each.
 func cleanRun(t *testing.T) int {
 	t.Helper()
 	root, path := host(t)
@@ -163,9 +158,8 @@ func undoFully(t *testing.T, root, path string) (forced bool) {
 	return true
 }
 
-// TestUndoAfterKillAtEveryLine is the core crash-consistency property: kill a
-// real apply at each of its progress points in turn and require undo to put the
-// tree back byte for byte every time.
+// TestUndoAfterKillAtEveryLine requires undo to put the tree back byte for byte
+// after a kill at each of apply's progress points in turn.
 func TestUndoAfterKillAtEveryLine(t *testing.T) {
 	lines := cleanRun(t)
 	t.Logf("a complete apply emits %d lines", lines)
@@ -270,7 +264,6 @@ func TestUndoFromConstructedResidue(t *testing.T) {
 	}
 }
 
-// recordedPath returns the path of the first write_file record in the manifest.
 func recordedPath(t *testing.T, root string) string {
 	t.Helper()
 	b, err := os.ReadFile(steps.ManifestPath(root))

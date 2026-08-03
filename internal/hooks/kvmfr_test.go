@@ -11,8 +11,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// Every failure must carry the prefix, because `vm launch` matches on it to
-// print the reason verbatim instead of burying it in "starting win11: ...".
+// Every failure must carry the prefix: `vm launch` matches on it to print the
+// reason verbatim instead of burying it in "starting win11: ...".
 func requireKVMFRPrefix(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -36,9 +36,6 @@ func TestWaitForDevice(t *testing.T) {
 	t.Cleanup(func() { KVMFRTimeout = old })
 
 	t.Run("a regular file is refused, not mapped", func(t *testing.T) {
-		// This is the documented trap: qemu opens the backend with O_CREAT, so
-		// starting a kvmfr domain without the module leaves a plain file here.
-		// Mapping it would let the guest write frames nobody ever reads.
 		dev := filepath.Join(t.TempDir(), "kvmfr0")
 		if err := os.WriteFile(dev, nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -85,9 +82,8 @@ func TestLoadedSizeMiB(t *testing.T) {
 	}
 }
 
-// A resident module too small for the incoming domain has to be reloaded, and
-// a client still holding the device makes that impossible — which must be an
-// error naming the fix, not a silently undersized buffer.
+// A client still holding the device makes the reload impossible — which must be
+// an error naming the fix, not a silently undersized buffer.
 func TestLoadKVMFRBusyModuleFails(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sys/module/kvmfr"), 0o755); err != nil {
@@ -105,7 +101,7 @@ func TestLoadKVMFRBusyModuleFails(t *testing.T) {
 }
 
 // A resident module already big enough must not be reloaded: rmmod would fail
-// anyway once a client is attached, and there is nothing to gain.
+// anyway once a client is attached.
 func TestLoadKVMFRKeepsABigEnoughModule(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sys/module/kvmfr"), 0o755); err != nil {
@@ -136,13 +132,11 @@ func TestKVMFRDeviceIsShared(t *testing.T) {
 	}
 }
 
-// TestEnsureKVMFRAgainstTheRealKernel runs the hook's own module setup against
-// a real kernel: modprobe, the udev race, the chown, and the SELinux label that
-// decides whether qemu can open the node at all. A --root fixture answers none
-// of those — /dev/kvmfr0 there is a file the test wrote itself.
-//
-// The VM tier installs the module and depmods it first, so this also proves
-// hw.KVMFRAvailable reads a modules.dep that depmod actually generated.
+// Runs the module setup against a real kernel: modprobe, the udev race, the
+// chown, and the SELinux label that decides whether qemu can open the node at
+// all. A --root fixture answers none of those — /dev/kvmfr0 there is a file the
+// test wrote itself. The VM tier installs and depmods the module first, so this
+// also proves hw.KVMFRAvailable reads a modules.dep depmod actually generated.
 func TestEnsureKVMFRAgainstTheRealKernel(t *testing.T) {
 	if os.Getenv("ORTHOGONALS_TIER_KVMFR") != "1" {
 		t.Skip("loads a kernel module — covered by the VM tier (make test-vm)")
@@ -157,10 +151,9 @@ func TestEnsureKVMFRAgainstTheRealKernel(t *testing.T) {
 	if !hw.KVMFRAvailable("/") {
 		t.Fatal("hw.KVMFRAvailable says no module for this kernel, but the tier just installed one")
 	}
-	// No teardown here: the tier's own trap unloads the module and uninstalls
-	// it. The steps after this one — the DMABUF round-trip and the probe domain
-	// — need the device still present, and a t.Cleanup would pull it out from
-	// under them.
+	// No teardown here: the tier's trap unloads the module. The steps after this
+	// one — the DMABUF round-trip and the probe domain — need the device still
+	// present, and a t.Cleanup would pull it out from under them.
 	const sizeMiB = 32
 	if err := EnsureKVMFR("/", owner, sizeMiB); err != nil {
 		t.Fatalf("EnsureKVMFR: %v", err)
@@ -176,8 +169,6 @@ func TestEnsureKVMFRAgainstTheRealKernel(t *testing.T) {
 	if perm := fi.Mode().Perm(); perm != 0o660 {
 		t.Errorf("mode = %o, want 660", perm)
 	}
-	// The label is the difference between qemu opening the device and being
-	// denied by svirt, which is a failure with no obvious cause at VM start.
 	if got := currentLabel(steps.KVMFRDevice); got != KVMFRLabel {
 		t.Errorf("label = %q, want %q", got, KVMFRLabel)
 	}

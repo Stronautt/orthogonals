@@ -21,7 +21,8 @@ var lgVersionRaw string
 //go:embed looking-glass.sha256
 var lgHostSHA256Raw string
 
-// LookingGlassVersion is the committed Looking Glass release lockfile.
+// LookingGlassVersion comes from a committed lockfile: bump with `make lg-bump`,
+// never by hand here.
 var LookingGlassVersion = strings.TrimSpace(lgVersionRaw)
 
 // LookingGlassRPMVersion is that release as the RPMs carry it; the "0~" prefix
@@ -48,7 +49,6 @@ var (
 		SHA256:  "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a",
 		File:    "winfsp.msi",
 	}
-	// NVIDIADriver is the pinned known-good Windows driver.
 	NVIDIADriver = Download{
 		Name:    "NVIDIA Windows driver",
 		Version: "580.88",
@@ -80,7 +80,6 @@ var (
 		SHA256:  "812bae7ed7dfb7d6d2284bc7de2f8ccebc92ed2a0b1ae893c53b337096e50c1a",
 		File:    "nefcon.zip",
 	}
-	// Win11Debloat strips consumer bloat, telemetry, and ads from the guest.
 	Win11Debloat = Download{
 		Name:    "Win11Debloat",
 		Version: "2026.07.11",
@@ -90,10 +89,10 @@ var (
 	}
 )
 
-// Downloads is everything media fetches into the cache.
 func Downloads() []Download {
 	return []Download{VirtioWin, WinFSP, NVIDIADriver, LookingGlassHost, VDD, Nefcon, Win11Debloat}
 }
 
-// OnProvisionISO reports whether a download belongs on the provision ISO.
+// OnProvisionISO reports whether a download belongs on the provision ISO;
+// virtio-win rides its own CD instead.
 func OnProvisionISO(d Download) bool { return d.Name != VirtioWin.Name }

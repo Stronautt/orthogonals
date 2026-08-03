@@ -7,19 +7,7 @@
     <libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'>
       <libosinfo:os id='http://microsoft.com/win/11'/>
     </libosinfo:libosinfo>
-    <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>
-      <orthogonals:user>{{xml .GuestUser}}</orthogonals:user>
-      <orthogonals:password>{{xml .GuestPassword}}</orthogonals:password>
-      <orthogonals:locale>{{xml .Locale}}</orthogonals:locale>
-      <orthogonals:resolution>{{.Width}}x{{.Height}}</orthogonals:resolution>
-      <orthogonals:win11-iso>{{xml .Win11ISO}}</orthogonals:win11-iso>
-{{- if .ROMFile}}
-      <orthogonals:gpu-rom>{{xml .ROMFile}}</orthogonals:gpu-rom>
-{{- end}}
-{{- range .Shares}}
-      <orthogonals:share>{{xml .Dir}}</orthogonals:share>
-{{- end}}
-    </orthogonals:guest>
+{{.SettingsXML}}
   </metadata>
   <memory unit='MiB'>{{.RAMMiB}}</memory>
   <currentMemory unit='MiB'>{{.RAMMiB}}</currentMemory>

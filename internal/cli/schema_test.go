@@ -22,7 +22,6 @@ var update = flag.Bool("update", false, "rewrite golden files")
 // live host, so the golden pins the check's presence but not its wording.
 var volatileMessages = map[string]bool{"disk-space": true}
 
-// contractCase pins one command's JSON output for one fixture.
 type contractCase struct {
 	name    string
 	fixture string
@@ -31,8 +30,8 @@ type contractCase struct {
 }
 
 // contractCases pairs every fixture in hwtest.Roots with both JSON-emitting
-// read commands, so adding a topology to the registry extends the contract
-// without touching this table.
+// read commands, so a new topology extends the contract without touching this
+// table.
 func contractCases() []contractCase {
 	var cases []contractCase
 	for _, fx := range hwtest.RootNames() {
@@ -68,7 +67,6 @@ func TestJSONContract(t *testing.T) {
 	}
 }
 
-// validateSchema asserts the document satisfies the published contract.
 func validateSchema(t *testing.T, name string, doc []byte) {
 	t.Helper()
 	path := filepath.Join("..", "..", "schema", name+".schema.json")
@@ -86,8 +84,6 @@ func validateSchema(t *testing.T, name string, doc []byte) {
 	}
 }
 
-// normalizeJSON blanks the messages listed in volatileMessages so the golden
-// stays stable across machines.
 func normalizeJSON(t *testing.T, doc []byte) []byte {
 	t.Helper()
 	var v any
@@ -141,7 +137,6 @@ func checkGolden(t *testing.T, name string, got []byte) {
 	}
 }
 
-// diffLines renders the first differing line with a little context.
 func diffLines(want, got string) string {
 	w, g := strings.Split(want, "\n"), strings.Split(got, "\n")
 	for i := 0; i < len(w) || i < len(g); i++ {

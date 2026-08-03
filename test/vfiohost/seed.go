@@ -18,8 +18,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// The base cloud image, pinned the way every other download in this project is.
-// Not in internal/artifacts: that is the bump place for what a user downloads.
+// The base cloud image. Not in internal/artifacts: that is the bump place for
+// what a user downloads.
 const (
 	baseImageURL = "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/" +
 		"Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
@@ -27,8 +27,7 @@ const (
 	baseImageName = "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
 )
 
-// userCache is where the image is kept between runs, since WorkDir is under
-// /var/tmp and gets swept.
+// userCache keeps the image between runs, since /var/tmp gets swept.
 func userCache() string {
 	if dir, err := os.UserCacheDir(); err == nil {
 		return filepath.Join(dir, "orthogonals-test")
@@ -36,7 +35,7 @@ func userCache() string {
 	return WorkDir
 }
 
-// ensureBaseImage returns a path to the base image that qemu can read. The
+// ensureBaseImage returns a path to the base image that qemu can read: the
 // cache lives under the user's home, which is 0700, so the hypervisor can only
 // open the copy staged in WorkDir.
 func ensureBaseImage() (string, error) {
@@ -57,8 +56,8 @@ func ensureBaseImage() (string, error) {
 	return staged, nil
 }
 
-// download fetches url to dest, verifying the pin. A mismatch removes the file
-// rather than leaving a poisoned cache for the next run to trust.
+// download verifies the pin and removes dest on mismatch, rather than leaving
+// a poisoned cache for the next run to trust.
 func download(url, dest string) error {
 	logf("downloading %s", url)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -104,8 +103,8 @@ func sameSize(a, b string) bool {
 }
 
 // ensureSSHKey returns the authorized-keys line for a throwaway keypair,
-// generating one on first use. Throwaway on purpose: the guest is destroyed
-// after every run, so CI needs no key material of its own.
+// generated on first use: the guest is destroyed after every run, so CI holds
+// no lasting key material.
 func ensureSSHKey() (string, error) {
 	pubPath := KeyPath + ".pub"
 	if b, err := os.ReadFile(pubPath); err == nil {

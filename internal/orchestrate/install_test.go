@@ -12,7 +12,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// fastPolling shrinks every poll knob so tests never sleep for real.
 func fastPolling(t *testing.T) {
 	t.Helper()
 	saved := []any{installTimeout, installInterval, pingTries, pingInterval, shutdownTries, shutdownInterval, idleTries, idleInterval, cdPromptWindow, cdPromptInterval, provisionFailGrace}
@@ -33,7 +32,6 @@ func fastPolling(t *testing.T) {
 	})
 }
 
-// fakeBin installs an executable stub that logs its argv and runs extra shell.
 func fakeBin(t *testing.T, name, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,7 +47,6 @@ func fakeBin(t *testing.T, name, extra string) string {
 // writingDisk is a physical allocation past setupWritingBytes.
 const writingDisk = 9663676416
 
-// fakeVM scripts a domain: initial state, a written disk, and a guest-exec responder.
 func fakeVM(initialState, agentStdout string, agentExit int) *virttest.Fake {
 	return &virttest.Fake{State: initialState, Phys: writingDisk, Agent: virttest.Responder(agentStdout, "", agentExit)}
 }
@@ -69,7 +66,6 @@ func TestInstallCompletes(t *testing.T) {
 	}
 }
 
-// A stale failed status must be superseded by the re-run, not fail the resume.
 func TestInstallOutwaitsStaleFailedStatus(t *testing.T) {
 	fastPolling(t)
 	stale := virttest.Responder(`{"stage":"virtio-guest-tools","ok":false,"error":"stale"}`, "", 0)
@@ -94,7 +90,6 @@ func TestInstallOutwaitsStaleFailedStatus(t *testing.T) {
 	}
 }
 
-// Windows setup can power the domain off; Install restarts it and keeps polling.
 func TestInstallRestartsPoweredOffVM(t *testing.T) {
 	fastPolling(t)
 	f := fakeVM("running", "", 1)
@@ -143,7 +138,6 @@ func TestInstallHeartbeat(t *testing.T) {
 	}
 }
 
-// A domain parked past the CD prompt with an empty disk must be rebooted, not keyed.
 func TestInstallRebootsVMParkedPastCDPrompt(t *testing.T) {
 	fastPolling(t)
 	f := &virttest.Fake{State: "running", Phys: 335872, Agent: virttest.Responder("", "", 1)}
@@ -157,7 +151,6 @@ func TestInstallRebootsVMParkedPastCDPrompt(t *testing.T) {
 	}
 }
 
-// A running domain with setup already writing must be left alone.
 func TestInstallLeavesWritingVMRunning(t *testing.T) {
 	fastPolling(t)
 	f := fakeVM("running", `{"stage":"nvidia-driver","ok":true,"error":""}`, 0)

@@ -13,7 +13,7 @@ type exitCode int
 
 func (e exitCode) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
-// Run builds a fresh command tree and dispatches args.
+// Run builds a fresh command tree per call, never a package global.
 func Run(args []string, stdout, stderr io.Writer) int {
 	cfg := &Config{}
 	root := newRootCmd(cfg, stdout, stderr)
@@ -35,7 +35,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
-// newRootCmd assembles the command tree bound to cfg.
 func newRootCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "orthogonals",

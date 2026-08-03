@@ -20,12 +20,10 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// propTools are every binary the host-configuration steps shell out to.
 var propTools = append([]string{"systemctl", "usermod"}, hw.RequiredTools...)
 
-// genProfile draws from the whole space NewProfile can produce: the user
-// charset CheckUser accepts, both binding modes, every CPU vendor including
-// the unknown one, and one or two passthrough IDs.
+// genProfile draws the whole space NewProfile can produce: the charset
+// CheckUser accepts, both bindings, every CPU vendor including the unknown one.
 func genProfile(t *rapid.T) Profile {
 	return Profile{
 		User:             rapid.StringMatching(`[a-z_][a-z0-9_-]{0,15}`).Draw(t, "user"),
@@ -38,7 +36,6 @@ func genProfile(t *rapid.T) Profile {
 	}
 }
 
-// propRoot builds a plausible host tree for one property iteration.
 func propRoot(t *rapid.T) string {
 	t.Helper()
 	root, err := os.MkdirTemp("", "orthogonals-prop")
@@ -77,10 +74,10 @@ func snapshot(t *rapid.T, root string) string {
 	return s
 }
 
-// seedPreexisting adds a subset of the profile's kernel args to every boot
-// entry and to /etc/kernel/cmdline — a host that already carried them carries
-// them in both, since kernel-install writes one from the other. kernelArgsStep
-// undoes only what it actually added, so undo must leave these in place.
+// seedPreexisting adds a subset of the profile's kernel args to every boot entry
+// and to /etc/kernel/cmdline — a host that carried them carries them in both,
+// since kernel-install writes one from the other. kernelArgsStep undoes only
+// what it added, so undo must leave these in place.
 func seedPreexisting(t *rapid.T, root string, p Profile) {
 	t.Helper()
 	args := strings.Fields(KernelArgs(p))
@@ -117,9 +114,8 @@ func seedPreexisting(t *rapid.T, root string, p Profile) {
 	}
 }
 
-// TestApplyUndoRestoresTree is the project's central promise: for any profile,
-// undo puts the host back exactly as it was — including kernel args the host
-// already carried, which undo must not strip.
+// For any profile, undo puts the host back exactly as it was — including kernel
+// args the host already carried, which undo must not strip.
 func TestApplyUndoRestoresTree(t *testing.T) {
 	t.Setenv("PATH", hwtest.FakeTools(t, propTools...))
 	rapid.Check(t, func(rt *rapid.T) {
@@ -149,8 +145,6 @@ func TestApplyUndoRestoresTree(t *testing.T) {
 	})
 }
 
-// TestApplyIsIdempotent asserts a second apply neither grows the journal nor
-// changes the tree.
 func TestApplyIsIdempotent(t *testing.T) {
 	t.Setenv("PATH", hwtest.FakeTools(t, propTools...))
 	rapid.Check(t, func(rt *rapid.T) {
@@ -187,7 +181,6 @@ func TestApplyIsIdempotent(t *testing.T) {
 	})
 }
 
-// TestDryRunIsInert asserts apply without --yes never touches the filesystem.
 func TestDryRunIsInert(t *testing.T) {
 	t.Setenv("PATH", hwtest.FakeTools(t, propTools...))
 	rapid.Check(t, func(rt *rapid.T) {

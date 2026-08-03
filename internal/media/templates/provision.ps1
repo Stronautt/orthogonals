@@ -77,14 +77,37 @@ function Get-VirtioFsExe {
     throw "cannot find virtiofs.exe in the $stockFsService command line: $img"
 }
 
-# Automatic (delayed start) is Start=2 plus DelayedAutostart=1, which
-# Get-Service reports as plain Automatic — hence reading the key.
-function Test-FsService($Share) {
+# What an automatic start has to wait for: the FUSE layer under every mount and
+# the driver that enumerates the device it mounts. Both are what the delayed
+# start used to buy by sleeping. Whatever virtio-win registered on the shipped
+# service is kept, since a clone built from scratch inherits none of it.
+#
+# The SCM refuses to start a service whose DependOnService names one that does
+# not exist, and that refusal outlives the reboot that caused it, so a name is
+# written only if its key is there. The key, not Get-Service: VirtioFsDrv is a
+# kernel driver, and the service list does not have to enumerate those.
+# Re-runs re-read the union they last wrote.
+function Get-FsServiceDeps {
+    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\'
+    $deps = @((Get-ItemProperty -Path ($key + $stockFsService) -ErrorAction SilentlyContinue).DependOnService)
+    $deps += 'WinFsp.Launcher'
+    $deps += 'VirtioFsDrv'
+    $out = @()
+    foreach ($d in $deps) {
+        if ($d -and $out -notcontains $d -and (Test-Path ($key + $d))) { $out += $d }
+    }
+    return $out
+}
+
+# Get-Service reports Start=2 as Automatic whether or not DelayedAutostart is
+# set, so plain automatic can only be told from delayed by reading the key.
+function Test-FsService($Share, $Deps) {
     $svc = Get-Service -Name $Share.Service -ErrorAction SilentlyContinue
     if (-not $svc -or $svc.Status -ne 'Running') { return $false }
     $p = Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $Share.Service) -ErrorAction SilentlyContinue
-    return $p -and $p.Start -eq 2 -and $p.DelayedAutostart -eq 1 -and
-        $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
+    if (-not $p -or $p.Start -ne 2 -or $p.DelayedAutostart -eq 1) { return $false }
+    foreach ($d in $Deps) { if (@($p.DependOnService) -notcontains $d) { return $false } }
+    return $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
 }
 
 Write-Status -Stage 'start' -Ok $true
@@ -161,8 +184,9 @@ $stages = @(
         # they would all race for whichever device enumerates first.
         Name = 'virtiofs'
         Done = {
+            $deps = Get-FsServiceDeps
             $ok = $true
-            foreach ($s in $shares) { if (-not (Test-FsService $s)) { $ok = $false } }
+            foreach ($s in $shares) { if (-not (Test-FsService $s $deps)) { $ok = $false } }
             $ok
         }
         # The command line never crosses an argv boundary: virtiofs.exe lives
@@ -172,6 +196,7 @@ $stages = @(
         # ends at "C:\Program". New-Service and the registry take strings.
         Run  = {
             $exe = Get-VirtioFsExe
+            $deps = Get-FsServiceDeps
             foreach ($s in $shares) {
                 $bin = '"' + $exe + '" -t ' + $s.Tag + ' -m ' + $s.Drive
                 $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $s.Service
@@ -184,10 +209,11 @@ $stages = @(
                 # ExpandString is the type sc.exe gives ImagePath, and what the
                 # SCM expects; DelayedAutostart is only read when Start is 2.
                 Set-ItemProperty -Path $key -Name ImagePath -Value $bin -Type ExpandString
-                # delayed: an automatic start races device enumeration and
-                # WinFsp's driver load, both of which the mount needs
+                # plain automatic: the shipped VirtioFsSvc is delayed, and a
+                # clone of it inherits that, so the 0 has to be written
                 Set-ItemProperty -Path $key -Name Start -Value 2 -Type DWord
-                Set-ItemProperty -Path $key -Name DelayedAutostart -Value 1 -Type DWord
+                Set-ItemProperty -Path $key -Name DelayedAutostart -Value 0 -Type DWord
+                Set-ItemProperty -Path $key -Name DependOnService -Value $deps -Type MultiString
                 Start-Service -Name $s.Service
             }
         }

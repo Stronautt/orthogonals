@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-// seedEntries writes named entries under root's BLS dir.
 func seedEntries(t *testing.T, root string, entries map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, EntriesPath)
@@ -31,8 +30,6 @@ initrd /initramfs-6.15.0.img
 options root=UUID=abc ro rhgb quiet
 `
 
-// a token one entry lacks is both present (do not undo it) and missing (write
-// it there) — the two halves are separate questions.
 func TestWantedSplitsPresentFromMissing(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{
@@ -51,8 +48,6 @@ func TestWantedSplitsPresentFromMissing(t *testing.T) {
 	}
 }
 
-// /etc/kernel/cmdline counts as a target: an arg missing there is dropped by
-// the next kernel update, whatever the entries say today.
 func TestWantedCountsKernelCmdline(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": "options root=UUID=abc ro iommu=pt\n"})
@@ -82,8 +77,6 @@ func TestReadableSurfacesPermissionError(t *testing.T) {
 	}
 }
 
-// AddArgs/RemoveArgs keep /etc/kernel/cmdline in sync, the file kernel-install
-// copies into the entry it generates for the next kernel.
 func TestArgsFollowKernelCmdline(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
@@ -104,8 +97,6 @@ func TestArgsFollowKernelCmdline(t *testing.T) {
 	}
 }
 
-// an absent /etc/kernel/cmdline is left absent: kernel-install then falls back
-// to /proc/cmdline, which carries the args once the host has booted with them.
 func TestAddArgsLeavesAbsentCmdlineAlone(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
@@ -117,7 +108,6 @@ func TestAddArgsLeavesAbsentCmdlineAlone(t *testing.T) {
 	}
 }
 
-// a no-op edit must not rewrite the entry: apply rechecks on every run.
 func TestNoOpEditLeavesEntryUntouched(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": entryA})
@@ -217,9 +207,6 @@ func TestEditAllEntries(t *testing.T) {
 	}
 }
 
-// The BLS spec lets the options key repeat and combines the values, so a token
-// on the second line is present. Reading only the first line reported it
-// missing, and apply then wrote a second copy of an arg the host already had.
 func TestOptionsLinesCombine(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": "options root=UUID=abc ro\noptions iommu=pt\n"})
@@ -235,11 +222,6 @@ func TestOptionsLinesCombine(t *testing.T) {
 	}
 }
 
-// An edit collapses the combined set onto the first options line. Rewriting each
-// line on its own instead appended the token to every line that lacked it, so
-// the kernel command line ended up carrying the same arg twice — and the removal
-// that followed took both copies plus, on a line that had held it all along, an
-// arg the host booted with before apply ran.
 func TestAddArgsDoesNotDuplicateAcrossOptionsLines(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": "options ro\noptions iommu=pt\n"})
@@ -299,7 +281,6 @@ func TestRefusals(t *testing.T) {
 	})
 }
 
-// optionsOf pulls the options tokens out of a rendered entry for asserts.
 func optionsOf(content string) []string {
 	toks, _ := parseOptions(strings.Split(content, "\n"))
 	return toks

@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// fakeMachine wires a Machine whose stages record their call order.
 func fakeMachine(t *testing.T, root string, failAt string) (*Machine, *[]string, *bytes.Buffer) {
 	t.Helper()
 	var calls []string
@@ -105,7 +104,6 @@ func TestRunResumeFailedBootVerificationIsAnError(t *testing.T) {
 	}
 }
 
-// Every stage failure names the stage and points at the diagnostics bundle.
 func TestRunStageFailuresAreActionable(t *testing.T) {
 	cases := []struct {
 		failAt, wantStage string
@@ -179,7 +177,6 @@ func TestLoadStateUnknown(t *testing.T) {
 	}
 }
 
-// TestSavedVMNameSurvivesStateWrites is the reboot-resume guarantee.
 func TestSavedVMNameSurvivesStateWrites(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveVMName(root, "myvm"); err != nil {

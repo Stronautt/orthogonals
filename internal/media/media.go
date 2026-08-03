@@ -17,13 +17,10 @@ import (
 var templateFS embed.FS
 
 const (
-	// Edition is the only Windows edition installed.
 	Edition = "Windows 11 Pro"
 
-	// DefaultGuestUser is the default guest account name.
 	DefaultGuestUser = "user"
 
-	// DefaultGuestPassword is the default guest account password.
 	DefaultGuestPassword = "password"
 
 	defaultLocale = "en-US"
@@ -43,7 +40,6 @@ type Mode struct {
 	Width, Height int
 }
 
-// standardModes is the resolution ladder offered to the guest.
 var standardModes = []Mode{{1920, 1080}, {2560, 1440}, {3440, 1440}, {3840, 2160}}
 
 // Profile is everything the rendered media varies on.
@@ -59,7 +55,6 @@ type Profile struct {
 	Shares []domain.Share
 }
 
-// NewProfile validates the guest options.
 func NewProfile(user, password, locale string, width, height int, shares []domain.Share) (Profile, error) {
 	if user == "" {
 		return Profile{}, errors.New("guest user name is empty")
@@ -76,14 +71,9 @@ func NewProfile(user, password, locale string, width, height int, shares []domai
 	if width == 0 && height == 0 {
 		width, height = domain.DefaultWidth, domain.DefaultHeight
 	}
-	if width <= 0 || height <= 0 {
-		return Profile{}, fmt.Errorf("bad resolution %dx%d", width, height)
-	}
-	// domain.NewProfile's ceiling: without it IVSHMEMMiB's doubling loop
-	// overflows uint64 and never terminates.
-	if width > domain.MaxDimension || height > domain.MaxDimension {
-		return Profile{}, fmt.Errorf("resolution %dx%d exceeds the %d-pixel per-axis maximum",
-			width, height, domain.MaxDimension)
+	width, height, err := domain.CheckResolution(width, height)
+	if err != nil {
+		return Profile{}, err
 	}
 	return Profile{
 		GuestUser: user, GuestPassword: password, Locale: locale,
@@ -92,7 +82,7 @@ func NewProfile(user, password, locale string, width, height int, shares []domai
 	}, nil
 }
 
-// guestModes returns the standard modes that fit the max's IVSHMEM region, plus the max itself.
+// guestModes drops the standard modes that would not fit the max's IVSHMEM region.
 func guestModes(maxW, maxH int) []Mode {
 	budget := domain.IVSHMEMMiB(maxW, maxH)
 	var out []Mode
@@ -118,12 +108,10 @@ type Artifact struct {
 	Content []byte
 }
 
-// templates holds the embedded provision templates, parsed once.
 var templates = template.Must(template.New("media").
 	Funcs(template.FuncMap{"xml": utils.XMLEscape, "ps": utils.PowerShellEscape}).
 	ParseFS(templateFS, "templates/*"))
 
-// Render produces the generated provision-ISO files.
 func Render(p Profile) ([]Artifact, error) {
 	names := []string{"autounattend.xml", "vdd_settings.xml", "provision.ps1"}
 	out := make([]Artifact, 0, len(names))

@@ -10,14 +10,13 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 )
 
-// seedIsolation wires the cgroup/cpu sysfs the isolation guard reads.
 func seedIsolation(t *testing.T, root, present, controllers string) {
 	t.Helper()
 	hwtest.WriteFile(t, root, "sys/fs/cgroup/cgroup.controllers", controllers+"\n")
 	hwtest.WriteFile(t, root, "sys/devices/system/cpu/present", present+"\n")
 }
 
-// writePinnedDomain writes a VM XML whose cputune pins CPUs 2-19 (reference host).
+// writePinnedDomain pins CPUs 2-19, the reference host's layout.
 func writePinnedDomain(t *testing.T, root, vm string) {
 	t.Helper()
 	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml", `<domain>

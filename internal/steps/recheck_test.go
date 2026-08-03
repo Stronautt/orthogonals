@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// A step that changed kind between releases must name both sides: reading the
-// record through the new kind's fields leaves the refusal with an empty "was:".
+// A step that changed kind between releases must name both sides: read through
+// the new kind's fields, the refusal would print an empty "was:".
 func TestKindChangeRefusalNamesTheJournaledStep(t *testing.T) {
 	ops["kind-probe"] = opEntry{fn: func(*OpClients, string, io.Writer, map[string]string) error { return nil }}
 	t.Cleanup(func() { delete(ops, "kind-probe") })

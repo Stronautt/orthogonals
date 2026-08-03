@@ -18,13 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"encoding/binary"
-	"unicode/utf16"
-
 	"github.com/kdomanski/iso9660"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/domain"
+	"github.com/stronautt/orthogonals/internal/media/mediatest"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
@@ -108,8 +106,8 @@ func TestProvisionTrustsTheVDDPublisher(t *testing.T) {
 			t.Errorf("provision.ps1 does not populate the %s certificate store", store)
 		}
 	}
-	// Root is a certificate authority for the whole guest, trusted for
-	// everything the signer could issue. Silent driver install does not need it.
+	// Root is a certificate authority for the whole guest; silent driver install
+	// does not need it.
 	if strings.Contains(s, "'Root'") {
 		t.Error("provision.ps1 adds the VDD signer to the guest's Root store")
 	}
@@ -195,16 +193,16 @@ func TestProvisionMountsEveryShare(t *testing.T) {
 		"Service = 'VirtioFsSvc-media'; Tag = 'media'; Drive = 'Y:'",
 		"New-Service -Name $s.Service -BinaryPathName $bin",
 		"Set-ItemProperty -Path $key -Name ImagePath -Value $bin -Type ExpandString",
-		"Set-ItemProperty -Path $key -Name DelayedAutostart -Value 1 -Type DWord",
+		"Set-ItemProperty -Path $key -Name DelayedAutostart -Value 0 -Type DWord",
+		"Set-ItemProperty -Path $key -Name DependOnService -Value $deps -Type MultiString",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision.ps1 is missing %q", want)
 		}
 	}
-	// $bin holds a quoted "Program Files" path plus arguments. Windows
-	// PowerShell re-quotes such an argument without escaping the inner quotes,
-	// so no argv-passing tool can receive it whole - the service configuration
-	// has to stay on cmdlets and the registry.
+	// $bin holds a quoted "Program Files" path plus arguments, and Windows
+	// PowerShell re-quotes such an argument without escaping the inner quotes, so
+	// the service configuration has to stay on cmdlets and the registry.
 	for _, banned := range []string{"sc.exe config", "sc.exe create"} {
 		if strings.Contains(s, banned) {
 			t.Errorf("provision.ps1 passes the virtiofs binPath through %q; it arrives truncated at \"C:\\Program\"", banned)
@@ -306,9 +304,8 @@ func TestProvisionUserEscaping(t *testing.T) {
 	}
 }
 
-// TestProvisionPwshParse parse-checks the rendered script when pwsh is
-// installed. Both share counts: only a rendering with shares in it exercises
-// the separators of their templated loop.
+// Both share counts: only a rendering with shares in it exercises the
+// separators of their templated loop.
 func TestProvisionPwshParse(t *testing.T) {
 	if _, err := exec.LookPath("pwsh"); err != nil {
 		t.Skip("pwsh not installed")
@@ -336,7 +333,6 @@ func TestProvisionPwshParse(t *testing.T) {
 	}
 }
 
-// agentFake scripts the guest agent with the standard guest-exec responder.
 func agentFake(stdout string, exitCode int) *virttest.Fake {
 	return &virttest.Fake{State: "running", Agent: virttest.Responder(stdout, "", exitCode)}
 }
@@ -529,8 +525,8 @@ func TestFetchStalledConnectionFails(t *testing.T) {
 	}
 }
 
-// TestFetchOversizedResponseFails: an endless body must be named as such.
-// Left to the checksum, a truncation of ours reads as a tampered download.
+// An endless body must be named as such: left to the checksum, a truncation of
+// ours reads as a tampered download.
 func TestFetchOversizedResponseFails(t *testing.T) {
 	old := maxDownloadBytes
 	maxDownloadBytes = 64
@@ -626,7 +622,6 @@ func TestImportInstaller(t *testing.T) {
 	}
 }
 
-// TestBuildISO is the provision-ISO contract.
 func TestBuildISO(t *testing.T) {
 	arts, err := Render(referenceProfile(t))
 	if err != nil {
@@ -705,34 +700,8 @@ func TestBuildISORefusesLongNames(t *testing.T) {
 	}
 }
 
-const wimXMLProAndHome = `<WIM><IMAGE INDEX="1"><NAME>Windows 11 Home</NAME>` +
-	`<WINDOWS><LANGUAGES><LANGUAGE>uk-UA</LANGUAGE><DEFAULT>uk-UA</DEFAULT></LANGUAGES></WINDOWS></IMAGE>` +
-	`<IMAGE INDEX="2"><NAME>Windows 11 Pro</NAME>` +
-	`<WINDOWS><LANGUAGES><LANGUAGE>uk-UA</LANGUAGE><DEFAULT>uk-UA</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>`
-
 const wimXMLHomeOnly = `<WIM><IMAGE INDEX="1"><NAME>Windows 11 Home</NAME></IMAGE></WIM>`
 
-// writeTestWIM hand-builds a minimal install.wim.
-func writeTestWIM(t *testing.T, path, xmlBody string) {
-	t.Helper()
-	u := utf16.Encode([]rune(xmlBody))
-	payload := make([]byte, 2+len(u)*2)
-	binary.LittleEndian.PutUint16(payload, 0xfeff)
-	for i, r := range u {
-		binary.LittleEndian.PutUint16(payload[2+i*2:], r)
-	}
-	hdr := make([]byte, 208)
-	copy(hdr, "MSWIM\x00\x00\x00")
-	binary.LittleEndian.PutUint32(hdr[8:], 208)
-	binary.LittleEndian.PutUint64(hdr[72:], uint64(len(payload)))
-	binary.LittleEndian.PutUint64(hdr[80:], 208)
-	binary.LittleEndian.PutUint64(hdr[88:], uint64(len(payload)))
-	if err := os.WriteFile(path, append(hdr, payload...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// fakeMountISO points the validator's mount seam at a fixture directory.
 func fakeMountISO(t *testing.T, populate func(dir string)) {
 	t.Helper()
 	old := MountISO
@@ -756,12 +725,12 @@ func TestValidateWin11ISO(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(dir, "sources"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			writeTestWIM(t, filepath.Join(dir, "sources", "install.wim"), xmlBody)
+			mediatest.WriteWIM(t, filepath.Join(dir, "sources", "install.wim"), xmlBody)
 		}
 	}
 
 	t.Run("pro present", func(t *testing.T) {
-		fakeMountISO(t, withWIM(wimXMLProAndHome))
+		fakeMountISO(t, withWIM(mediatest.WimXMLProUkrainian))
 		var out strings.Builder
 		info, err := ValidateWin11ISO(iso, &out)
 		if err != nil {

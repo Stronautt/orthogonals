@@ -33,16 +33,12 @@ func TestPlanSigning(t *testing.T) {
 			want:       SigningReady,
 		},
 		{
-			// The common case: dkms signs everything with one key, so kvmfr
-			// inherits whatever already signs nvidia-open or openrazer.
 			name:       "the dkms key is already enrolled",
 			secureBoot: true,
 			signing:    ModuleSigning{Checked: true, DKMS: dkms(true)},
 			want:       SigningReady,
 		},
 		{
-			// akmod-nvidia hosts: their GPU driver works, yet dkms's key is not
-			// enrolled, so kvmfr would be rejected without this.
 			name:       "an enrolled akmods key is reused",
 			secureBoot: true,
 			signing:    ModuleSigning{Checked: true, DKMS: dkms(false), Akmods: akmods(true)},
@@ -50,8 +46,6 @@ func TestPlanSigning(t *testing.T) {
 			wantKey:    "/etc/pki/akmods/private/public_key.priv",
 		},
 		{
-			// Repointing dkms is global, so it must not disturb a module that
-			// is signing fine today.
 			name:       "not reused when other dkms modules would be repointed",
 			secureBoot: true,
 			signing: ModuleSigning{Checked: true, DKMS: dkms(false), Akmods: akmods(true),
@@ -65,8 +59,6 @@ func TestPlanSigning(t *testing.T) {
 			want:       SigningEnroll,
 		},
 		{
-			// dkms generates its key on the first build, so absence means "not
-			// built yet" rather than "not trusted".
 			name:       "no dkms key at all",
 			secureBoot: true,
 			signing:    ModuleSigning{Checked: true},
@@ -93,9 +85,6 @@ func TestPlanSigning(t *testing.T) {
 	}
 }
 
-// TestKVMFRWillLoad covers the trap the render has to avoid: a module that is
-// built but unsigned-for-this-host would make `vm define` emit a domain the
-// hook refuses, whose own remedy is `orthogonals up` — which renders it again.
 func TestKVMFRWillLoad(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -116,8 +105,8 @@ func TestKVMFRWillLoad(t *testing.T) {
 		})
 	}
 
-	// --root describes the developer's machine, not the fixture, so the question
-	// is unanswerable there and must not downgrade every fixture render.
+	// Unanswerable under --root, and a "no" there would downgrade every fixture
+	// render.
 	t.Run("under --root the host is taken at its word", func(t *testing.T) {
 		stubSigning(t, false)
 		if !KVMFRWillLoad(t.TempDir(), true) {
@@ -126,8 +115,8 @@ func TestKVMFRWillLoad(t *testing.T) {
 	})
 }
 
-// stubSigning makes gatherSigning answer without touching the real host: a
-// unit test must never read this machine's enrolled keys.
+// stubSigning keeps gatherSigning off the real host: a unit test must never
+// read this machine's enrolled keys.
 func stubSigning(t *testing.T, enrolled bool) {
 	t.Helper()
 	oldMok, oldEnrolled, oldOther, oldExists := haveMokutil, keyEnrolled, otherDKMSModules, existsFile
@@ -140,8 +129,6 @@ func stubSigning(t *testing.T, enrolled bool) {
 	existsFile = func(string) bool { return true }
 }
 
-// TestKeyEnrolledReadsOutput pins the trap: mokutil exits 1 when a key IS
-// enrolled, so a status-based test would invert every verdict.
 func TestKeyEnrolledReadsOutput(t *testing.T) {
 	if !haveMokutil() {
 		t.Skip("mokutil not installed")

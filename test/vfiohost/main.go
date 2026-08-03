@@ -21,21 +21,16 @@ import (
 
 	libvirt "github.com/digitalocean/go-libvirt"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
+
+	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// WorkDir holds the guest's disk, its cloud-init seed, and the throwaway ssh
-// key tmt connects with. Under /var/tmp rather than the user's home because
-// qemu has to read the disk and ~/.cache is 0700.
+// WorkDir holds the guest's disk, seed and ssh key. Under /var/tmp rather than
+// the user's home because qemu has to read the disk and ~/.cache is 0700.
 const WorkDir = "/var/tmp/orthogonals-vfio"
 
 // KeyPath is where `up` leaves the private key; the Makefile hands it to tmt.
 var KeyPath = filepath.Join(WorkDir, "id_ed25519")
-
-// sockets to try in dial order, matching internal/virt.
-var sockets = []string{
-	"/var/run/libvirt/virtqemud-sock",
-	"/var/run/libvirt/libvirt-sock",
-}
 
 type options struct {
 	name    string
@@ -88,7 +83,6 @@ func run(cmd string, o options) error {
 		if err != nil {
 			return err
 		}
-		// stdout carries the address and nothing else: the Makefile captures it.
 		fmt.Println(addr)
 		return nil
 	case "down":
@@ -100,7 +94,7 @@ func run(cmd string, o options) error {
 
 func connect() (*libvirt.Libvirt, error) {
 	var lastErr error
-	for _, sock := range sockets {
+	for _, sock := range virt.Sockets {
 		l := libvirt.NewWithDialer(dialers.NewLocal(dialers.WithSocket(sock)))
 		if err := l.ConnectToURI(libvirt.QEMUSystem); err != nil {
 			lastErr = err
@@ -111,8 +105,7 @@ func connect() (*libvirt.Libvirt, error) {
 	return nil, fmt.Errorf("connect to libvirt: %w", lastErr)
 }
 
-// up brings the guest from nothing to an address that answers on port 22.
-// Idempotent: an existing domain of the same name is torn down first.
+// up is idempotent: an existing domain of the same name is torn down first.
 func up(l *libvirt.Libvirt, o options) (string, error) {
 	if err := down(l, o.name); err != nil {
 		return "", err
@@ -159,19 +152,17 @@ func up(l *libvirt.Libvirt, o options) (string, error) {
 	return addr, nil
 }
 
-// down destroys and undefines the domain, then releases its storage. Every
-// step tolerates absence so a partial `up` can still be cleaned up.
+// down tolerates absence at every step, so a partial `up` is still cleanable.
 func down(l *libvirt.Libvirt, name string) error {
 	dom, err := l.DomainLookupByName(name)
 	switch {
-	case isNotFound(err):
+	case virt.IsNotFound(err):
 	case err != nil:
 		return fmt.Errorf("look up %s: %w", name, err)
 	default:
-		// A running domain must be killed before it can be undefined; it may
-		// already be off, which is not an error here.
+		// libvirt refuses to undefine a running domain; already off is not an error.
 		_ = l.DomainDestroy(dom)
-		if err := l.DomainUndefineFlags(dom, libvirt.DomainUndefineNvram); err != nil && !isNotFound(err) {
+		if err := l.DomainUndefineFlags(dom, libvirt.DomainUndefineNvram); err != nil && !virt.IsNotFound(err) {
 			return fmt.Errorf("undefine %s: %w", name, err)
 		}
 		logf("removed domain %s", name)
@@ -185,8 +176,6 @@ func down(l *libvirt.Libvirt, name string) error {
 	return nil
 }
 
-// waitForSSH polls the default network's DHCP leases for the management NIC,
-// then waits for that address to accept a TCP connection on port 22.
 func waitForSSH(l *libvirt.Libvirt, mac string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var addr string
@@ -217,7 +206,6 @@ func waitForSSH(l *libvirt.Libvirt, mac string, timeout time.Duration) (string, 
 	}
 }
 
-// leaseFor returns the address leased to mac, "" while there is none yet.
 func leaseFor(l *libvirt.Libvirt, mac string) (string, error) {
 	net, err := l.NetworkLookupByName("default")
 	if err != nil {
@@ -235,19 +223,8 @@ func leaseFor(l *libvirt.Libvirt, mac string) (string, error) {
 	return "", nil
 }
 
-func isNotFound(err error) bool {
-	var le libvirt.Error
-	if !errors.As(err, &le) {
-		return false
-	}
-	switch libvirt.ErrorNumber(le.Code) {
-	case libvirt.ErrNoDomain, libvirt.ErrNoNetwork, libvirt.ErrNoStoragePool, libvirt.ErrNoStorageVol:
-		return true
-	}
-	return false
-}
-
-// logf reports progress on stderr, leaving stdout for the guest address alone.
+// logf writes to stderr: stdout carries the guest address and nothing else,
+// because the Makefile captures it.
 func logf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "vfiohost: "+format+"\n", a...)
 }

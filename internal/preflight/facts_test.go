@@ -7,7 +7,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 )
 
-// fakeSwitcheroo scripts the injectable switcheroo D-Bus probe for one test.
 func fakeSwitcheroo(t *testing.T, listsNVIDIA bool) {
 	t.Helper()
 	old := switcherooListsNVIDIA

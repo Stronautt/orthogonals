@@ -12,8 +12,8 @@ import (
 // would find this one and conclude, wrongly, that it had already been applied.
 const hostOnlyPath = "/etc/hostname"
 
-// countingTool installs a stub that appends a line per invocation, and returns
-// a PATH plus a func reporting how many times it ran.
+// countingTool installs a stub that appends a line per invocation, returning a
+// PATH with it in front plus a func reporting how many times it ran.
 func countingTool(t *testing.T, name string) (path string, runs func() int) {
 	t.Helper()
 	dir := t.TempDir()
@@ -37,8 +37,6 @@ func countingTool(t *testing.T, name string) (path string, runs func() int) {
 	}
 }
 
-// TestCreatesPathIsRootRelativeForRunCmd pins that a run_cmd step's product is
-// looked for inside --root, not on the real filesystem.
 func TestCreatesPathIsRootRelativeForRunCmd(t *testing.T) {
 	if _, err := os.Stat(hostOnlyPath); err != nil {
 		t.Skipf("%s absent here, so the confusion cannot be reproduced", hostOnlyPath)
@@ -56,7 +54,6 @@ func TestCreatesPathIsRootRelativeForRunCmd(t *testing.T) {
 		t.Fatalf("command ran %d times on the first apply, want 1", runs())
 	}
 
-	// The product does not exist under root, so the step must run again.
 	e2, out, _ := eng(root, true)
 	if err := e2.Apply([]Step{step}); err != nil {
 		t.Fatalf("second apply: %v", err)
@@ -66,7 +63,6 @@ func TestCreatesPathIsRootRelativeForRunCmd(t *testing.T) {
 			hostOnlyPath, out.String())
 	}
 
-	// With the product present under root, the step is genuinely done.
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +78,7 @@ func TestCreatesPathIsRootRelativeForRunCmd(t *testing.T) {
 	}
 }
 
-// TestCreatesPathIsRootRelativeForOp is the same contract for op steps, which
-// is where the desktop shortcut relies on it.
+// The same contract for op steps, where the desktop shortcut relies on it.
 func TestCreatesPathIsRootRelativeForOp(t *testing.T) {
 	if _, err := os.Stat(hostOnlyPath); err != nil {
 		t.Skipf("%s absent here, so the confusion cannot be reproduced", hostOnlyPath)

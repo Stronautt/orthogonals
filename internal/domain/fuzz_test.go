@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -11,7 +12,7 @@ import (
 
 // fuzzDomainXML makes the registry directory once, for the whole run: a
 // t.TempDir() per execution costs more I/O than the xml.Unmarshal under test,
-// enough on a loaded runner to stall every worker and time the run out.
+// enough on a loaded runner to time the run out.
 func fuzzDomainXML(f *testing.F) (root, path string) {
 	f.Helper()
 	root = f.TempDir()
@@ -22,8 +23,8 @@ func fuzzDomainXML(f *testing.F) (root, path string) {
 	return root, path
 }
 
-// FuzzReadMemoryMiB asserts arbitrary domain XML never panics and never yields
-// a memory size the caller could mis-scale a hugepage pool from.
+// FuzzReadMemoryMiB asserts no domain XML yields a memory size the caller could
+// mis-scale a hugepage pool from.
 func FuzzReadMemoryMiB(f *testing.F) {
 	f.Add(`<domain><memory unit='MiB'>8192</memory></domain>`)
 	f.Add(`<domain><memory unit='KiB'>8192</memory></domain>`)
@@ -82,17 +83,17 @@ func FuzzKVMFRSizeMiB(f *testing.F) {
 		case ok && size == 0:
 			t.Fatalf("kvmfr backend reported a zero-MiB buffer from %q", content)
 		case ok && size > math.MaxInt32:
-			// The number becomes a static_size_mb argv token and the module takes
-			// an int; EnsureKVMFR refuses it, but it must not get that far.
+			// The number becomes a static_size_mb argv token; the module takes an int.
 			t.Fatalf("kvmfr buffer of %d MiB does not fit static_size_mb", size)
 		}
 	})
 }
 
-// FuzzReadGuestConfig asserts the metadata reader tolerates any XML; it runs on
+// FuzzReadSettings asserts the metadata reader tolerates any XML; it runs on
 // files a user may have hand-edited.
-func FuzzReadGuestConfig(f *testing.F) {
-	f.Add(`<domain><metadata><guest><user>u</user></guest></metadata></domain>`)
+func FuzzReadSettings(f *testing.F) {
+	f.Add(`<domain><metadata><settings><ram-gib>12</ram-gib></settings></metadata></domain>`)
+	f.Add(`<domain><metadata><settings><ram-gib>nonsense</ram-gib></settings></metadata></domain>`)
 	f.Add(`<domain>`)
 	f.Add(``)
 
@@ -101,6 +102,10 @@ func FuzzReadGuestConfig(f *testing.F) {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		ReadGuestConfig(root, "win11")
+		// Never a half-filled record beside an error: converging on one resets
+		// every knob past the break.
+		if s, err := ReadSettings(root, "win11"); err != nil && !reflect.DeepEqual(s, Settings{}) {
+			t.Fatalf("error %v returned with a partial record %+v", err, s)
+		}
 	})
 }

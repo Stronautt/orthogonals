@@ -13,7 +13,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// Fake is a scriptable in-process virt.Client; the zero value is an unreachable hypervisor.
+// Fake's zero value is an unreachable hypervisor.
 type Fake struct {
 	Calls []string
 
@@ -34,9 +34,8 @@ type Fake struct {
 	DefineErr, UndefineErr, NetErr, PingErr, VolErr error
 }
 
-// ErrNoDomain is what Fake methods return for a domain that does not exist. A
-// real libvirt.Error with the real code, so virt.IsNotFound treats the fake
-// exactly like a live libvirtd.
+// ErrNoDomain carries the real libvirt.Error code, so virt.IsNotFound treats
+// the fake exactly like a live libvirtd.
 var ErrNoDomain error = libvirt.Error{Code: uint32(libvirt.ErrNoDomain), Message: "virttest: no such domain"}
 
 func (f *Fake) log(verb, name string) { f.Calls = append(f.Calls, verb+" "+name) }

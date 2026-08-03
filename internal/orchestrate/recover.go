@@ -10,7 +10,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
 
-// Recover re-enumerates the passthrough GPU via PCI remove + rescan after a botched handover.
 func Recover(root string, s sysd.Client, yes bool, out io.Writer) error {
 	gpus, err := hw.ScanGPUs(root)
 	if err != nil {

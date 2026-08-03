@@ -16,7 +16,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// DefaultVMName is the default VM name.
 const DefaultVMName = "win11"
 
 // CheckVMName rejects VM names unsafe to interpolate into scripts and XML.
@@ -67,7 +66,7 @@ func CheckExecPath(exe string) error {
 	return nil
 }
 
-// pathOwner reports a path's owning uid and permission bits; a test seam.
+// pathOwner is a var so tests can feed CheckExecTrusted a synthetic tree.
 var pathOwner = func(path string) (uid uint32, mode fs.FileMode, err error) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -107,13 +106,11 @@ func CheckExecTrusted(exe string) error {
 	}
 }
 
-// EtcDir is the orthogonals config directory.
 const EtcDir = "/etc/orthogonals"
 
-// VMsDirPath is the managed-VM registry directory.
+// VMsDirPath is the managed-VM registry: one XML per domain orthogonals owns.
 const VMsDirPath = EtcDir + "/vms"
 
-// VMsDir is VMsDirPath under root.
 func VMsDir(root string) string { return filepath.Join(root, VMsDirPath) }
 
 // LibvirtRunDir holds libvirt's live-domain state XML.
@@ -127,7 +124,6 @@ const LookingGlassSHM = "/dev/shm/looking-glass"
 // rendered domain, the qemu hook, and qemu.conf's cgroup_device_acl.
 const KVMFRDevice = "/dev/kvmfr0"
 
-// QemuConfPath is libvirt's qemu driver configuration.
 const QemuConfPath = "/etc/libvirt/qemu.conf"
 
 // RunDirPath is recreated each boot by tmpfiles.d. QEMU binds the SPICE socket
@@ -139,7 +135,6 @@ const RunDirPath = "/run/orthogonals"
 // real host, never under --root.
 func VMRunDir(vm string) string { return RunDirPath + "/" + vm }
 
-// SpiceSocketPath is the domain's SPICE listen socket.
 func SpiceSocketPath(vm string) string { return VMRunDir(vm) + "/spice.sock" }
 
 // VMNames lists every managed domain from the registry.
@@ -349,7 +344,6 @@ func (e *Engine) UndoID(id string, force bool) (found bool, err error) {
 	return true, m.save(e.Root)
 }
 
-// undoRecord reverses one record.
 func (e *Engine) undoRecord(rec Record, force bool, oc *OpClients) (bool, error) {
 	switch rec.Kind {
 	case KindWriteFile:
@@ -440,7 +434,6 @@ func (e *Engine) undoOp(rec Record, oc *OpClients) (bool, error) {
 	return e.runUndoOp(rec.ID, rec.UndoOp, rec.UndoArgs, oc)
 }
 
-// runUndoOp executes a journaled inverse op.
 func (e *Engine) runUndoOp(id, undoOp string, args map[string]string, oc *OpClients) (bool, error) {
 	entry, ok := ops[undoOp]
 	if !ok {
@@ -496,8 +489,8 @@ func (e *Engine) undoEnableUnit(rec Record, oc *OpClients) (bool, error) {
 
 // removeDirs drops the directories a write_file step created, deepest first —
 // the order missingDirs records them in, and the only order os.Remove can
-// unwind. Errors are ignored on purpose: os.Remove refuses a non-empty
-// directory, which is exactly the case where something else still needs it.
+// unwind. Errors are ignored: a non-empty directory is one something else
+// still needs.
 func removeDirs(root string, dirs []string) {
 	for _, d := range dirs {
 		_ = os.Remove(filepath.Join(root, d))

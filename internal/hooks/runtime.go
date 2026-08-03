@@ -24,33 +24,24 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// vmNote builds a Windows-VM desktop notification bound for user's session.
 func vmNote(user, body string, urgent bool) notify.Notification {
 	return notify.Notification{Title: "Windows VM", Icon: "computer", Urgent: urgent, User: user, Body: body}
 }
 
 // Runtime seams swapped by tests.
 var (
-	// DeleteModule unloads a kernel module non-blocking.
-	DeleteModule = func(name string) error { return unix.DeleteModule(name, unix.O_NONBLOCK) }
-	// deviceDriver reads a PCI device's bound driver.
-	deviceDriver = hw.DeviceDriver
-	// runtimeStatus reads a PCI device's runtime PM state.
+	DeleteModule  = func(name string) error { return unix.DeleteModule(name, unix.O_NONBLOCK) }
+	deviceDriver  = hw.DeviceDriver
 	runtimeStatus = hw.RuntimeStatus
-	// RemoveSettle and RescanSettle are the PCI reset settle windows.
-	RemoveSettle = time.Second
-	RescanSettle = 2 * time.Second
-	// WakeSettle and WakeTimeout bound the D3cold wake poll.
-	WakeSettle  = 50 * time.Millisecond
-	WakeTimeout = 5 * time.Second
-	// syncFS flushes filesystem buffers before a cache drop; a seam for tests.
-	syncFS = unix.Sync
+	RemoveSettle  = time.Second
+	RescanSettle  = 2 * time.Second
+	WakeSettle    = 50 * time.Millisecond
+	WakeTimeout   = 5 * time.Second
+	syncFS        = unix.Sync
 )
 
-// govSaveFile holds the pre-boost CPU governor.
 const govSaveFile = "/run/orthogonals-governor"
 
-// Hugepage pool paths and the pre-VM pool-size marker.
 const (
 	hugepageSaveFile   = "/run/orthogonals-hugepages"
 	nrHugepages2MPath  = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
@@ -87,8 +78,8 @@ func Detach(root, user string, sd sysd.Client) error {
 	if err := wakeDevices(root, devs, log); err != nil {
 		return abort(root, user, log, "%v", err)
 	}
-	// Non-urgent on purpose: it explains the black screen ahead, and every
-	// failure past this point notifies urgently, so it is never the last word.
+	// Non-urgent: every failure past this point notifies urgently, so this is
+	// never the last word left on screen.
 	notify.Send(vmNote(user, "VM is starting — the GPU is being handed over, first screen in ~20 seconds.", false))
 
 	for _, m := range NVIDIAUnloadOrder {
@@ -167,9 +158,8 @@ func Reattach(root, user string, sd sysd.Client) error {
 	return errors.New("GPU reattach failed — run: sudo orthogonals recover --yes")
 }
 
-// wakeDevices resumes any runtime-suspended passthrough device to D0 before its
-// driver is unbound; unbinding a D3cold device fails. Skips devices without
-// runtime PM. Errors if a device stays suspended past WakeTimeout.
+// wakeDevices resumes a runtime-suspended device to D0 before its driver is
+// unbound: unbinding a D3cold device fails.
 func wakeDevices(root string, devs []string, log logFunc) error {
 	for _, d := range devs {
 		if status := runtimeStatus(root, d); status != "suspended" && status != "suspending" {
@@ -187,7 +177,6 @@ func wakeDevices(root string, devs []string, log logFunc) error {
 	return nil
 }
 
-// waitActive polls runtime_status until active, bounded by WakeTimeout.
 func waitActive(root, d string) error {
 	deadline := time.Now().Add(WakeTimeout)
 	for {
@@ -201,7 +190,6 @@ func waitActive(root, d string) error {
 	}
 }
 
-// restoreRuntimePM re-enables runtime PM (power/control=auto) on laptop hosts only.
 func restoreRuntimePM(root string, devs []string, log logFunc) {
 	if !hw.IsLaptopChassis(hw.ChassisType(root)) {
 		return
@@ -212,7 +200,6 @@ func restoreRuntimePM(root string, devs []string, log logFunc) {
 	log("runtime power management restored to auto")
 }
 
-// Reenumerate resets the passthrough GPU via PCI remove + rescan and reloads the driver.
 func Reenumerate(root string, devs []string, sd sysd.Client) error {
 	for _, d := range slices.Backward(devs) {
 		_ = hw.RemoveDevice(root, d)
@@ -225,7 +212,6 @@ func Reenumerate(root string, devs []string, sd sysd.Client) error {
 	return reloadNVIDIA(root, devs, sd)
 }
 
-// HealthCheck runs nvidia-smi under a timeout.
 func HealthCheck(root string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -235,7 +221,6 @@ func HealthCheck(root string) error {
 	return err
 }
 
-// reloadNVIDIA loads the NVIDIA stack in dependency order and probes each device.
 func reloadNVIDIA(root string, devs []string, sd sysd.Client) error {
 	for _, m := range NVIDIAReloadOrder {
 		if out, err := exec.Command("modprobe", m).CombinedOutput(); err != nil {
@@ -249,7 +234,6 @@ func reloadNVIDIA(root string, devs []string, sd sysd.Client) error {
 	return nil
 }
 
-// abort logs and notifies once, then returns the error.
 func abort(root, user string, log logFunc, format string, a ...any) error {
 	err := fmt.Errorf(format, a...)
 	log("failed — %v", err)
@@ -257,7 +241,6 @@ func abort(root, user string, log logFunc, format string, a ...any) error {
 	return err
 }
 
-// nvidiaDevices re-detects the sole passthrough GPU at runtime.
 func nvidiaDevices(root string) (gpu string, devs []string, err error) {
 	gpus, err := hw.ScanGPUs(root)
 	if err != nil {
@@ -274,10 +257,9 @@ type holder struct {
 	Comm string
 }
 
-// nvidiaHolders lists processes holding /dev/nvidia* open. The leading slash
-// on "/proc" is load-bearing: filepath.Join drops an empty root, so a bare
-// "proc" is relative and the scan finds nothing unless the caller happens to
-// be standing in /.
+// nvidiaHolders lists processes holding /dev/nvidia* open. The leading slash on
+// "/proc" is load-bearing: filepath.Join drops an empty root, so a bare "proc"
+// is relative and the scan reads whatever ./proc happens to be.
 func nvidiaHolders(root string) []holder {
 	entries, err := os.ReadDir(filepath.Join(root, "/proc"))
 	if err != nil {
@@ -290,8 +272,8 @@ func nvidiaHolders(root string) []holder {
 		}
 		procPid := filepath.Join(root, "/proc", e.Name())
 		if pidHoldsNVIDIA(procPid) {
-			// "?" rather than "": the name goes in a notification listing what
-			// is holding the GPU, and a blank reads as a missing entry.
+			// "?" rather than "": a blank reads as a missing entry in the
+			// notification listing what holds the GPU.
 			holders = append(holders, holder{
 				Comm: cmp.Or(utils.ReadTrim(filepath.Join(procPid, "comm")), "?"),
 			})
@@ -315,7 +297,6 @@ func pidHoldsNVIDIA(procPid string) bool {
 	return false
 }
 
-// holderApps is the deduped, space-joined command names for the notification.
 func holderApps(holders []holder) string {
 	var apps []string
 	seen := map[string]bool{}
@@ -333,7 +314,6 @@ func governors(root string) []string {
 	return g
 }
 
-// boostGovernor sets every CPU to the performance governor, saving the current one first.
 func boostGovernor(root string, log logFunc) {
 	govs := governors(root)
 	if len(govs) == 0 {
@@ -352,11 +332,10 @@ func boostGovernor(root string, log logFunc) {
 	log("cpu governor performance")
 }
 
-// reserveHugepages pre-allocates the 2M hugepage pool the domain's memoryBacking
-// requires. QEMU maps guest RAM from this pool at start, so it must exist before
-// the process launches. The prior pool size is saved to /run once and restored on
-// release. A shortfall rolls back this call's own allocation and aborts the start:
-// a clear pre-start failure beats QEMU's opaque out-of-memory.
+// reserveHugepages pre-allocates the 2M pool the domain's memoryBacking needs:
+// QEMU maps guest RAM from it at start, so it must exist before the process
+// launches. A shortfall rolls back this call's own allocation and aborts the
+// start rather than letting QEMU fail with an opaque out-of-memory.
 func reserveHugepages(root, user string, ramMiB uint64) error {
 	log := hookLog(root, "hugepages")
 	need := (ramMiB + hugepageSizeMiB - 1) / hugepageSizeMiB
@@ -368,9 +347,8 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 	save := filepath.Join(root, hugepageSaveFile)
 	if _, err := os.Stat(save); err != nil {
 		_ = os.MkdirAll(filepath.Dir(save), 0o755)
-		// Without the marker freeHugepages can never release the pool — a
-		// guest-RAM-sized reservation would outlive the VM until reboot, so a
-		// failed save aborts the start rather than proceeding.
+		// Without the marker freeHugepages can never release the pool: a
+		// guest-RAM-sized reservation would outlive the VM until reboot.
 		if err := os.WriteFile(save, []byte(strconv.FormatUint(prior, 10)), 0o644); err != nil {
 			return hugepageAbort(user, log, "save prior pool size to %s: %v", hugepageSaveFile, err)
 		}
@@ -379,10 +357,9 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 	got := prior
 	for attempt := 0; attempt < hugepageAllocTries && got < target; attempt++ {
 		if attempt > 0 {
-			// The cheap compaction fell short. Flush dirty pages (sync) and drop
-			// clean page cache so the next compaction has more movable memory to
-			// fold into 2M blocks. Only on retry — a freshly-booted host that
-			// succeeds at once keeps its cache warm.
+			// Flush dirty pages and drop clean page cache so the next compaction
+			// has more movable memory to fold into 2M blocks. Only on retry: a
+			// host that succeeds at once keeps its cache warm.
 			syncFS()
 			_ = os.WriteFile(filepath.Join(root, dropCachesPath), []byte("3\n"), 0o644)
 		}
@@ -401,7 +378,6 @@ func reserveHugepages(root, user string, ramMiB uint64) error {
 	return nil
 }
 
-// hugepageAbort logs, notifies the user with hugepage-specific guidance, and returns.
 func hugepageAbort(user string, log logFunc, format string, a ...any) error {
 	err := fmt.Errorf(format, a...)
 	log("failed — %v", err)
@@ -409,8 +385,8 @@ func hugepageAbort(user string, log logFunc, format string, a ...any) error {
 	return err
 }
 
-// freeHugepages restores the pool to its pre-VM size. No-op when the marker is
-// absent (the VM never reserved). Errors never block teardown.
+// freeHugepages restores the pool to its pre-VM size. No-op without the marker,
+// and errors never block teardown.
 func freeHugepages(root string) {
 	log := hookLog(root, "hugepages")
 	save := filepath.Join(root, hugepageSaveFile)
@@ -428,9 +404,9 @@ func freeHugepages(root string) {
 	log("hugepage pool restored to %s", prior)
 }
 
-// ResetTransientState reverts every host tweak the qemu hook may leave behind
-// after a crashed VM start — CPU governor, hugepage pool, and cgroup isolation.
-// Each is a no-op when its /run marker is absent, so recover can call it any time.
+// ResetTransientState reverts the governor, hugepage pool and cgroup isolation a
+// crashed VM start leaves behind; each is a no-op without its /run marker, so
+// recover can call it any time.
 func ResetTransientState(root string, sd sysd.Client) {
 	log := hookLog(root, "recover")
 	restoreGovernor(root, log)
@@ -438,7 +414,6 @@ func ResetTransientState(root string, sd sysd.Client) {
 	unisolateCPUs(root, sd)
 }
 
-// restoreGovernor writes the saved governor back and clears the save file.
 func restoreGovernor(root string, log logFunc) {
 	save := filepath.Join(root, govSaveFile)
 	b, err := os.ReadFile(save)
@@ -454,10 +429,9 @@ func restoreGovernor(root string, log logFunc) {
 
 type logFunc func(format string, a ...any)
 
-// LogWriter is where hook progress is mirrored.
+// LogWriter is the seam TestMain points at io.Discard; hook progress goes here.
 var LogWriter io.Writer = os.Stderr
 
-// hookLog appends timestamped lines to the hooks log and mirrors them to LogWriter.
 func hookLog(root, tag string) logFunc {
 	path := filepath.Join(root, LogPath)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)

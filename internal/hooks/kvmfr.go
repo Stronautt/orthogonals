@@ -26,9 +26,9 @@ import (
 // reach across it.
 const KVMFRErrPrefix = "kvmfr: "
 
-// kvmfrSizeFile records the MiB the loaded module was given. static_size_mb is a
+// kvmfrSizeFile records the MiB the loaded module was given: static_size_mb is a
 // module_param_array with mode 0000, so sysfs never exposes it, and a character
-// device has no length to stat. Under /run: the note and the module both go at
+// device has no length to stat. Under /run, since note and module both go at
 // reboot.
 const kvmfrSizeFile = "/run/orthogonals-kvmfr-size"
 
@@ -45,8 +45,7 @@ var (
 
 // EnsureKVMFR loads the kvmfr module sized for this domain and hands the device
 // node to the desktop user and qemu. On demand rather than at boot: the size
-// must match the domain being started, and a host that never runs the VM never
-// pays the vmalloc.
+// must match the domain being started.
 func EnsureKVMFR(root, owner string, sizeMiB uint64) error {
 	log := hookLog(root, "kvmfr")
 	if sizeMiB == 0 || sizeMiB > math.MaxInt32 {
@@ -68,8 +67,6 @@ func EnsureKVMFR(root, owner string, sizeMiB uint64) error {
 	return chownKVMFR(root, dev, owner, log)
 }
 
-// loadKVMFR loads the module, reloading it when the resident one is too small
-// for this domain.
 func loadKVMFR(root string, log logFunc, sizeMiB uint64) error {
 	if loaded, _ := utils.Exists(filepath.Join(root, "/sys/module/kvmfr")); loaded {
 		if have := loadedSizeMiB(root); have >= sizeMiB {
@@ -94,14 +91,13 @@ func loadKVMFR(root string, log logFunc, sizeMiB uint64) error {
 	return nil
 }
 
-// loadedSizeMiB reads the size the running module was loaded with. 0 on any
-// doubt, which forces a reload rather than trusting a possibly undersized buffer.
+// loadedSizeMiB is 0 on any doubt, which forces a reload rather than trusting a
+// possibly undersized buffer.
 func loadedSizeMiB(root string) uint64 {
 	n, _ := utils.ReadUint(filepath.Join(root, kvmfrSizeFile))
 	return n
 }
 
-// waitForDevice polls until udev creates the node.
 func waitForDevice(dev string) error {
 	deadline := time.Now().Add(KVMFRTimeout)
 	for {
@@ -126,8 +122,7 @@ func waitForDevice(dev string) error {
 }
 
 // chownKVMFR gives the node to the desktop user and the qemu group, then labels
-// it for svirt. Applied here rather than by a udev rule so undo has nothing to
-// take back.
+// it for svirt. Here rather than in a udev rule so undo has nothing to take back.
 func chownKVMFR(root, dev, owner string, log logFunc) error {
 	uid, _, _, err := steps.LookupUser(owner)
 	if err != nil {
@@ -171,7 +166,6 @@ func chownKVMFR(root, dev, owner string, log logFunc) error {
 	return nil
 }
 
-// currentLabel reads a path's SELinux context, "" when it has none.
 func currentLabel(path string) string {
 	buf := make([]byte, 256)
 	n, err := unix.Lgetxattr(path, "security.selinux", buf)
@@ -184,7 +178,6 @@ func currentLabel(path string) string {
 // setxattr is a seam: a unit test cannot label a file it does not own.
 var setxattr = unix.Lsetxattr
 
-// qemuGID resolves the group qemu runs as.
 func qemuGID() (int, error) {
 	g, err := user.LookupGroup("qemu")
 	if err != nil {

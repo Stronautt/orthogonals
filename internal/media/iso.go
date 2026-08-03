@@ -17,24 +17,20 @@ import (
 // VolumeLabel is how the guest locates the provision CD.
 const VolumeLabel = "ORTHOGONALS"
 
-// isoSuffix names a provision ISO on disk.
 const isoSuffix = "-provision.iso"
 
-// ISOPath is where a VM's provision ISO lands.
 func ISOPath(root, vm string) string {
 	return filepath.Join(steps.StateDir(root), vm+isoSuffix)
 }
 
 // ProvisionISOs lists every provision ISO under root. They hold the guest
 // password in cleartext and are not journaled steps, so undo has to find them
-// by name — the VM registry that would otherwise name them is gone by then, and
-// `media` can build one for a VM that was never defined at all.
+// by name — the VM registry that would name them is gone by then.
 func ProvisionISOs(root string) []string {
 	paths, _ := filepath.Glob(filepath.Join(steps.StateDir(root), "*"+isoSuffix))
 	return paths
 }
 
-// BuildISO writes the provision ISO natively.
 func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Writer) error {
 	names := make([]string, 0, len(rendered)+len(payloads))
 	for _, a := range rendered {
@@ -103,13 +99,13 @@ func checkISOName(name string) error {
 	return nil
 }
 
-// WimInfo is what the edition gate learns about the installation image.
 type WimInfo struct {
 	Languages       []string
 	DefaultLanguage string
 }
 
-// ValidateWin11ISO loop-mounts the installation ISO and checks install.wim carries the required edition.
+// ValidateWin11ISO loop-mounts the ISO, so it needs root — the name does not
+// say so and callers reach it from unprivileged paths.
 func ValidateWin11ISO(path string, out io.Writer) (WimInfo, error) {
 	if _, err := os.Stat(path); err != nil {
 		return WimInfo{}, fmt.Errorf("win11 ISO: %w", err)
@@ -146,7 +142,6 @@ func ValidateWin11ISO(path string, out io.Writer) (WimInfo, error) {
 		path, Edition, strings.Join(editions, ", "))
 }
 
-// wimLanguages collects the per-image language lists and the first default.
 func wimLanguages(images wimXML) WimInfo {
 	var w WimInfo
 	seen := map[string]bool{}

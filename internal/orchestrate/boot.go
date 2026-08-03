@@ -13,7 +13,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// VerifyBoot checks that the applied boot configuration is live on the running kernel.
 func VerifyBoot(root string) error {
 	if err := KargsLive(root); err != nil {
 		return err
@@ -34,7 +33,6 @@ func KargsLive(root string) error {
 	return kargsLive(root, want)
 }
 
-// manifestKernelArgs recovers the kargs apply added from the journaled step.
 func manifestKernelArgs(root string) (string, error) {
 	m, err := steps.Load(root)
 	if err != nil {

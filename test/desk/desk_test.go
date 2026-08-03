@@ -5,8 +5,8 @@
 // t.TempDir(), and no test calls apply.
 //
 // TestFixtureAttributesExistOnRealHardware is what this suite exists for: every
-// golden in the suite derives from the hand-written hwtest.Roots, so nothing
-// else can catch a fixture modelling an attribute sysfs does not publish.
+// other golden derives from the hand-written hwtest.Roots, so nothing else can
+// catch a fixture modelling an attribute sysfs does not publish.
 package desk
 
 import (
@@ -29,11 +29,10 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// realRoot is the running machine. Every other test passes a --root prefix;
-// this one is the only place that does not.
+// realRoot is the running machine — the one place in the suite that passes no
+// --root prefix.
 const realRoot = "/"
 
-// detectHost is hw.Detect against the real host, shared by the tests below.
 func detectHost(t *testing.T) *hw.Result {
 	t.Helper()
 	r, err := hw.Detect(realRoot)
@@ -43,9 +42,8 @@ func detectHost(t *testing.T) *hw.Result {
 	return r
 }
 
-// TestJSONContractOnRealHardware validates the published schemas against live
-// hardware: a schema that only ever sees synthetic input encodes the fixture's
-// assumptions instead of the format's.
+// TestJSONContractOnRealHardware exists because a schema that only ever sees
+// synthetic input encodes the fixture's assumptions instead of the format's.
 func TestJSONContractOnRealHardware(t *testing.T) {
 	res := detectHost(t)
 	tests := []struct {
@@ -73,8 +71,8 @@ func preflightReport(res *hw.Result) any {
 	}{preflight.Overall(checks), checks}
 }
 
-// TestPreflightContractHoldsOnRealHardware asserts the parts of the preflight
-// contract that must hold for any host, not just the ones with a golden file.
+// TestPreflightContractHoldsOnRealHardware asserts what must hold for any host,
+// not just the ones with a golden file.
 func TestPreflightContractHoldsOnRealHardware(t *testing.T) {
 	checks := preflight.Analyze(detectHost(t), preflight.GatherFacts(realRoot))
 	if len(checks) == 0 {
@@ -145,7 +143,6 @@ func TestKVMFRLabelIsUsableOnThisHost(t *testing.T) {
 	}
 }
 
-// isKebab reports whether a check name is lowercase letters, digits, and dashes.
 func isKebab(s string) bool {
 	if s == "" || strings.HasPrefix(s, "-") || strings.HasSuffix(s, "-") {
 		return false
@@ -175,9 +172,8 @@ var hostConditional = map[string]string{
 }
 
 // TestFixtureAttributesExistOnRealHardware requires every file the reference
-// fixture synthesizes to correspond to something this machine publishes.
-//
-// PCI attributes are matched by device class, not by address — sysfs attribute
+// fixture synthesizes to correspond to something this machine publishes. PCI
+// attributes are matched by device class, not by address — sysfs attribute
 // names come from the bus and the driver core, not from the vendor, so any real
 // display-class device answers for a fixture display-class device. Everything
 // outside sys/bus/pci is checked at its literal path.
@@ -230,7 +226,6 @@ func TestFixtureAttributesExistOnRealHardware(t *testing.T) {
 	}
 }
 
-// readFixtureClass reads one fixture device's class attribute.
 func readFixtureClass(t *testing.T, fixture, addr string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(fixture, "sys/bus/pci/devices", addr, "class"))
@@ -240,7 +235,7 @@ func readFixtureClass(t *testing.T, fixture, addr string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// checkPCIAttr requires some real device of the same class to publish attr.
+// checkPCIAttr passes as soon as any real device of the same class publishes attr.
 func checkPCIAttr(t *testing.T, real []hw.PCIDevice, addr, class, attr string) {
 	t.Helper()
 	// The class prefix is the pair of hex digits naming the base class: 0x03
@@ -269,7 +264,6 @@ func checkPCIAttr(t *testing.T, real []hw.PCIDevice, addr, class, attr string) {
 	}
 }
 
-// checkHostPath requires a non-PCI fixture file to exist at the same real path.
 func checkHostPath(t *testing.T, rel string) {
 	t.Helper()
 	// BLS entry filenames carry the kernel version, so only the directory is
@@ -294,7 +288,6 @@ func checkHostPath(t *testing.T, rel string) {
 		"either the fixture is fiction or the path belongs in hostConditional", rel)
 }
 
-// iommuOn reports whether the running kernel published any IOMMU groups.
 func iommuOn(t *testing.T) bool {
 	t.Helper()
 	active, err := hw.IOMMUActive(realRoot)
@@ -352,7 +345,6 @@ func encode(t *testing.T, v any) []byte {
 	return buf.Bytes()
 }
 
-// validateSchema asserts a document satisfies the published contract.
 func validateSchema(t *testing.T, name string, doc []byte) {
 	t.Helper()
 	path := filepath.Join("..", "..", "schema", name+".schema.json")

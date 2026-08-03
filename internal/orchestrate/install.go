@@ -24,7 +24,6 @@ var (
 // setupWritingBytes marks that Windows setup has booted and is writing.
 const setupWritingBytes = 64 * utils.BytesPerMiB
 
-// Install boots the VM and polls until provisioning reports done.
 func Install(c virt.Client, vm string, out io.Writer) error {
 	start := time.Now()
 	deadline := start.Add(installTimeout)
@@ -93,7 +92,6 @@ func Install(c virt.Client, vm string, out io.Writer) error {
 	return fmt.Errorf("the Windows install/provisioning did not finish within %v — inspect the guest console (virt-manager) for a stuck setup, then re-run `orthogonals up --yes` to resume", installTimeout)
 }
 
-// ensureRunning starts the domain if needed, reporting whether it was already running.
 func ensureRunning(c virt.Client, vm string, out io.Writer) (wasRunning bool, err error) {
 	if state, err := c.DomainState(vm); err == nil && state == "running" {
 		return true, nil
@@ -109,7 +107,6 @@ func startDomain(c virt.Client, vm string, out io.Writer) error {
 	return nil
 }
 
-// answerCDPrompt presses a key at the guest's boot-from-CD prompt.
 func answerCDPrompt(c virt.Client, vm string, out io.Writer) {
 	if diskPhysBytes(c, vm) > setupWritingBytes {
 		return
@@ -126,7 +123,6 @@ func answerCDPrompt(c virt.Client, vm string, out io.Writer) {
 	}
 }
 
-// diskPhysBytes reports the domain disk's physical allocation.
 func diskPhysBytes(c virt.Client, vm string) uint64 {
 	n, err := c.DomainBlockPhysical(vm, "vda")
 	if err != nil {

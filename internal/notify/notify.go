@@ -10,7 +10,6 @@ import (
 	"syscall"
 )
 
-// autoHideMS is how long a normal banner shows before it auto-dismisses.
 const autoHideMS = "5000"
 
 // Notification is a best-effort desktop message.
@@ -23,10 +22,9 @@ type Notification struct {
 // lookupUser is the passwd seam.
 var lookupUser = user.Lookup
 
-// credential resolves the bus address and the credentials to drop to. A nil
-// SysProcAttr means "already that user": switching to your own uid needs
-// privileges the caller may not have. The hook calls this as root, so it is
-// what keeps the notification from being sent with root's credentials.
+// credential resolves the bus address and the credentials to drop to — the hook
+// calls Send as root. A nil SysProcAttr means "already that user": switching to
+// your own uid needs privileges the caller may not have.
 func credential(name string, euid int) (*syscall.SysProcAttr, string, error) {
 	u, err := lookupUser(name)
 	if err != nil {
@@ -51,7 +49,6 @@ func credential(name string, euid int) (*syscall.SysProcAttr, string, error) {
 	}, bus, nil
 }
 
-// Send delivers n via notify-send.
 var Send = func(n Notification) {
 	urgency, expire := "normal", autoHideMS
 	if n.Urgent {

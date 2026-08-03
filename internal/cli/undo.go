@@ -42,8 +42,7 @@ func newUndoCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-// undoStep reverses a single journaled step — what a refused apply asks for
-// when one step diverged and the other thirty did not.
+// undoStep reverses a single journaled step — what a refused apply asks for.
 func undoStep(e *steps.Engine, cfg *Config, id string, force, purge bool, stdout io.Writer) error {
 	if purge {
 		return errors.New("--step undoes one step; --purge takes the whole state directory")

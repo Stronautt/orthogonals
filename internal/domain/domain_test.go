@@ -22,7 +22,6 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
-// reference is the PoC reference machine fixture.
 func reference(t *testing.T) *hw.Result {
 	t.Helper()
 	res, err := hw.Detect(hwtest.ReferenceRoot(t))
@@ -69,12 +68,27 @@ func mustRender(t *testing.T, p Profile) []byte {
 	return out
 }
 
-func TestGuestConfigRoundTrip(t *testing.T) {
-	root := t.TempDir()
-	p := mustProfile(t, reference(t), Options{
+func TestSettingsRoundTrip(t *testing.T) {
+	full := Settings{
+		DisplayName: "Work PC", User: "pavlo", RAMGiB: 12,
+		Disk: "/tank/vm.qcow2", DiskSizeGiB: 200, Resolution: "1920x1080",
 		GuestUser: "user", GuestPassword: `p&<>"'w`, Locale: "uk-UA",
-		Width: 1920, Height: 1080,
-	})
+		Win11ISO: "/home/user/Win11.iso", GPUROM: "/var/lib/orthogonals/vbios/win11.rom",
+		Shares: []string{"/home/user/Documents", "/srv/media"},
+	}
+	// Walked, not counted: a field count is satisfied by editing the number,
+	// which round-trips the new knob vacuously.
+	v := reflect.ValueOf(full)
+	for _, f := range reflect.VisibleFields(v.Type()) {
+		switch {
+		case !f.IsExported():
+			t.Errorf("Settings.%s is unexported: encoding/xml drops it and Over cannot set it", f.Name)
+		case v.FieldByIndex(f.Index).IsZero():
+			t.Errorf("Settings.%s has no value here, so the round-trip below proves nothing about it", f.Name)
+		}
+	}
+	root := t.TempDir()
+	p := mustProfile(t, reference(t), Options{Settings: full, ROMContent: []byte{0x55, 0xaa}})
 	path := filepath.Join(root, xmlPath(p.Name))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -82,13 +96,47 @@ func TestGuestConfigRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := ReadGuestConfig(root, p.Name)
-	want := GuestConfig{User: "user", Password: `p&<>"'w`, Locale: "uk-UA", Resolution: "1920x1080"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ReadGuestConfig = %+v, want %+v", got, want)
+	got, err := ReadSettings(root, p.Name)
+	if err != nil || !reflect.DeepEqual(got, full) {
+		t.Errorf("ReadSettings = %+v, %v, want %+v", got, err, full)
 	}
-	if empty := ReadGuestConfig(root, "missing"); !reflect.DeepEqual(empty, GuestConfig{}) {
-		t.Errorf("undefined VM must read empty, got %+v", empty)
+	empty, err := ReadSettings(root, "missing")
+	if err != nil || !reflect.DeepEqual(empty, Settings{}) {
+		t.Errorf("undefined VM must read empty and not error, got %+v, %v", empty, err)
+	}
+	// A registry that exists but will not parse must not read as "undefined":
+	// converging on a half-read record silently resets every knob past the break.
+	if err := os.WriteFile(path, []byte("<domain><metadata><settings><ram-gib>8"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := ReadSettings(root, p.Name); err == nil {
+		t.Errorf("a truncated registry must be an error, got %+v", s)
+	}
+
+	bare := mustProfile(t, reference(t), Options{}).Settings
+	want := Settings{RAMGiB: 20, Disk: "/var/lib/libvirt/images/win11.qcow2",
+		DiskSizeGiB: DefaultDiskSizeGiB, Resolution: "3840x2160"}
+	if !reflect.DeepEqual(bare, want) {
+		t.Errorf("resolved defaults = %+v, want %+v", bare, want)
+	}
+}
+
+func TestSettingsOver(t *testing.T) {
+	prev := Settings{RAMGiB: 12, Locale: "uk-UA", Shares: []string{"/srv/docs"}}
+	got := Settings{RAMGiB: 8, Shares: []string{""}}.Over(prev)
+	want := Settings{RAMGiB: 8, Locale: "uk-UA", Shares: []string{""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Over = %+v, want %+v", got, want)
+	}
+	merged := (Settings{}).Over(prev)
+	if !reflect.DeepEqual(merged, prev) {
+		t.Errorf("no flags must reproduce the registered record, got %+v", merged)
+	}
+	// reflect's Set copies a slice header, so the merged record would otherwise
+	// share prev's array.
+	merged.Shares[0] = "/mutated"
+	if prev.Shares[0] != "/srv/docs" {
+		t.Errorf("Over aliased the registered slice: prev.Shares = %v", prev.Shares)
 	}
 }
 
@@ -110,7 +158,6 @@ func TestReadMemoryMiB(t *testing.T) {
 		t.Errorf("ReadMemoryMiB = %d, want 20480", got)
 	}
 
-	// A non-MiB unit is refused so a hugepage sizer can never mis-scale the pool.
 	badPath := filepath.Join(root, xmlPath("bad"))
 	if err := os.WriteFile(badPath, []byte(`<domain><memory unit='KiB'>25165824</memory></domain>`), 0o600); err != nil {
 		t.Fatal(err)
@@ -159,11 +206,9 @@ func TestNewShares(t *testing.T) {
 	}
 	want := []Share{
 		{Dir: "/home/user/Documents", Tag: "Documents", Drive: "Z:", Service: "VirtioFsSvc"},
-		// a space is fine in the path and becomes a dash in the tag
 		{Dir: "/home/user/Windows Shared", Tag: "Windows-Shared", Drive: "Y:", Service: "VirtioFsSvc-Windows-Shared"},
 		{Dir: "/srv/media", Tag: "media", Drive: "X:", Service: "VirtioFsSvc-media"},
-		// non-ASCII collapses to the fallback tag; the last collides with the
-		// first, proving the dedupe suffix
+		// non-ASCII collapses to the fallback tag; the last collides with the first
 		{Dir: "/mnt/Документи", Tag: "share", Drive: "W:", Service: "VirtioFsSvc-share"},
 		{Dir: "/mnt/other/Documents", Tag: "Documents-2", Drive: "V:", Service: "VirtioFsSvc-Documents-2"},
 	}
@@ -204,12 +249,8 @@ func TestShareTagFitsTheGuestLimit(t *testing.T) {
 	}
 }
 
-// Without shared access libvirt refuses a virtiofs domain outright, and a
-// domain with no shares must not pay for a backend it does not use.
 func TestSharesRenderSharedMemoryAndDevices(t *testing.T) {
-	with := string(mustRender(t, mustProfile(t, reference(t), Options{
-		Shares: []string{"/home/user/Documents", "/srv/media"},
-	})))
+	with := string(mustRender(t, mustProfile(t, reference(t), Options{Settings: Settings{Shares: []string{"/home/user/Documents", "/srv/media"}}})))
 	for _, want := range []string{
 		"<source type='memfd'/>",
 		"<access mode='shared'/>",
@@ -218,14 +259,14 @@ func TestSharesRenderSharedMemoryAndDevices(t *testing.T) {
 		"<target dir='Documents'/>",
 		"<source dir='/srv/media'/>",
 		"<target dir='media'/>",
-		"<orthogonals:share>/home/user/Documents</orthogonals:share>",
+		"<share>/home/user/Documents</share>",
 	} {
 		if !strings.Contains(with, want) {
 			t.Errorf("shared domain XML is missing %q", want)
 		}
 	}
 	without := string(mustRender(t, mustProfile(t, reference(t), Options{})))
-	for _, banned := range []string{"access mode='shared'", "virtiofs", "orthogonals:share"} {
+	for _, banned := range []string{"access mode='shared'", "virtiofs", "<share>"} {
 		if strings.Contains(without, banned) {
 			t.Errorf("share-less domain XML contains %q", banned)
 		}
@@ -240,35 +281,39 @@ func TestRenderGolden(t *testing.T) {
 		provisioned bool
 	}{
 		{"reference.xml", reference(t), Options{
-			Win11ISO:     "/home/user/Win11.iso",
+			Settings:     Settings{Win11ISO: "/home/user/Win11.iso"},
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, false},
-		{"reference-1080p.xml", reference(t), Options{Width: 1920, Height: 1080}, false},
+		{"reference-1080p.xml", reference(t), Options{Settings: Settings{Resolution: "1920x1080"}}, false},
 		{"reference-romfile.xml", reference(t), Options{
-			Win11ISO:     "/home/user/Win11.iso",
+			Settings: Settings{
+				Win11ISO: "/home/user/Win11.iso",
+				GPUROM:   "/var/lib/orthogonals/vbios/win11.rom",
+			},
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
-			ROMFile:      "/var/lib/orthogonals/vbios/win11.rom",
 			ROMContent:   []byte{0x55, 0xaa, 0x01, 0x02},
 		}, false},
 		{"no-ecores-46bit.xml", noECores(), Options{}, false},
 		{"reference-kvmfr.xml", reference(t), Options{
-			Win11ISO:     "/home/user/Win11.iso",
+			Settings:     Settings{Win11ISO: "/home/user/Win11.iso"},
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 			KVMFR:        true,
 		}, false},
 		{"provisioned.xml", reference(t), Options{
-			Win11ISO:     "/home/user/Win11.iso",
+			Settings:     Settings{Win11ISO: "/home/user/Win11.iso"},
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, true},
 		{"reference-shares.xml", reference(t), Options{
-			Win11ISO:     "/home/user/Win11.iso",
+			Settings: Settings{
+				Win11ISO: "/home/user/Win11.iso",
+				Shares:   []string{"/home/user/Windows Shared", "/srv/media"},
+			},
 			VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
-			Shares:       []string{"/home/user/Windows Shared", "/srv/media"},
 		}, false},
 	}
 	for _, tc := range cases {
@@ -351,7 +396,6 @@ func TestReferenceProfile(t *testing.T) {
 	}
 }
 
-// TestNoECoresFallback pins the no-E-core pinning fallback.
 func TestNoECoresFallback(t *testing.T) {
 	p := mustProfile(t, noECores(), Options{})
 	if p.VCPUs != 14 || p.Cores != 7 || p.ThreadsPerCore != 2 {
@@ -368,7 +412,6 @@ func TestNoECoresFallback(t *testing.T) {
 	}
 }
 
-// TestAddressWidthFix pins the address-width fix on narrow and wide hosts.
 func TestAddressWidthFix(t *testing.T) {
 	narrow := string(mustRender(t, mustProfile(t, reference(t), Options{})))
 	for _, want := range []string{
@@ -388,7 +431,6 @@ func TestAddressWidthFix(t *testing.T) {
 	}
 }
 
-// TestQuirkFixes pins the PoC quirk set.
 func TestQuirkFixes(t *testing.T) {
 	got := string(mustRender(t, mustProfile(t, reference(t), Options{})))
 	for _, want := range []string{
@@ -421,14 +463,13 @@ func TestQuirkFixes(t *testing.T) {
 func TestGPURomRendersAndPersists(t *testing.T) {
 	const romPath = "/var/lib/orthogonals/vbios/win11.rom"
 	p := mustProfile(t, reference(t), Options{
-		Win11ISO:   "/home/user/Win11.iso",
-		ROMFile:    romPath,
+		Settings:   Settings{Win11ISO: "/home/user/Win11.iso", GPUROM: romPath},
 		ROMContent: []byte{0x55, 0xaa, 0x01},
 	})
 	got := string(mustRender(t, p))
 	for _, want := range []string{
 		"<rom file='" + romPath + "'/>",
-		"<orthogonals:gpu-rom>" + romPath + "</orthogonals:gpu-rom>",
+		"<gpu-rom>" + romPath + "</gpu-rom>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("domain missing %q:\n%s", want, got)
@@ -438,7 +479,6 @@ func TestGPURomRendersAndPersists(t *testing.T) {
 		t.Error("rom bar='off' must not render when a vBIOS file is set")
 	}
 
-	// The metadata line round-trips through ReadGuestConfig.
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "etc/orthogonals/vms"), 0o755); err != nil {
 		t.Fatal(err)
@@ -446,14 +486,14 @@ func TestGPURomRendersAndPersists(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "etc/orthogonals/vms/win11.xml"), []byte(got), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if g := ReadGuestConfig(root, "win11"); g.GPURom != romPath {
-		t.Errorf("ReadGuestConfig GPURom = %q, want %q", g.GPURom, romPath)
+	if g, err := ReadSettings(root, "win11"); err != nil || g.GPUROM != romPath {
+		t.Errorf("ReadSettings GPUROM = %q, %v, want %q", g.GPUROM, err, romPath)
 	}
 }
 
 func TestGPURomSteps(t *testing.T) {
 	const romPath = "/var/lib/orthogonals/vbios/win11.rom"
-	withROM := mustProfile(t, reference(t), Options{Win11ISO: "/i.iso", ROMFile: romPath, ROMContent: []byte{0x55, 0xaa}})
+	withROM := mustProfile(t, reference(t), Options{Settings: Settings{Win11ISO: "/i.iso", GPUROM: romPath}, ROMContent: []byte{0x55, 0xaa}})
 	list, err := Steps(withROM)
 	if err != nil {
 		t.Fatal(err)
@@ -473,8 +513,7 @@ func TestGPURomSteps(t *testing.T) {
 		t.Error("missing rom restorecon step")
 	}
 
-	// No ROM → no ROM steps.
-	plain, err := Steps(mustProfile(t, reference(t), Options{Win11ISO: "/i.iso"}))
+	plain, err := Steps(mustProfile(t, reference(t), Options{Settings: Settings{Win11ISO: "/i.iso"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +541,7 @@ func TestAssignableVCPUs(t *testing.T) {
 		{"hybrid 6P+8E", hw.CPU{Threads: 20, Cores: 14, PCores: pcores(12), ECores: []int{12, 13, 14, 15, 16, 17, 18, 19}}, 10, false},
 		{"flat 8 cores", hw.CPU{Threads: 8, Cores: 8, PCores: pcores(8)}, 7, false},
 		{"degenerate 2 cores", hw.CPU{Threads: 4, Cores: 2, PCores: pcores(4)}, 2, false},
-		// An unreadable topology must not read as a small CPU: preflight quotes
+		// An unreadable topology must not read as a small CPU — preflight quotes
 		// this error instead of telling the user to buy more cores.
 		{"unusable topology", hw.CPU{}, 0, true},
 	}
@@ -551,8 +590,6 @@ func TestIVSHMEMSizing(t *testing.T) {
 	}
 }
 
-// TestKVMFRFits pins the cap that keeps a huge buffer away from modprobe: kvmfr
-// vmallocs the whole region at load, so an oversized profile must render shm.
 func TestKVMFRFits(t *testing.T) {
 	const host = 32 * utils.BytesPerGiB
 	cases := []struct {
@@ -576,11 +613,10 @@ func TestKVMFRFits(t *testing.T) {
 	}
 }
 
-// TestKVMFRDeclinedRendersSHM: the cap has to reach the rendered XML, not just
-// the profile field.
+// The cap has to reach the rendered XML, not just the profile field.
 func TestKVMFRDeclinedRendersSHM(t *testing.T) {
 	p := mustProfile(t, reference(t), Options{
-		Width: MaxDimension, Height: MaxDimension, KVMFR: true,
+		Settings: Settings{Resolution: fmt.Sprintf("%dx%d", MaxDimension, MaxDimension)}, KVMFR: true,
 	})
 	if p.KVMFR {
 		t.Fatalf("profile kept kvmfr for a %d MiB buffer", p.IVSHMEMMiB)
@@ -594,23 +630,21 @@ func TestKVMFRDeclinedRendersSHM(t *testing.T) {
 	}
 }
 
-// TestKVMFRRenderSize pairs the two numbers qemu and the hook must agree on:
-// the backend size in the XML is the module's static_size_mb in bytes.
 func TestKVMFRRenderSize(t *testing.T) {
 	p := mustProfile(t, reference(t), Options{KVMFR: true})
 	if !p.KVMFR {
 		t.Fatal("reference profile declined kvmfr")
 	}
-	if p.IVSHMEMBytes() != p.IVSHMEMMiB*utils.BytesPerMiB {
-		t.Errorf("IVSHMEMBytes = %d, want %d", p.IVSHMEMBytes(), p.IVSHMEMMiB*utils.BytesPerMiB)
+	// The literal, not p.IVSHMEMMiB restated: this is the number qemu maps and
+	// the hook passes modprobe.
+	const wantMiB = 128 // 3840x2160 BGRA, double-buffered, plus header, to a power of two
+	if p.IVSHMEMMiB != wantMiB || p.IVSHMEMBytes() != wantMiB*utils.BytesPerMiB {
+		t.Errorf("IVSHMEM = %d MiB / %d bytes, want %d MiB", p.IVSHMEMMiB, p.IVSHMEMBytes(), wantMiB)
 	}
 	got := string(mustRender(t, p))
 	for _, want := range []string{
 		`"mem-path":"/dev/kvmfr0"`,
-		fmt.Sprintf(`"size":%d`, p.IVSHMEMBytes()),
-		// libvirt names a controller's qemu id pci.<index>, so declaring the
-		// bridge ourselves is what makes this bus reference ours to predict —
-		// and its root port must carry the lower index to be emitted first.
+		fmt.Sprintf(`"size":%d`, wantMiB*utils.BytesPerMiB),
 		`"bus":"pci.2"`,
 		`<controller type='pci' index='1' model='pcie-root-port'/>`,
 		`<controller type='pci' index='2' model='pcie-to-pci-bridge'>`,
@@ -644,16 +678,16 @@ func TestNewProfileErrors(t *testing.T) {
 		{"no dGPU", &hw.Result{Platform: hw.Platform{IOMMUAddressWidth: 46}}, Options{}, "discrete GPU"},
 		{"IOMMU off", narrow, Options{}, "IOMMU"},
 		{"host RAM too small", small, Options{}, "8 GiB"},
-		{"RAM flag below minimum", reference(t), Options{RAMGiB: 4}, "8 GiB"},
-		{"RAM exceeds host", reference(t), Options{RAMGiB: 64}, "host"},
+		{"RAM flag below minimum", reference(t), Options{Settings: Settings{RAMGiB: 4}}, "8 GiB"},
+		{"RAM exceeds host", reference(t), Options{Settings: Settings{RAMGiB: 64}}, "host"},
 		{"too few vCPUs", tiny, Options{}, "vCPU"},
-		{"bad resolution", reference(t), Options{Width: 1920, Height: -1}, "resolution"},
-		{"resolution above per-axis max", reference(t), Options{Width: MaxDimension + 1, Height: 2160}, "per-axis maximum"},
-		{"negative disk size", reference(t), Options{DiskSizeGiB: -5}, "disk size"},
-		{"path with XML metachars", reference(t), Options{DiskPath: `/tank/a'b.qcow2`}, "libvirt XML"},
+		{"bad resolution", reference(t), Options{Settings: Settings{Resolution: "1920x-1"}}, "resolution"},
+		{"resolution above per-axis max", reference(t), Options{Settings: Settings{Resolution: fmt.Sprintf("%dx2160", MaxDimension+1)}}, "per-axis maximum"},
+		{"negative disk size", reference(t), Options{Settings: Settings{DiskSizeGiB: -5}}, "disk size"},
+		{"path with XML metachars", reference(t), Options{Settings: Settings{Disk: `/tank/a'b.qcow2`}}, "libvirt XML"},
 		{"bad GPU address", badBDF, Options{}, "PCI address"},
-		{"rom without option-ROM signature", reference(t), Options{ROMFile: "/v/win11.rom", ROMContent: []byte{0x00, 0x01}}, "0x55 0xAA"},
-		{"rom path with XML metachars", reference(t), Options{ROMFile: `/v/a'b.rom`, ROMContent: []byte{0x55, 0xaa}}, "libvirt XML"},
+		{"rom without option-ROM signature", reference(t), Options{Settings: Settings{GPUROM: "/v/win11.rom"}, ROMContent: []byte{0x00, 0x01}}, "0x55 0xAA"},
+		{"rom path with XML metachars", reference(t), Options{Settings: Settings{GPUROM: `/v/a'b.rom`}, ROMContent: []byte{0x55, 0xaa}}, "libvirt XML"},
 		{"rom content without a path", reference(t), Options{ROMContent: []byte{0x55, 0xaa}}, "without a path"},
 	}
 	for _, tc := range cases {
@@ -690,12 +724,11 @@ func TestApplyStage(t *testing.T) {
 	}
 }
 
-// TestStageRoundTrip pins CurrentStage reading back the render's stage.
 func TestStageRoundTrip(t *testing.T) {
 	for _, stage := range Stages {
 		t.Run(string(stage), func(t *testing.T) {
 			p := mustProfile(t, reference(t), Options{
-				Win11ISO:     "/isos/Win11.iso",
+				Settings:     Settings{Win11ISO: "/isos/Win11.iso"},
 				VirtioISO:    "/var/lib/orthogonals/cache/virtio-win.iso",
 				ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 			})
@@ -790,7 +823,8 @@ func TestSteps(t *testing.T) {
 
 func TestOptionsOverrides(t *testing.T) {
 	p := mustProfile(t, reference(t), Options{
-		VMName: "gamer", RAMGiB: 12, DiskPath: "/tank/vm.qcow2", DiskSizeGiB: 200,
+		VMName:   "gamer",
+		Settings: Settings{RAMGiB: 12, Disk: "/tank/vm.qcow2", DiskSizeGiB: 200},
 	})
 	if p.Name != "gamer" || p.RAMMiB != 12*1024 || p.DiskPath != "/tank/vm.qcow2" || p.DiskSizeGiB != 200 {
 		t.Errorf("overrides not honored: %+v", p)
@@ -804,8 +838,6 @@ func TestOptionsOverrides(t *testing.T) {
 	}
 }
 
-// TestKVMFRSizeMiB covers what the hook keys on: load the module only for a
-// domain that names the device, and never below the declared backend size.
 func TestKVMFRSizeMiB(t *testing.T) {
 	write := func(t *testing.T, p Profile) string {
 		t.Helper()

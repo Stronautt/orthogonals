@@ -12,8 +12,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// TestTrustCmd: the op runs as root, so gio without a credential writes into a
-// user's home as root. markTrusted's other test only covers the no-bus return.
+// The op runs as root, so gio without a credential writes into a user's home as
+// root.
 func TestTrustCmd(t *testing.T) {
 	const link = "/home/alice/Desktop/win11.orthogonals.desktop"
 	cmd := trustCmd(link, "/run/user/1000/bus", "/home/alice", 1000, 1000)

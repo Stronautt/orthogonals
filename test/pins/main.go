@@ -37,8 +37,7 @@ func main() {
 	fmt.Printf("\nall %d pinned downloads reachable\n", len(artifacts.Downloads()))
 }
 
-// reach probes a URL with HEAD, falling back to a single-byte ranged GET for
-// the hosts that refuse HEAD.
+// reach falls back to a single-byte ranged GET for the hosts that refuse HEAD.
 func reach(client *http.Client, url string) (int, error) {
 	resp, err := client.Head(url)
 	if err == nil {

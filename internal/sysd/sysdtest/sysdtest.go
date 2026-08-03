@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-// Fake implements sysd.Client.
 type Fake struct {
 	Calls       []string
 	States      map[string]string
@@ -93,7 +92,6 @@ func (f *Fake) SetAllowedCPUs(unit string, cpus []int) error {
 
 func (f *Fake) Close() error { return nil }
 
-// cpuList renders a CPU index slice as a comma-separated string.
 func cpuList(cpus []int) string {
 	s := make([]string, len(cpus))
 	for i, c := range cpus {

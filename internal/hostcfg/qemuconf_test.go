@@ -12,7 +12,7 @@ import (
 )
 
 // fedoraQemuConf is the shape Fedora 44 ships with libvirt 12: the block
-// commented out and without /dev/kvm, the trap this editor exists for.
+// commented out and without /dev/kvm.
 const fedoraQemuConf = `# Master configuration file for the QEMU driver.
 
 #user = "qemu"
@@ -51,7 +51,6 @@ func TestEnsureDeviceACL(t *testing.T) {
 				t.Errorf("active list lacks %s:\n%s", want, block)
 			}
 		}
-		// Untouched context must survive verbatim.
 		for _, want := range []string{`#user = "qemu"`, "#seccomp_sandbox = 1", "#   \"/dev/infiniband/rdma_cm\","} {
 			if !strings.Contains(got, want) {
 				t.Errorf("edit lost %q", want)
@@ -125,8 +124,8 @@ func TestDeviceACLStep(t *testing.T) {
 	}
 }
 
-// TestDKMSSigningSteps covers the host that trusts an akmods key but not dkms's
-// own: apply repoints dkms and forces a rebuild, re-signing with the enrolled key.
+// The host that trusts an akmods key but not dkms's own: apply repoints dkms and
+// forces a rebuild, re-signing with the enrolled key.
 func TestDKMSSigningSteps(t *testing.T) {
 	const cert, key = "/etc/pki/akmods/certs/public_key.der", "/etc/pki/akmods/private/public_key.priv"
 	list := DKMSSigningSteps(cert, key)
@@ -161,12 +160,10 @@ func TestDKMSSigningSteps(t *testing.T) {
 	}
 }
 
-// TestDeviceACLAgainstTheRealLibvirt converts the qemu.conf the installed
-// libvirt actually shipped, which is the only way to catch that vendor file
-// changing shape — Fedora's sample already omits /dev/kvm, and a future
-// release may move more. It writes the file, so it runs only when the VM tier
-// asks for it by name; the tier restarts virtqemud and starts a probe domain
-// afterwards to prove the resulting list is complete.
+// Converts the qemu.conf the installed libvirt actually shipped, the only way to
+// catch that vendor file changing shape — Fedora's sample already omits
+// /dev/kvm. It writes the file, so it runs only when the VM tier asks for it by
+// name; the tier then restarts virtqemud and starts a probe domain through it.
 func TestDeviceACLAgainstTheRealLibvirt(t *testing.T) {
 	if os.Getenv("ORTHOGONALS_TIER_KVMFR") != "1" {
 		t.Skip("rewrites /etc/libvirt/qemu.conf — covered by the VM tier (make test-vm)")
@@ -178,11 +175,10 @@ func TestDeviceACLAgainstTheRealLibvirt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the shipped %s: %v", steps.QemuConfPath, err)
 	}
-	// Deliberately no restore here: the tier restarts virtqemud onto this file
-	// and then starts a probe domain through it, so putting the original back
-	// when the test ends would test the pristine config instead of ours. The
-	// caller that set ORTHOGONALS_TIER_KVMFR owns putting it back — for the VM
-	// tier that is the cleanup trap in test/tmt/kvmfr.sh.
+	// No restore here: the tier runs virtqemud onto this file, so putting the
+	// original back at test end would test the pristine config instead of ours.
+	// The caller that set ORTHOGONALS_TIER_KVMFR owns putting it back — for the
+	// VM tier that is the cleanup trap in test/tmt/kvmfr.sh.
 
 	step, err := DeviceACLStep(string(prior))
 	if err != nil {
@@ -198,17 +194,21 @@ func TestDeviceACLAgainstTheRealLibvirt(t *testing.T) {
 		}
 	}
 	// Whatever this libvirt listed for itself has to survive, since setting the
-	// key replaces its compiled-in default wholesale.
-	if shipped := commentedACL.FindString(string(prior)); shipped != "" {
-		for _, line := range strings.Split(uncomment(shipped), "\n") {
-			for _, dev := range strings.Split(line, ",") {
-				dev = strings.TrimSpace(dev)
-				if !strings.HasPrefix(dev, `"/dev/`) {
-					continue
-				}
-				if !strings.Contains(block, strings.TrimSuffix(dev, ",")) {
-					t.Errorf("conversion dropped libvirt's own entry %s", dev)
-				}
+	// key replaces its compiled-in default wholesale. A missing sample is the
+	// vendor shape change this test exists to catch, not a reason to pass.
+	shipped := commentedACL.FindString(string(prior))
+	if shipped == "" {
+		t.Fatalf("shipped %s has no commented cgroup_device_acl sample — the vendor file moved:\n%s",
+			steps.QemuConfPath, prior)
+	}
+	for _, line := range strings.Split(uncomment(shipped), "\n") {
+		for _, dev := range strings.Split(line, ",") {
+			dev = strings.TrimSpace(dev)
+			if !strings.HasPrefix(dev, `"/dev/`) {
+				continue
+			}
+			if !strings.Contains(block, strings.TrimSuffix(dev, ",")) {
+				t.Errorf("conversion dropped libvirt's own entry %s", dev)
 			}
 		}
 	}

@@ -291,7 +291,6 @@ func TestApplyBadFlags(t *testing.T) {
 	}
 }
 
-// apply refuses a host that fails preflight.
 func TestApplyRefusesPreflightFail(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -316,7 +315,6 @@ func TestApplyRefusesPreflightFail(t *testing.T) {
 	}
 }
 
-// re-apply removes a stale gpu-recover.sh and its journal record.
 func TestApplyRemovesStaleRecoverScript(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)

@@ -28,7 +28,6 @@ func TestVerifyAllChecksPass(t *testing.T) {
 	}
 }
 
-// A MiB or two of driver reservation on an idle card must not fail the check.
 func TestVerifyHostGPUIdleAllowsDriverReservation(t *testing.T) {
 	fastPolling(t)
 	f := fakeVM("running", "NVIDIA-SMI 580.88", 0)
@@ -42,7 +41,6 @@ func TestVerifyHostGPUIdleAllowsDriverReservation(t *testing.T) {
 	}
 }
 
-// A held card keeping hundreds of MiB must still fail.
 func TestVerifyHostGPUIdleFailsOnHeldCard(t *testing.T) {
 	fastPolling(t)
 	f := fakeVM("running", "NVIDIA-SMI 580.88", 0)
@@ -76,7 +74,6 @@ func TestVerifyGuestNvidiaSmiFails(t *testing.T) {
 	}
 }
 
-// nvidia-smi passing while the capture path is dead is what the display check catches.
 func TestVerifyDisplayPipelineFails(t *testing.T) {
 	fastPolling(t)
 	msg := base64.StdEncoding.EncodeToString([]byte("Looking Glass (host) service is not running"))

@@ -37,7 +37,6 @@ const (
 // Stable text: test/tmt asserts on it to prove the path was taken.
 const DesktopTrustNote = "desktop shortcut not marked trusted (no desktop session yet) — GNOME asks once on first launch"
 
-// OpClients hands live libvirt/systemd clients to op functions.
 type OpClients struct {
 	virt     func() virt.Client
 	sysd     func() sysd.Client
@@ -46,7 +45,6 @@ type OpClients struct {
 	sc       sysd.Client
 }
 
-// Virt returns the libvirt client, dialing on first use.
 func (c *OpClients) Virt() virt.Client {
 	if c.vc == nil {
 		c.vc = c.virt()
@@ -54,7 +52,6 @@ func (c *OpClients) Virt() virt.Client {
 	return c.vc
 }
 
-// Sysd returns the systemd client, dialing on first use.
 func (c *OpClients) Sysd() sysd.Client {
 	if c.sc == nil {
 		c.sc = c.sysd()
@@ -76,7 +73,6 @@ func (c *OpClients) close() {
 // OpFunc applies or undoes one journaled operation.
 type OpFunc func(c *OpClients, root string, out io.Writer, args map[string]string) error
 
-// opEntry pairs an op func with whether it dials a daemon.
 type opEntry struct {
 	fn    OpFunc
 	dials bool
@@ -202,9 +198,8 @@ func trustCmd(link, bus, home string, uid, gid int) *exec.Cmd {
 	return cmd
 }
 
-// markTrusted runs gio as the desktop user against their own session bus. gio
-// is the vendor API for GNOME's file metadata, so this stays an exec. It
-// returns no error: a missing trust flag is cosmetic.
+// markTrusted stays an exec: gio is the vendor API for GNOME's file metadata.
+// It returns no error — a missing trust flag is cosmetic.
 var markTrusted = func(out io.Writer, link, home string, uid, gid int) {
 	bus := fmt.Sprintf("/run/user/%d/bus", uid)
 	st, err := os.Stat(bus)
@@ -219,9 +214,8 @@ var markTrusted = func(out io.Writer, link, home string, uid, gid int) {
 	fmt.Fprintf(out, "marked %s trusted\n", link)
 }
 
-// opLine renders "op k=v …" with sorted keys.
-// recordLine and stepLine render a journaled record and a current step by their
-// own kind, so a refusal names both sides whichever kinds they are.
+// recordLine and stepLine render a record and a step by their own kind, so a
+// refusal names both sides whichever kinds they are.
 func recordLine(rec *Record) string {
 	switch rec.Kind {
 	case KindWriteFile:
@@ -250,6 +244,8 @@ func stepLine(s Step) string {
 	return string(s.Kind)
 }
 
+// opLine sorts the keys: the line is compared in golden output, so it cannot
+// depend on map order.
 func opLine(op string, args map[string]string) string {
 	parts := []string{op}
 	keys := make([]string, 0, len(args))
@@ -263,7 +259,6 @@ func opLine(op string, args map[string]string) string {
 	return strings.Join(parts, " ")
 }
 
-// opDefineDomain reads the journaled domain XML and defines it.
 func opDefineDomain(c *OpClients, root string, out io.Writer, args map[string]string) error {
 	xml, err := os.ReadFile(filepath.Join(root, args["xml"]))
 	if err != nil {
@@ -276,7 +271,8 @@ func opDefineDomain(c *OpClients, root string, out io.Writer, args map[string]st
 	return nil
 }
 
-// opUndefineDomain undefines the domain, tolerating an already-gone one.
+// opUndefineDomain tolerates an already-gone domain: the user may have
+// undefined it by hand.
 func opUndefineDomain(c *OpClients, _ string, out io.Writer, args map[string]string) error {
 	err := c.Virt().UndefineDomain(args["name"])
 	if virt.IsNotFound(err) {
@@ -305,7 +301,6 @@ func opNetActive(c *OpClients, _ string, out io.Writer, args map[string]string) 
 	return nil
 }
 
-// opSocketReload reloads systemd and restarts the libvirt sockets.
 func opSocketReload(c *OpClients, _ string, out io.Writer, _ map[string]string) error {
 	s := c.Sysd()
 	if err := s.Reload(); err != nil {
@@ -323,7 +318,6 @@ func opSocketReload(c *OpClients, _ string, out io.Writer, _ map[string]string) 
 	return nil
 }
 
-// opCreateVolume creates the guest's qcow2 disk.
 func opCreateVolume(c *OpClients, _ string, out io.Writer, args map[string]string) error {
 	size, err := strconv.Atoi(args["size-gib"])
 	if err != nil {
@@ -336,7 +330,6 @@ func opCreateVolume(c *OpClients, _ string, out io.Writer, args map[string]strin
 	return nil
 }
 
-// opKernelArgsAdd / opKernelArgsRem edit /boot/loader/entries directly.
 func opKernelArgsAdd(_ *OpClients, root string, out io.Writer, args map[string]string) error {
 	if err := bls.AddArgs(root, args["args"]); err != nil {
 		return err
@@ -353,7 +346,6 @@ func opKernelArgsRem(_ *OpClients, root string, out io.Writer, args map[string]s
 	return nil
 }
 
-// opRemoveFile is the journaled rm -f, respecting --root.
 func opRemoveFile(_ *OpClients, root string, out io.Writer, args map[string]string) error {
 	full := filepath.Join(root, args["path"])
 	err := os.Remove(full)

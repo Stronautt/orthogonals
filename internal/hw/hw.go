@@ -9,7 +9,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// Result is the full detect output.
 type Result struct {
 	Devices  []PCIDevice `json:"devices"`
 	GPUs     GPUs        `json:"gpus"`
@@ -17,7 +16,6 @@ type Result struct {
 	Platform Platform    `json:"platform"`
 }
 
-// Detect scans PCI, CPU, and platform facts under root.
 func Detect(root string) (*Result, error) {
 	devs, err := ScanPCI(root)
 	if err != nil {
@@ -35,7 +33,6 @@ func Detect(root string) (*Result, error) {
 	}, nil
 }
 
-// IOMMUActive reports whether the running kernel has IOMMU groups.
 func IOMMUActive(root string) (bool, error) {
 	groups, err := os.ReadDir(filepath.Join(root, "/sys/kernel/iommu_groups"))
 	if err != nil && !os.IsNotExist(err) {
@@ -44,13 +41,11 @@ func IOMMUActive(root string) (bool, error) {
 	return len(groups) > 0, nil
 }
 
-// ModuleLoaded reports whether a kernel module is loaded.
 func ModuleLoaded(root, name string) bool {
 	_, err := os.Stat(filepath.Join(root, "/sys/module", name))
 	return err == nil
 }
 
-// Summary renders the human-readable detect report.
 func (r *Result) Summary() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CPU: %d cores / %d threads", r.CPU.Cores, r.CPU.Threads)
@@ -128,7 +123,6 @@ func devLine(d PCIDevice) string {
 	return fmt.Sprintf("%s %s (%s, %s)", d.Address, d.VendorDeviceID(), driver, group)
 }
 
-// gpuLine is devLine plus firmware-primary and cabling facts.
 func gpuLine(d PCIDevice) string {
 	line := devLine(d)
 	if d.BootVGA {

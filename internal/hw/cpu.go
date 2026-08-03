@@ -16,7 +16,6 @@ const (
 	CPUVendorAMD   = "amd"
 )
 
-// CPU is the host CPU topology.
 type CPU struct {
 	// Vendor is "intel", "amd", or "".
 	Vendor  string `json:"vendor,omitempty"`
@@ -30,7 +29,6 @@ type CPU struct {
 // PresentCPUsPath is the kernel's list of populated CPUs.
 const PresentCPUsPath = "/sys/devices/system/cpu/present"
 
-// PresentCPUs is the host's populated CPU indices.
 func PresentCPUs(root string) ([]int, error) {
 	b, err := os.ReadFile(filepath.Join(root, PresentCPUsPath))
 	if err != nil {
@@ -43,7 +41,6 @@ func PresentCPUs(root string) ([]int, error) {
 	return cpus, nil
 }
 
-// detectCPU reads root/sys/devices/system/cpu.
 func detectCPU(root string) (CPU, error) {
 	cpus, err := PresentCPUs(root)
 	if err != nil {
@@ -145,7 +142,6 @@ func ParseCPUList(s string) ([]int, error) {
 	return out, nil
 }
 
-// FormatCPUList renders CPU indices as a compact cpulist string ("0,1").
 func FormatCPUList(cpus []int) string {
 	s := make([]string, len(cpus))
 	for i, c := range cpus {

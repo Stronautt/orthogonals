@@ -14,7 +14,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// stubNotify captures desktop notifications instead of running notify-send.
 func stubNotify(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
@@ -24,7 +23,6 @@ func stubNotify(t *testing.T) *[]string {
 	return &got
 }
 
-// captureExec records execProcess argv instead of exec'ing.
 func captureExec(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
@@ -37,7 +35,6 @@ func captureExec(t *testing.T) *[]string {
 	return &got
 }
 
-// fastPoll shrinks the launch poll bounds so timeout tests do not sleep.
 func fastPoll(t *testing.T) {
 	t.Helper()
 	oldT, oldI := launchTimeout, launchPollInterval
@@ -61,9 +58,7 @@ func launchRoot(t *testing.T, memAvailableKiB string) string {
 	return root
 }
 
-// TestVMLaunchRunningDomainExecs pins the client argv. `-p 0` is not a
-// placeholder: it tells Looking Glass `-c` names a unix socket, so "fixing"
-// the zero breaks the launch.
+// `-p 0` is not a placeholder: it tells Looking Glass `-c` names a unix socket.
 func TestVMLaunchRunningDomainExecs(t *testing.T) {
 	const sock = "/run/orthogonals/win11/spice.sock"
 	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: sock, DisplayPort: "0"})
@@ -76,8 +71,11 @@ func TestVMLaunchRunningDomainExecs(t *testing.T) {
 	}
 	// Without -f the client would prefer a /dev/kvmfr0 left loaded by an earlier
 	// VM and wait forever for a host.
-	want := []string{"looking-glass-client", "-F", "-c", sock, "-p", "0", "-f", steps.LookingGlassSHM}
-	if strings.Join(*argv, " ") != strings.Join(want, " ") {
+	// title and appId are what the dock shows; the appId must match the desktop
+	// entry's basename or the window shows up as "looking-glass-client".
+	want := []string{"looking-glass-client", "-F", "-c", sock, "-p", "0",
+		"win:title=Windows 11", "win:appId=win11.orthogonals", "-f", steps.LookingGlassSHM}
+	if !slices.Equal(*argv, want) {
 		t.Errorf("exec argv = %v, want %v", *argv, want)
 	}
 	if !strings.Contains(out, "over "+sock) {
@@ -85,8 +83,8 @@ func TestVMLaunchRunningDomainExecs(t *testing.T) {
 	}
 }
 
-// TestVMLaunchTCPDisplayStillWorks: a domain defined before the socket switch
-// keeps its address listen until the next converge.
+// A domain defined before the socket switch keeps its address listen until the
+// next converge.
 func TestVMLaunchTCPDisplayStillWorks(t *testing.T) {
 	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: "127.0.0.1", DisplayPort: "5901"})
 	argv := captureExec(t)
@@ -95,14 +93,15 @@ func TestVMLaunchTCPDisplayStillWorks(t *testing.T) {
 	if code, out, stderr := run(t, "vm", "--root", root, "--vm-name", "win11", "launch"); code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
 	}
-	want := []string{"looking-glass-client", "-F", "-c", "127.0.0.1", "-p", "5901", "-f", steps.LookingGlassSHM}
-	if strings.Join(*argv, " ") != strings.Join(want, " ") {
+	want := []string{"looking-glass-client", "-F", "-c", "127.0.0.1", "-p", "5901",
+		"win:title=Windows 11", "win:appId=win11.orthogonals", "-f", steps.LookingGlassSHM}
+	if !slices.Equal(*argv, want) {
 		t.Errorf("exec argv = %v, want %v", *argv, want)
 	}
 }
 
-// TestVMLaunchWaitsForTheDisplay: libvirt reports no display until QEMU binds
-// the socket, so the poll must outlast that gap.
+// libvirt reports no display until QEMU binds the socket, so the poll must
+// outlast that gap.
 func TestVMLaunchWaitsForTheDisplay(t *testing.T) {
 	const sock = "/run/orthogonals/win11/spice.sock"
 	fastPoll(t)
@@ -195,10 +194,9 @@ func TestVMLaunchNotifiesOnFailure(t *testing.T) {
 	}
 }
 
-// TestVMLaunchKVMFRDomainOmitsBackendFlag: a kvmfr domain is left to the
-// client's own detection, which is what picks the DMABUF path. No registry copy
-// is written, so the decision can only come from libvirt — launch runs as the
-// desktop user and cannot read the 0600 root one.
+// A kvmfr domain is left to the client's own detection, which is what picks the
+// DMABUF path. The decision can only come from libvirt — launch runs as the
+// desktop user and cannot read the 0600 root registry copy.
 func TestVMLaunchKVMFRDomainOmitsBackendFlag(t *testing.T) {
 	const sock = "/run/orthogonals/win11/spice.sock"
 	xml := `<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>

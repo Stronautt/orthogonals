@@ -17,7 +17,6 @@ const (
 	GPUMuxDiscrete = "discrete"
 )
 
-// gpuMux reads the ASUS display MUX, "" when the knob is absent.
 func gpuMux(root string) string {
 	switch utils.ReadTrim(filepath.Join(root, GPUMuxPath)) {
 	case "1":
@@ -67,10 +66,8 @@ func firmwareIOMMUAttrs(root string) []FirmwareAttr {
 	return out
 }
 
-// iommuAttrKeywords match a firmware-attribute name controlling the IOMMU.
 var iommuAttrKeywords = []string{"iommu", "vtd", "directio", "amdvi"}
 
-// isIOMMUAttr reports whether an attribute name controls the IOMMU.
 func isIOMMUAttr(name string) bool {
 	n := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(name))
 	for _, kw := range iommuAttrKeywords {
@@ -81,7 +78,6 @@ func isIOMMUAttr(name string) bool {
 	return false
 }
 
-// splitTrim splits on sep and trims each part, nil for empty input.
 func splitTrim(s, sep string) []string {
 	if s == "" {
 		return nil

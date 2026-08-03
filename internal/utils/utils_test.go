@@ -32,8 +32,6 @@ func TestExistsSeparatesAbsentFromUnreadable(t *testing.T) {
 		t.Errorf("absent file: got (%v, %v), want (false, nil)", ok, err)
 	}
 
-	// The distinction this function exists for: a file under a directory that
-	// cannot be searched is not the same answer as a file that is not there.
 	if os.Geteuid() == 0 {
 		t.Skip("root searches any directory, so no path is unreadable")
 	}
@@ -185,9 +183,8 @@ func TestCopyFile(t *testing.T) {
 	}
 }
 
-// A SIGKILL between CreateTemp and Rename strands a temp file that no deferred
-// cleanup can reach. The next write into that directory has to clear it, or a
-// killed apply leaves litter in /etc that undo cannot account for.
+// A SIGKILL between CreateTemp and Rename strands a temp file no deferred
+// cleanup can reach, so the next write into that directory has to clear it.
 func TestWriteAtomicSweepsAStrandedTemp(t *testing.T) {
 	dir := t.TempDir()
 	stranded := filepath.Join(dir, TempPrefix+"1234567")
@@ -221,9 +218,8 @@ func TestSyncDirRejectsAMissingDirectory(t *testing.T) {
 	}
 }
 
-// The two hand-built XML consumers are virt.CreateVolumeQCow2, which
-// interpolates the --disk path into pool and volume XML, and the domain and
-// media templates, which interpolate the VM name, locale and guest password.
+// Consumers: virt.CreateVolumeQCow2 (the --disk path in pool and volume XML)
+// and the domain and media templates (VM name, locale, guest password).
 func TestXMLEscape(t *testing.T) {
 	tests := []struct {
 		name string

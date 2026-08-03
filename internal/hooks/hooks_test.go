@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// synthetic is any non-empty --root: it turns off the ownership walk, which is
-// covered in internal/steps where its seam lives.
+// synthetic is any non-empty --root: it turns off the ownership walk, covered in
+// internal/steps where its seam lives.
 const synthetic = "/synthetic-root"
 
 func TestShimStep(t *testing.T) {
@@ -46,8 +46,8 @@ func TestShimStepRefusals(t *testing.T) {
 	}
 }
 
-// TestShimStepRefusesAnUntrustedExeOnARealHost: libvirtd execs this shim as
-// root, so a binary a non-root user could replace must never reach the file.
+// libvirtd execs this shim as root, so a binary a non-root user could replace
+// must never reach the file.
 func TestShimStepRefusesAnUntrustedExeOnARealHost(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "orthogonals")
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {

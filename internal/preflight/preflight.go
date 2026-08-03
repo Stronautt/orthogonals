@@ -12,7 +12,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// Status is a check outcome.
 type Status string
 
 const (
@@ -33,7 +32,6 @@ func (s Status) ExitCode() int {
 	}
 }
 
-// Check is one analyzer verdict.
 type Check struct {
 	Name    string `json:"name"`
 	Status  Status `json:"status"`
@@ -49,7 +47,6 @@ var hardTools = map[string]bool{
 	"dracut": true,
 }
 
-// Analyze runs every analyzer over the detect result and gathered facts.
 func Analyze(r *hw.Result, f Facts) []Check {
 	return []Check{
 		checkIOMMU(r),
@@ -77,7 +74,6 @@ func Analyze(r *hw.Result, f Facts) []Check {
 	}
 }
 
-// checkBLS gates on readable Boot Loader Spec entries.
 func checkBLS(f Facts) Check {
 	const name = "boot-entries"
 	switch {
@@ -90,7 +86,6 @@ func checkBLS(f Facts) Check {
 	return Check{name, Pass, "boot loader entries are readable", ""}
 }
 
-// checkLibvirt gates on a reachable local libvirt daemon.
 func checkLibvirt(f Facts) Check {
 	const name = "libvirt"
 	if !f.LibvirtReachable {
@@ -131,7 +126,6 @@ func checkIOMMU(r *hw.Result) Check {
 	return Check{name, Fail, "IOMMU is off or unsupported — passthrough is impossible without it", bios}
 }
 
-// firmwareIOMMUHint names an OS-visible BIOS attribute controlling the IOMMU.
 func firmwareIOMMUHint(attrs []hw.FirmwareAttr) string {
 	if len(attrs) == 0 {
 		return ""
@@ -144,8 +138,7 @@ func firmwareIOMMUHint(attrs []hw.FirmwareAttr) string {
 	return hint + fmt.Sprintf(") — set it via /sys/class/firmware-attributes/%s/attributes/%s/current_value and reboot", a.Driver, a.Name)
 }
 
-// iommuTech names the platform's IOMMU technology, kernel args, and BIOS
-// remedy: by the ACPI table when the firmware exposes one, by CPU vendor
+// iommuTech keys on the ACPI table when the firmware exposes one, on CPU vendor
 // otherwise. The karg comes from hostcfg so the remedy quotes exactly what
 // apply would add.
 func iommuTech(iommuTable, cpuVendor string) (tech, karg, bios string) {
@@ -203,7 +196,6 @@ func vendorName(vendor string) string {
 	return vendor
 }
 
-// checkDisplayTopology verifies every monitor is cabled to the iGPU.
 func checkDisplayTopology(r *hw.Result) Check {
 	const name = "display-topology"
 	if r.GPUs.IGPU == nil {
@@ -247,7 +239,6 @@ func checkDisplayTopology(r *hw.Result) Check {
 	}
 }
 
-// checkBootVGA reports which GPU the firmware lit as primary.
 func checkBootVGA(r *hw.Result) Check {
 	const name = "boot-vga"
 	if r.GPUs.IGPU != nil && r.GPUs.IGPU.BootVGA {
@@ -265,7 +256,6 @@ func checkBootVGA(r *hw.Result) Check {
 	return Check{name, Pass, "skipped (no boot_vga marker in sysfs)", ""}
 }
 
-// checkIOMMUGroup enforces the whole-group rule for the dGPU's IOMMU group.
 func checkIOMMUGroup(r *hw.Result) Check {
 	const name = "iommu-group"
 	nvidia := r.GPUs.NVIDIA()
@@ -296,7 +286,6 @@ func checkIOMMUGroup(r *hw.Result) Check {
 			"Instead: move the GPU to a CPU-attached PCIe slot, look for a BIOS update, or try a newer kernel with better ACS support"}
 }
 
-// checkDuplicateGPUIDs refuses identical NVIDIA GPUs.
 func checkDuplicateGPUIDs(r *hw.Result) Check {
 	const name = "duplicate-gpu-ids"
 	byID := map[string][]string{}
@@ -317,7 +306,6 @@ func checkDuplicateGPUIDs(r *hw.Result) Check {
 	return Check{name, Pass, "no duplicate NVIDIA vendor:device IDs", ""}
 }
 
-// checkForeignVFIO refuses vfio configuration orthogonals did not write.
 func checkForeignVFIO(f Facts) Check {
 	const name = "foreign-vfio"
 	switch {
@@ -358,7 +346,6 @@ func checkChassis(r *hw.Result) Check {
 	return Check{name, Pass, fmt.Sprintf("chassis: %s", hw.ChassisName(r.Platform.ChassisType)), ""}
 }
 
-// checkGPUMux gates the ASUS display MUX: hybrid keeps the panel on the iGPU.
 func checkGPUMux(r *hw.Result) Check {
 	const name = "gpu-mux"
 	switch r.Platform.GPUMux {
@@ -373,7 +360,6 @@ func checkGPUMux(r *hw.Result) Check {
 	}
 }
 
-// checkMux warns when a laptop dGPU is MUXless (a 3D controller with no outputs).
 func checkMux(r *hw.Result) Check {
 	const name = "mux"
 	if !hw.IsLaptopChassis(r.Platform.ChassisType) {
@@ -416,7 +402,6 @@ func checkTools(r *hw.Result) Check {
 	}
 }
 
-// checkCPU gates on the vCPU count domain's pinning will assign.
 func checkCPU(r *hw.Result) Check {
 	const name = "cpu"
 	assignable, err := domain.AssignableVCPUs(r.CPU)
@@ -499,7 +484,6 @@ func checkPersistenced(f Facts) Check {
 	return Check{name, Pass, "nvidia-persistenced not enabled", ""}
 }
 
-// checkSwitcheroo guards the discrete-graphics launch UX.
 func checkSwitcheroo(f Facts) Check {
 	const name = "switcheroo"
 	switch {

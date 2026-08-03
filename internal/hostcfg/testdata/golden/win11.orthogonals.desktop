@@ -5,4 +5,5 @@ Comment=Start the win11 VM and connect via Looking Glass
 Exec=/usr/bin/orthogonals vm launch --vm-name win11
 Icon=computer
 Terminal=false
+StartupWMClass=win11.orthogonals
 Categories=System;

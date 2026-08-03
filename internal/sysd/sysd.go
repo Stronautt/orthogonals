@@ -12,7 +12,6 @@ import (
 	godbus "github.com/godbus/dbus/v5"
 )
 
-// Client is what orthogonals needs from systemd.
 type Client interface {
 	// EnableUnit and DisableUnit change unit-file symlinks and reload the manager.
 	EnableUnit(unit string) error
@@ -22,14 +21,12 @@ type Client interface {
 	Reload() error
 	RestartUnit(unit string) error
 	TryRestartUnit(unit string) error
-	// StopUnit stops a unit; an absent unit is not an error.
+	// StopUnit and ResetFailedUnit treat an absent unit as success.
 	StopUnit(unit string) error
-	// ResetFailedUnit clears a unit's failed state; an absent unit is not an error.
 	ResetFailedUnit(unit string) error
-	// StartTransientUnit runs argv as a transient systemd service.
 	StartTransientUnit(name string, argv []string) error
-	// SetAllowedCPUs restricts a unit's cgroup cpuset to cpus at runtime (cgroup
-	// v2 AllowedCPUs). Passing the full CPU set lifts a prior restriction.
+	// SetAllowedCPUs restricts a unit's cgroup cpuset at runtime (cgroup v2
+	// AllowedCPUs); passing the full CPU set lifts a prior restriction.
 	SetAllowedCPUs(unit string, cpus []int) error
 	Close() error
 }
@@ -37,17 +34,16 @@ type Client interface {
 // New returns a client for the local systemd manager, one connection per call.
 func New() Client { return &client{} }
 
-// callTimeout bounds every manager call.
 const callTimeout = time.Minute
 
 type client struct{}
 
-// do runs one manager call on its own connection. The connection is never
-// cached across calls: go-systemd binds a connection's lifetime to the context
-// it was dialled with, so one dialled here is closed the moment this call's
-// context is cancelled. A later call reusing it either redials mid-flight or —
-// when it slips through just before the close lands — blocks until its own
-// deadline for a JobRemoved signal the dead connection can no longer deliver.
+// do runs one manager call on its own connection, never cached across calls:
+// go-systemd binds a connection's lifetime to the context it was dialled with,
+// so one dialled here is closed the moment this call's context is cancelled. A
+// later call reusing it either redials mid-flight or — slipping through just
+// before the close lands — blocks until its own deadline for a JobRemoved
+// signal the dead connection can no longer deliver.
 func (c *client) do(op string, f func(ctx context.Context, conn *sddbus.Conn) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
@@ -142,7 +138,6 @@ func (c *client) ResetFailedUnit(unit string) error {
 	})
 }
 
-// StartTransientUnit runs argv as a transient .service.
 func (c *client) StartTransientUnit(name string, argv []string) error {
 	return c.do("start transient unit "+name, func(ctx context.Context, conn *sddbus.Conn) error {
 		props := []sddbus.Property{
@@ -185,7 +180,6 @@ func allowedCPUsMask(cpus []int) []byte {
 	return mask
 }
 
-// waitJob starts a systemd job and blocks on its completion signal.
 func waitJob(ctx context.Context, start func(done chan string) (int, error)) error {
 	done := make(chan string, 1)
 	if _, err := start(done); err != nil {
@@ -202,7 +196,6 @@ func waitJob(ctx context.Context, start func(done chan string) (int, error)) err
 	}
 }
 
-// isNoSuchUnit reports the systemd "no such unit" error.
 func isNoSuchUnit(err error) bool {
 	if err == nil {
 		return false

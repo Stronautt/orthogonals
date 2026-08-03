@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 )
 
@@ -21,7 +22,19 @@ const (
 	fakeMachineID  = "abcdef0123456789abcdef0123456789"
 )
 
-// fakeBin writes an executable that prints output, for PATH-seam tests.
+// registryXML renders through the same code that writes the real entry.
+// Hand-writing the block let a rename of the credential elements past these
+// tests once: the fixtures kept the retired spelling and stayed green while the
+// shipped bundle leaked.
+func registryXML(t *testing.T, s domain.Settings) string {
+	t.Helper()
+	block, err := domain.Profile{Settings: s}.SettingsXML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "<domain type='kvm'>\n  <name>win11</name>\n  <metadata>\n" + block + "\n  </metadata>\n</domain>\n"
+}
+
 func fakeBin(t *testing.T, dir, name, output string) {
 	t.Helper()
 	script := "#!/bin/sh\ncat <<'EOF'\n" + output + "\nEOF\n"
@@ -59,11 +72,10 @@ func TestWriteBundleRedaction(t *testing.T) {
 	root := t.TempDir()
 	hwtest.WriteFile(t, root, "sys/class/dmi/id/product_serial", fakeSerial+"\n")
 	hwtest.WriteFile(t, root, "etc/machine-id", fakeMachineID+"\n")
-	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml",
-		"<domain type='kvm'>\n  <name>win11</name>\n  <metadata>\n    <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>\n"+
-			"      <orthogonals:user>user</orthogonals:user>\n      <orthogonals:password>"+secretPassword+"</orthogonals:password>\n"+
-			"      <orthogonals:locale>uk-UA</orthogonals:locale>\n      <orthogonals:resolution>3840x2160</orthogonals:resolution>\n"+
-			"    </orthogonals:guest>\n  </metadata>\n</domain>\n")
+	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml", registryXML(t, domain.Settings{
+		GuestUser: "guestadmin", GuestPassword: secretPassword,
+		Locale: "uk-UA", Resolution: "3840x2160",
+	}))
 	hostname, _ := os.Hostname()
 	hwtest.WriteFile(t, root, "etc/orthogonals/notes.txt",
 		"host "+hostname+" mac "+fakeMAC+" uuid "+fakeUUID+" serial "+fakeSerial+" id "+fakeMachineID+"\n")
@@ -98,7 +110,7 @@ func TestWriteBundleRedaction(t *testing.T) {
 	for _, data := range entries {
 		all.WriteString(data)
 	}
-	secrets := []string{secretPassword, fakeSerial, fakeMAC, fakeUUID, fakeMachineID}
+	secrets := []string{secretPassword, "guestadmin", fakeSerial, fakeMAC, fakeUUID, fakeMachineID}
 	if len(hostname) >= 2 {
 		secrets = append(secrets, hostname)
 	}
@@ -108,9 +120,13 @@ func TestWriteBundleRedaction(t *testing.T) {
 		}
 	}
 
+	// Every element the record marks secret, not a fixed list: a new credential
+	// field is covered the moment it is tagged.
 	xml := entries["configs/etc/orthogonals/vms/win11.xml"]
-	if strings.Contains(xml, "user</orthogonals:user>") || !strings.Contains(xml, "[redacted]") {
-		t.Errorf("guest credentials not stripped from the domain XML: %q", xml)
+	for _, el := range domain.SecretElements() {
+		if want := "<" + el + ">[redacted]</" + el + ">"; !strings.Contains(xml, want) {
+			t.Errorf("domain XML kept <%s> unredacted, want %q in:\n%s", el, want, xml)
+		}
 	}
 	if !strings.Contains(xml, "win11") || !strings.Contains(xml, "uk-UA") {
 		t.Errorf("domain XML lost non-credential content: %q", xml)
@@ -120,14 +136,9 @@ func TestWriteBundleRedaction(t *testing.T) {
 	}
 }
 
-// A host without lspci/journalctl still produces a bundle, noting the gap.
-// TestWriteBundleRedactsOutsideXML: the bundle goes into bug reports, so
-// gating redaction on a .xml filename ships the credentials in the clear the
-// day they appear in any other bundled artifact.
 func TestWriteBundleRedactsOutsideXML(t *testing.T) {
 	root := t.TempDir()
-	const block = "<orthogonals:user>user</orthogonals:user>\n" +
-		"<orthogonals:password>" + secretPassword + "</orthogonals:password>\n"
+	block := registryXML(t, domain.Settings{GuestUser: "guestadmin", GuestPassword: secretPassword})
 	// Three shapes that are not "a file named *.xml under the VM registry".
 	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml.bak", block)
 	hwtest.WriteFile(t, root, "etc/orthogonals/rendered.conf", block)
@@ -150,36 +161,45 @@ func TestWriteBundleRedactsOutsideXML(t *testing.T) {
 	}
 }
 
-// TestWriteBundleRedactsAwkwardPasswords: the credential is XML-escaped into
-// the domain, so redaction must survive whatever that produced.
+// TestWriteBundleRedactsAwkwardPasswords: the credential is XML-escaped on the
+// way into the domain, so the escaped form is what has to be gone, not just the
+// raw one.
 func TestWriteBundleRedactsAwkwardPasswords(t *testing.T) {
 	// Named, not keyed by the password: t.TempDir() derives from the subtest
 	// name, so the password would reappear in every path the bundle quotes.
 	for _, tc := range []struct{ name, pw string }{
-		{"xml-escaped metacharacters", "p&lt;&amp;&gt;&#34;pass"}, // XMLEscape of p<&>"pass
-		{"dollar signs", "$1$notaregex"},                          // a naive replacement template would expand these
+		{"xml metacharacters", `p<&>"pass`},
+		{"dollar signs", "$1$notaregex"}, // a naive replacement template would expand these
 		{"regex metacharacters", "a.*b"},
 		{"trailing whitespace", "hunter2 \t"},
 	} {
 		pw := tc.pw
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml",
-				"<domain><metadata><orthogonals:guest>\n"+
-					"<orthogonals:password>"+pw+"</orthogonals:password>\n"+
-					"</orthogonals:guest></metadata></domain>")
+			registry := registryXML(t, domain.Settings{GuestPassword: pw})
+			hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml", registry)
 			bin := t.TempDir()
 			fakeBin(t, bin, "lspci", "")
 			fakeBin(t, bin, "journalctl", "")
 			t.Setenv("PATH", bin)
+
+			// Whatever the marshaller wrote between the tags, verbatim: asserting
+			// only on pw passes for free once escaping makes the two differ.
+			_, after, ok := strings.Cut(registry, "<guest-password>")
+			escaped, _, ok2 := strings.Cut(after, "</guest-password>")
+			if !ok || !ok2 || escaped == "" {
+				t.Fatalf("fixture has no guest-password element to redact:\n%s", registry)
+			}
 
 			var buf bytes.Buffer
 			if err := WriteBundle(&buf, root, refResult()); err != nil {
 				t.Fatal(err)
 			}
 			for name, data := range readTarGz(t, &buf) {
-				if strings.Contains(data, pw) {
-					t.Errorf("%s kept the password %q:\n%s", name, pw, data)
+				for _, leak := range []string{pw, escaped} {
+					if strings.Contains(data, leak) {
+						t.Errorf("%s kept the password %q:\n%s", name, leak, data)
+					}
 				}
 			}
 		})

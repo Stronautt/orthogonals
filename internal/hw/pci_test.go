@@ -224,10 +224,8 @@ func TestClassifyGPUs(t *testing.T) {
 	amd := PCIDevice{Address: "0000:03:00.0", Vendor: "0x1002", Class: "0x030000"}
 	arc := PCIDevice{Address: "0000:04:00.0", Vendor: "0x8086", Class: "0x030000"}
 	nic := PCIDevice{Address: "0000:05:00.0", Vendor: "0x8086", Class: "0x020000"}
-	// AMD APU iGPU: vendor 0x1002 on a high bus (not 0000:00:), paired with the
-	// sole NVIDIA dGPU — the AMD-laptop target topology.
+	// An AMD APU iGPU sits on a high bus, not 0000:00:.
 	amdIGPU := PCIDevice{Address: "0000:06:00.0", Vendor: "0x1002", Class: "0x030000"}
-	// MUXless NVIDIA dGPU enumerates as a 3D controller (0x0302), no display outputs.
 	nvMuxless := PCIDevice{Address: "0000:01:00.0", Vendor: "0x10de", Class: "0x030200"}
 
 	tests := []struct {

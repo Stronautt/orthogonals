@@ -22,10 +22,10 @@ func fakePasswd(t *testing.T, users map[string]*user.User) {
 	t.Cleanup(func() { lookupUser = old })
 }
 
-// TestCredential is the privilege drop itself: the hook calls Send as root, so
-// this decides whether the notification runs as the desktop user or as root.
-// The switching branch is unreachable from the other Send test, which uses the
-// current account and so always has uid == euid.
+// The privilege drop itself: the hook calls Send as root, so this decides
+// whether the notification runs as the desktop user or as root. The switching
+// branch is unreachable from the other Send test, which uses the current account
+// and so always has uid == euid.
 func TestCredential(t *testing.T) {
 	fakePasswd(t, map[string]*user.User{
 		"desktop": {Uid: "1000", Gid: "1000"},
@@ -70,8 +70,6 @@ func TestCredential(t *testing.T) {
 				t.Errorf("bus = %q, want %q", bus, tt.wantBus)
 			}
 			if !tt.wantCred {
-				// Switching to your own uid needs privileges the caller may
-				// not have, so it must not be attempted.
 				if cred != nil {
 					t.Errorf("credential set for the current uid: %+v", cred.Credential)
 				}
@@ -87,9 +85,9 @@ func TestCredential(t *testing.T) {
 	}
 }
 
-// TestSendDropsToAnotherUser is the only place the switch actually executes:
-// it needs root and a second account, which no unit run has. TestCredential
-// covers the decision, this covers the kernel honouring it.
+// The only place the switch actually executes: it needs root and a second
+// account, which no unit run has. TestCredential covers the decision, this
+// covers the kernel honouring it.
 func TestSendDropsToAnotherUser(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("switching credentials needs root — covered by the VM tier (make test-vm)")
@@ -128,7 +126,6 @@ func TestSendDropsToAnotherUser(t *testing.T) {
 	}
 }
 
-// TestSendRealPath exercises the real Send body with a fake notify-send on PATH.
 func TestSendRealPath(t *testing.T) {
 	u, err := user.Current()
 	if err != nil {

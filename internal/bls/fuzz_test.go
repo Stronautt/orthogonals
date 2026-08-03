@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-// entryRoot writes one BLS entry with the given file content and returns the root.
 func entryRoot(t *testing.T, content string) (root, entry string) {
 	t.Helper()
 	root = t.TempDir()
@@ -23,9 +22,6 @@ func entryRoot(t *testing.T, content string) (root, entry string) {
 	return root, entry
 }
 
-// FuzzWanted asserts reading arbitrary entry content never panics, that parsed
-// tokens are free of whitespace, and that every wanted token comes back present,
-// missing, or both — never neither.
 func FuzzWanted(f *testing.F) {
 	f.Add("title Fedora\noptions root=UUID=aaaa ro quiet\n")
 	f.Add("options\n")
@@ -64,11 +60,9 @@ func FuzzWanted(f *testing.F) {
 	})
 }
 
-// canonicalOptions is editEntry's normalization with an identity transform: the
-// combined token set on the first options line, a single space between tokens,
-// no trailing space, and any further options lines blanked. An edit normalizes
-// all of that, so it is the canonical form — not the original bytes — that a
-// round trip must land back on.
+// canonicalOptions is editEntry's normalization with an identity transform. An
+// edit normalizes whitespace and collapses the options lines, so it is the
+// canonical form — not the original bytes — a round trip must land back on.
 func canonicalOptions(content string) string {
 	lines := strings.Split(content, "\n")
 	toks, first := parseOptions(lines)
@@ -85,9 +79,7 @@ func canonicalOptions(content string) string {
 }
 
 // FuzzAddRemoveArgsRoundTrip is the invariant behind undo restoring the boot
-// configuration: adding kernel args that were not already present and then
-// removing them must leave the entry exactly as it was, up to the options-line
-// whitespace normalization every edit applies.
+// configuration byte-identically, up to canonicalOptions.
 func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 	f.Add("title Fedora\noptions root=UUID=aaaa ro quiet\n", "intel_iommu=on iommu=pt")
 	f.Add("options ro\n", "a")
@@ -95,14 +87,13 @@ func FuzzAddRemoveArgsRoundTrip(f *testing.F) {
 	f.Add("title t\noptions ro quiet\ninitrd /x.img\n", "vfio-pci.ids=10de:2206")
 	f.Add("options ro\n", "")
 	f.Add("options ro\n", "   ")
-	// whitespace forms the edit normalizes rather than preserves
 	f.Add("options \n", "0")
 	f.Add("options  ro   quiet \n", "z=1")
 	f.Add("options\tro\tquiet\n", "z=1")
 	// an entry that legitimately repeats a token
 	f.Add("options 0 0\n", "00")
-	// the spec's repeated options key: transforming each line on its own used to
-	// drop a token only one of them carried
+	// the spec's repeated options key: transforming each line on its own drops a
+	// token only one of them carried
 	f.Add("options \noptions \xcf", "\xcf")
 	f.Add("options ro\noptions iommu=pt\n", "quiet")
 

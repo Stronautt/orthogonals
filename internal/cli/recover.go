@@ -9,7 +9,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/orchestrate"
 )
 
-// newRecoverCmd is the escape hatch for a botched GPU handover.
 func newRecoverCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "recover",

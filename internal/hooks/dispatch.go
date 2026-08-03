@@ -15,10 +15,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd"
 )
 
-// inhibitUnit is the transient sleep-inhibitor unit for a running VM.
 func inhibitUnit(vm string) string { return "libvirt-nosleep-" + vm + ".service" }
 
-// Dispatch is the qemu hook body: prepare/begin detaches the GPU, release/end reattaches it.
 func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) error {
 	if _, err := os.Stat(filepath.Join(steps.VMsDir(root), vm+".xml")); err != nil {
 		// Only true absence means "not ours". Any other stat failure (EACCES on
@@ -35,13 +33,12 @@ func Dispatch(root string, sd sysd.Client, vm, op, subop, user, exe string) erro
 		if err := oneVMAtATime(root, vm); err != nil {
 			return err
 		}
-		// Before the GPU handover: detaching first would leave the desktop
-		// without its dGPU for a VM that is not going to start. Only for a domain
-		// that names the device — a /dev/shm domain must not pin the buffer.
+		// Before the handover: detaching first would leave the desktop without
+		// its dGPU for a VM that is not going to start. Only for a domain that
+		// names the device — a /dev/shm domain must not pin the buffer.
 		if sizeMiB, ok := domain.KVMFRSizeMiB(root, vm); ok {
 			if err := EnsureKVMFR(root, user, sizeMiB); err != nil {
 				log("%v", err)
-				// The error names its own remedy; the cases differ.
 				notify.Send(vmNote(user, "Looking Glass cannot start — "+
 					strings.TrimPrefix(err.Error(), KVMFRErrPrefix), true))
 				return err
@@ -86,7 +83,7 @@ var (
 
 // secureSpiceSocket hands the SPICE socket to the desktop user. QEMU binds it
 // world-readable; the 0730 per-VM directory is the real gate, so this is
-// hardening on top of it — and log-only, because the VM is already running.
+// hardening on top of it, and log-only because the VM is already running.
 func secureSpiceSocket(root, vm, user string) {
 	log := hookLog(root, "spice-socket")
 	rel := steps.SpiceSocketPath(vm)
@@ -126,7 +123,6 @@ func secureSpiceSocket(root, vm, user string) {
 	log("%s handed to %s (0600)", rel, user)
 }
 
-// oneVMAtATime refuses the start while another managed domain holds the dGPU.
 func oneVMAtATime(root, vm string) error {
 	for _, other := range steps.VMNames(root) {
 		if other == vm {

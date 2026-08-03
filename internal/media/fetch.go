@@ -21,10 +21,9 @@ import (
 var stallTimeout = 60 * time.Second
 
 // maxDownloadBytes stops a bad mirror filling the disk before the checksum can
-// reject it. Every pin is under 1 GiB. A var so tests can shrink it.
+// reject it; every pin is under 1 GiB.
 var maxDownloadBytes int64 = 4 * utils.BytesPerGiB
 
-// stallResetReader pushes the watchdog forward on every successful read.
 type stallResetReader struct {
 	io.Reader
 	watchdog *time.Timer
@@ -38,10 +37,8 @@ func (r stallResetReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// CachePath is where pinned downloads live.
 const CachePath = steps.StateDirPath + "/cache"
 
-// CacheDir is CachePath under root.
 func CacheDir(root string) string { return filepath.Join(root, CachePath) }
 
 // Fetch returns the cached path for d, downloading and pin-verifying when absent.
@@ -124,7 +121,6 @@ func ImportInstaller(root string, d artifacts.Download, src string, out io.Write
 	return dest, nil
 }
 
-// hashCopy streams r into a new file at dest, hashing in the same pass.
 func hashCopy(dest string, r io.Reader) (string, error) {
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {

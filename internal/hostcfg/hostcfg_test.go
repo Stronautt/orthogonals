@@ -16,7 +16,6 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
-// referenceProfile builds the Profile from the PoC reference machine fixture.
 func referenceProfile(t *testing.T, binding string) Profile {
 	t.Helper()
 	res, err := hw.Detect(hwtest.ReferenceRoot(t))
@@ -30,7 +29,6 @@ func referenceProfile(t *testing.T, binding string) Profile {
 	return p
 }
 
-// laptopReferenceProfile is the reference machine reported as a laptop chassis.
 func laptopReferenceProfile(t *testing.T) Profile {
 	t.Helper()
 	root := hwtest.ReferenceRoot(t)
@@ -160,7 +158,6 @@ func TestLaptopStepsAddPowerManagement(t *testing.T) {
 	}
 }
 
-// TestVMStepsGolden pins the default win11 VM's desktop entry and ~/Desktop link.
 func TestVMStepsGolden(t *testing.T) {
 	list, err := VMSteps("win11", "Windows 11", "testuser", "/usr/bin/orthogonals")
 	if err != nil {
@@ -249,28 +246,6 @@ func TestVMStepsSecondVM(t *testing.T) {
 	}
 }
 
-func TestDisplayNameFromDesktopEntry(t *testing.T) {
-	root := t.TempDir()
-	list, err := VMSteps("gaming", "Gaming Rig", "testuser", "/usr/bin/orthogonals")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := list[0]
-	full := filepath.Join(root, entry.Path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, entry.Content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := DisplayName(root, "gaming"); got != "Gaming Rig" {
-		t.Errorf("DisplayName = %q, want %q", got, "Gaming Rig")
-	}
-	if got := DisplayName(root, "missing"); got != "" {
-		t.Errorf("DisplayName for an undefined VM = %q, want empty", got)
-	}
-}
-
 func TestLibvirtAuthenticatesOnTheSocketNotPolkit(t *testing.T) {
 	arts, err := renderArtifacts(referenceProfile(t, "dynamic"))
 	if err != nil {
@@ -341,7 +316,6 @@ func TestKernelArgs(t *testing.T) {
 			}
 		})
 	}
-	// The reference (Intel) fixture flows through NewProfile to the same result.
 	if got := KernelArgs(referenceProfile(t, "static")); got != "intel_iommu=on iommu=pt vfio-pci.ids=10de:2206,10de:1aef" {
 		t.Errorf("reference static kargs = %q", got)
 	}
@@ -386,8 +360,8 @@ func TestKernelArgsStepOmitsUndoWhenAllPreexisting(t *testing.T) {
 	}
 }
 
-// a token the entries have but /etc/kernel/cmdline lacks is still the step's
-// work: it is present (do not undo it) and missing (write it) at once.
+// A token the entries have but /etc/kernel/cmdline lacks is still the step's
+// work: present (do not undo it) and missing (write it) at once.
 func TestKernelArgsStepRechecksPartialBootConfig(t *testing.T) {
 	args := "intel_iommu=on iommu=pt"
 	s := kernelArgsStep(args, bls.Args{Present: strings.Fields(args), Missing: []string{"iommu=pt"}})
@@ -470,8 +444,7 @@ func TestSteps(t *testing.T) {
 		t.Errorf("semanage undo = %q", got)
 	}
 
-	// qemu_var_run_t, not svirt_var_run_t: no Fedora policy defines the latter
-	// and semanage refuses an undefined type mid-apply. test/desk checks it
+	// semanage refuses an undefined type mid-apply; test/desk checks this one
 	// against the running policy.
 	spice := stepByID(t, list, "selinux-spice-fcontext")
 	if got := strings.Join(spice.Cmd, " "); got != `semanage fcontext -a -t qemu_var_run_t /run/orthogonals(/.*)?` {

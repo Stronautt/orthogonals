@@ -14,19 +14,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// configDirs are installed orthogonals artifacts worth bundling.
 var configDirs = []string{steps.EtcDir, "/etc/libvirt/hooks", "/etc/dracut.conf.d", filepath.Dir(hooks.LogPath)}
 
 var (
 	macRE  = regexp.MustCompile(`\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b`)
 	uuidRE = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
-	// guestMetaRE matches guest credentials in a domain XML's <metadata> block.
-	guestMetaRE = regexp.MustCompile(`<orthogonals:(user|password)>[^<]*</orthogonals:(?:user|password)>`)
+	// guestMetaRE matches the credential elements of a domain XML's <settings>
+	// block. Built from the record's own tags: a hand-written copy of the names
+	// goes on matching an element a rename has already retired, and nothing
+	// fails until the credential is in someone's bug report.
+	guestMetaRE = regexp.MustCompile(`<(` + strings.Join(domain.SecretElements(), "|") + `)>[^<]*</(?:` +
+		strings.Join(domain.SecretElements(), "|") + `)>`)
 )
 
 type bundleEntry struct {
@@ -57,7 +61,7 @@ func WriteBundle(w io.Writer, root string, detect *hw.Result) error {
 			}
 			// Every bundled file, not just *.xml: gating on a filename ships
 			// the credential in the clear the day it appears elsewhere.
-			data = guestMetaRE.ReplaceAll(data, []byte("<orthogonals:$1>[redacted]</orthogonals:$1>"))
+			data = guestMetaRE.ReplaceAll(data, []byte("<$1>[redacted]</$1>"))
 			rel, _ := filepath.Rel(base, path)
 			entries = append(entries, bundleEntry{filepath.Join("configs", dir, rel), data})
 			return nil
@@ -97,7 +101,6 @@ func cmdOutput(name string, args ...string) []byte {
 
 type redactor struct{ rep *strings.Replacer }
 
-// newRedactor collects host-identifying literals to redact.
 func newRedactor(root string) *redactor {
 	var pairs []string
 	if hn, err := os.Hostname(); err == nil && len(hn) >= 2 {

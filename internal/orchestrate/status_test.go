@@ -13,7 +13,6 @@ import (
 
 const switcherooWants = "etc/systemd/system/multi-user.target.wants/switcheroo-control.service"
 
-// healthyRoot is an applied, rebooted host.
 func healthyRoot(t *testing.T) string {
 	t.Helper()
 	root := rebootedRoot(t)
@@ -25,7 +24,6 @@ func healthyRoot(t *testing.T) string {
 	return root
 }
 
-// failing returns the first non-OK check whose name starts with prefix.
 func failing(cs []Check, prefix string) *Check {
 	for i := range cs {
 		if strings.HasPrefix(cs[i].Name, prefix) && !cs[i].OK {
@@ -99,6 +97,32 @@ func TestStatusDetectsDrift(t *testing.T) {
 	}
 }
 
+// An unreadable hook path is not a missing one: /etc/libvirt is 0700, so a
+// status run as the desktop user hits EACCES on a host that is in fact fine,
+// and "re-run apply" is advice that cannot resolve it.
+func TestStatusHookUnreadableIsNotMissing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root searches any directory")
+	}
+	root := healthyRoot(t)
+	dir := filepath.Dir(filepath.Join(root, hooks.InstalledPaths()[0]))
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	c := failing(Status(root), "libvirt hooks")
+	if c == nil {
+		t.Fatal("an unreadable hook path must not report healthy")
+	}
+	if !strings.Contains(c.Detail, "run as root") {
+		t.Errorf("detail should say the check could not look, got %q", c.Detail)
+	}
+	if strings.Contains(c.Detail, "apply") {
+		t.Errorf("detail advises an apply that cannot fix EACCES: %q", c.Detail)
+	}
+}
+
 func TestStatusVFIOBoundIsHealthy(t *testing.T) {
 	root := rebootedRoot(t)
 	hwtest.AddPCI(t, root, hwtest.Dev{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "vfio-pci", Group: 1})
@@ -136,7 +160,6 @@ func TestStatusMissingKernelArgsRecord(t *testing.T) {
 	}
 }
 
-// writeKVMFRDomain registers a VM whose rendered XML names the kvmfr device.
 func writeKVMFRDomain(t *testing.T, root, vm string) {
 	t.Helper()
 	write(t, root, filepath.Join(steps.VMsDirPath, vm+".xml"),
@@ -150,8 +173,6 @@ func writeKVMFRDomain(t *testing.T, root, vm string) {
 </domain>`)
 }
 
-// A kernel update dkms cannot follow is the one failure this feature creates on
-// its own: the hook refuses the start, so status has to name it first.
 func TestStatusKVMFRModuleMissingAfterKernelUpdate(t *testing.T) {
 	root := healthyRoot(t)
 	writeKVMFRDomain(t, root, "win11")
@@ -189,7 +210,6 @@ func TestStatusKVMFRModuleBuilt(t *testing.T) {
 	}
 }
 
-// A /dev/shm domain must report the fallback rather than nothing at all.
 func TestStatusSHMBackendReported(t *testing.T) {
 	root := healthyRoot(t)
 	write(t, root, filepath.Join(steps.VMsDirPath, "win11.xml"),

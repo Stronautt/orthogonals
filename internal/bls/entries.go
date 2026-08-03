@@ -1,7 +1,5 @@
 package bls
 
-// The BLS entry files under /boot/loader/entries — the target that boots today.
-
 import (
 	"errors"
 	"fmt"
@@ -11,7 +9,6 @@ import (
 	"strings"
 )
 
-// entryTokens is the options tokens of every entry, one set per file.
 func entryTokens(root string) ([][]string, error) {
 	files, err := entryFiles(root)
 	if err != nil {
@@ -28,7 +25,6 @@ func entryTokens(root string) ([][]string, error) {
 	return sets, nil
 }
 
-// editEntries rewrites every entry's options line through fn.
 func editEntries(root string, fn transform) error {
 	files, err := entryFiles(root)
 	if err != nil {
@@ -42,7 +38,6 @@ func editEntries(root string, fn transform) error {
 	return nil
 }
 
-// entryFiles lists the *.conf entries under root, sorted.
 func entryFiles(root string) ([]string, error) {
 	dir := filepath.Join(root, EntriesPath)
 	// os.ReadDir, not filepath.Glob: Glob reports no matches for a directory it
@@ -64,7 +59,6 @@ func entryFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// entryOptions returns the options tokens of one entry.
 func entryOptions(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -130,8 +124,8 @@ func editEntry(path string, fn transform) error {
 	return writeIfChanged(path, b, []byte(strings.Join(lines, "\n")), info.Mode())
 }
 
-// cutKey splits a BLS "key value" line, returning the trimmed value. The
-// separator must be real whitespace, so "optionsfoo" is not an options line.
+// cutKey splits a BLS "key value" line. The separator must be real whitespace,
+// so "optionsfoo" is not an options line.
 func cutKey(line, key string) (string, bool) {
 	if line == key {
 		return "", true

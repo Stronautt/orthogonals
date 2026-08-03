@@ -16,7 +16,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// eng builds a test engine whose client factories yield empty fakes.
+// eng builds an engine whose client factories yield empty fakes, so no test
+// ever dials the developer's libvirt or systemd.
 func eng(root string, yes bool) (*Engine, *bytes.Buffer, *bytes.Buffer) {
 	var out, errBuf bytes.Buffer
 	e := &Engine{Root: root, Yes: yes, Out: &out, Err: &errBuf,
@@ -58,7 +59,7 @@ func assertFile(t *testing.T, root, rel, want string, mode fs.FileMode) {
 	}
 }
 
-// fakePath creates a dir for fake binaries and prepends it to PATH.
+// fakePath prepends a fresh dir to PATH, keeping the real one reachable.
 func fakePath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -718,15 +719,13 @@ func TestCheckUser(t *testing.T) {
 	}
 }
 
-// ownedPath is one entry of a synthetic ownership tree for CheckExecTrusted.
 type ownedPath struct {
 	uid  uint32
 	mode fs.FileMode
 }
 
-// TestCheckExecTrusted walks a synthetic ownership tree. Anything writable
-// outside root on the way to the binary is a path to root for whoever can
-// write there, so the walk must reject ancestors, not just the leaf.
+// Anything writable outside root on the way to the binary is a path to root for
+// whoever can write there, so the walk must reject ancestors, not just the leaf.
 func TestCheckExecTrusted(t *testing.T) {
 	const exe = "/usr/local/bin/orthogonals"
 
@@ -777,8 +776,7 @@ func TestCheckExecTrusted(t *testing.T) {
 	}
 }
 
-// TestCheckExecTrustedSurfacesAStatError: a path the walk cannot read is not a
-// path it may assume is fine.
+// A path the walk cannot read is not a path it may assume is fine.
 func TestCheckExecTrustedSurfacesAStatError(t *testing.T) {
 	old := pathOwner
 	pathOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, fs.ErrNotExist }

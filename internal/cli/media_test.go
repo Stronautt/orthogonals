@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
+	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/media/mediatest"
 )
@@ -53,16 +54,25 @@ func TestMediaDryRun(t *testing.T) {
 	}
 }
 
-// writeGuestMeta registers a VM whose domain XML carries the given guest metadata.
-func writeGuestMeta(t *testing.T, root, vm, user, password, locale, resolution string) {
+// installFixture points media.MountISO at a fixture ISO root. The seam is set
+// here, not in mediatest, so that package stays free of a media import.
+func installFixture(t *testing.T, wimXML string) {
 	t.Helper()
+	old := media.MountISO
+	media.MountISO = func(string) (string, func(), error) {
+		return mediatest.ISORoot(t, wimXML), func() {}, nil
+	}
+	t.Cleanup(func() { media.MountISO = old })
+}
+
+func writeGuestMeta(t *testing.T, root, vm string, s domain.Settings) {
+	t.Helper()
+	block, err := domain.Profile{Settings: s}.SettingsXML()
+	if err != nil {
+		t.Fatal(err)
+	}
 	xml := "<domain type='kvm'>\n  <name>" + vm + "</name>\n  <metadata>\n" +
-		"    <orthogonals:guest xmlns:orthogonals='https://github.com/stronautt/orthogonals'>\n" +
-		"      <orthogonals:user>" + user + "</orthogonals:user>\n" +
-		"      <orthogonals:password>" + password + "</orthogonals:password>\n" +
-		"      <orthogonals:locale>" + locale + "</orthogonals:locale>\n" +
-		"      <orthogonals:resolution>" + resolution + "</orthogonals:resolution>\n" +
-		"    </orthogonals:guest>\n  </metadata>\n</domain>\n"
+		block + "\n  </metadata>\n</domain>\n"
 	path := filepath.Join(root, "etc/orthogonals/vms", vm+".xml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -72,11 +82,12 @@ func writeGuestMeta(t *testing.T, root, vm, user, password, locale, resolution s
 	}
 }
 
-// media turns a VM locale the media cannot display into a loud failure.
 func TestMediaLocaleNotOnMedia(t *testing.T) {
-	mediatest.InstallFixture(t, mediatest.WimXMLProUkrainian)
+	installFixture(t, mediatest.WimXMLProUkrainian)
 	root := t.TempDir()
-	writeGuestMeta(t, root, "win11", "user", "pw", "en-US", "3840x2160")
+	writeGuestMeta(t, root, "win11", domain.Settings{
+		GuestUser: "user", GuestPassword: "pw", Locale: "en-US", Resolution: "3840x2160",
+	})
 	iso := filepath.Join(t.TempDir(), "win11.iso")
 	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
 		t.Fatal(err)
@@ -92,7 +103,6 @@ func TestMediaLocaleNotOnMedia(t *testing.T) {
 	}
 }
 
-// fakeDownloads points every pin at a local server with test-computed hashes.
 func fakeDownloads(t *testing.T) []artifacts.Download {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +125,7 @@ func TestMediaYesEndToEnd(t *testing.T) {
 	downloads = func() []artifacts.Download { return fakes }
 	t.Cleanup(func() { downloads = prev })
 
-	mediatest.InstallFixture(t, mediatest.WimXMLProUkrainian)
+	installFixture(t, mediatest.WimXMLProUkrainian)
 	root := t.TempDir()
 	iso := filepath.Join(t.TempDir(), "win11.iso")
 	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {

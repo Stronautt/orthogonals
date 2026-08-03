@@ -8,8 +8,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 )
 
-// genPCIDevice draws a device with deliberately hostile values: unknown
-// vendors, shared and negative IOMMU groups, addresses that repeat.
 func genPCIDevice(t *rapid.T) hw.PCIDevice {
 	return hw.PCIDevice{
 		Address: rapid.SampledFrom([]string{
@@ -83,8 +81,7 @@ func genFacts(t *rapid.T) Facts {
 }
 
 // TestAnalyzeHoldsForAnyHost guards the code path most exposed to strange real
-// hardware: every check must produce a defined status and a usable name, on any
-// topology, without panicking.
+// hardware.
 func TestAnalyzeHoldsForAnyHost(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		checks := Analyze(genResult(rt), genFacts(rt))

@@ -49,7 +49,8 @@ func mountISOLoop(path string) (string, func(), error) {
 	return mnt, cleanup, nil
 }
 
-// attachLoop binds the ISO to a free loop device, read-only with autoclear.
+// attachLoop sets LO_FLAGS_AUTOCLEAR, which is what makes closing the fd
+// enough to release the device — cleanup does no explicit detach.
 func attachLoop(iso *os.File) (*os.File, string, error) {
 	ctl, err := os.OpenFile("/dev/loop-control", os.O_RDWR, 0)
 	if err != nil {

@@ -5,4 +5,5 @@ Comment=Start the {{.VMName}} VM and connect via Looking Glass
 Exec={{.Exe}} vm launch --vm-name {{.VMName}}
 Icon=computer
 Terminal=false
+StartupWMClass={{.AppID}}
 Categories=System;

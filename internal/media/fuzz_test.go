@@ -9,8 +9,8 @@ import (
 
 // FuzzRender guards the two escapers between user-supplied guest settings and
 // root-authored artifacts: utils.XMLEscape for the answer file,
-// utils.PowerShellEscape for provision.ps1. --guest-user, --guest-password and --locale reach both
-// unmodified, and the script runs elevated in the guest.
+// utils.PowerShellEscape for provision.ps1. --guest-user, --guest-password and
+// --locale reach both unmodified, and the script runs elevated in the guest.
 func FuzzRender(f *testing.F) {
 	f.Add("user", "password", "en-US", 1920, 1080)
 	f.Add("", "", "", 0, 0)

@@ -25,33 +25,30 @@ import (
 var templateFS embed.FS
 
 const (
-
-	// MinRAMGiB is the minimum guest RAM in GiB.
 	MinRAMGiB = 8
-	// DefaultRAMNum/DefaultRAMDen size the default guest RAM as a fraction of host
-	// RAM (5/8 — e.g. 20 GiB on a 32 GiB host), scaling with the host and leaving
-	// the rest free so the hook's 2M hugepage pool reserves cleanly. Override with
-	// --ram.
+	// DefaultRAMNum/DefaultRAMDen size guest RAM as a fraction of host RAM,
+	// leaving the rest free so the hook's 2M hugepage pool reserves cleanly.
 	DefaultRAMNum = 5
 	DefaultRAMDen = 8
 	// MinHostRAMGiB is the smallest host DefaultGuestRAMGiB clears MinRAMGiB on.
-	// Derived, so it follows the fraction rather than drifting from it.
 	MinHostRAMGiB      = (MinRAMGiB*DefaultRAMDen + DefaultRAMNum - 1) / DefaultRAMNum
 	MinVCPUs           = 4
 	DefaultDiskSizeGiB = 100
-	// DefaultWidth and DefaultHeight are the default maximum guest resolution.
+	// ImagesDir is libvirt's default storage pool.
+	ImagesDir     = "/var/lib/libvirt/images"
 	DefaultWidth  = 3840
 	DefaultHeight = 2160
-	// MaxDimension is the maximum per-axis resolution.
-	MaxDimension = 16384
+	MaxDimension  = 16384
 
-	// ivshmemOverhead is the Looking Glass header size added to the two frames.
+	// bytesPerPixel is Looking Glass's BGRA frame format; lgFrames is its
+	// double buffer. ivshmemOverhead is the header added to the two frames.
+	bytesPerPixel   = 4
+	lgFrames        = 2
 	ivshmemOverhead = 10 * utils.BytesPerMiB
 
-	// KVMFRRAMDivisor caps the kvmfr buffer at 1/16 of host RAM. kvmfr vmallocs
-	// the whole region at load, where the /dev/shm file populates only the pages
-	// Looking Glass touches, so a 16384x16384 profile (4 GiB) must not reach
-	// modprobe.
+	// KVMFRRAMDivisor caps the kvmfr buffer at 1/16 of host RAM: kvmfr vmallocs
+	// the whole region at load, where a /dev/shm file populates only the pages
+	// Looking Glass touches.
 	KVMFRRAMDivisor = 16
 
 	// WideAddressWidthBits is the IOMMU address-width threshold for the maxphysaddr fix.
@@ -61,41 +58,30 @@ const (
 	MaxShareTag = 36
 )
 
-// shareDrives are the guest drive letters shares take, in order: counting down
-// from Z keeps clear of C and the install CDs.
+// shareDrives counts down from Z to keep clear of C and the install CDs.
 const shareDrives = "ZYXWVUTSRQPONMLKJIHGFE"
 
-// DefaultGuestRAMGiB is the default guest RAM in GiB for a host of hostBytes:
-// DefaultRAMNum/DefaultRAMDen (5/8) of host RAM, scaling with the host.
 func DefaultGuestRAMGiB(hostBytes uint64) int {
 	memGiB := int((hostBytes + utils.BytesPerGiB - 1) / utils.BytesPerGiB)
 	return memGiB * DefaultRAMNum / DefaultRAMDen
 }
 
-// Options are the user-tunable domain knobs; zero values pick host-derived defaults.
+// Options build a Profile: the registered Settings plus the inputs the caller
+// derives.
 type Options struct {
-	VMName        string
-	RAMGiB        int
-	DiskPath      string
-	DiskSizeGiB   int
-	Width, Height int
-	Win11ISO      string
-	VirtioISO     string
-	ProvisionISO  string
-	GuestUser     string
-	GuestPassword string
-	Locale        string
-	// ROMFile is the vBIOS path rendered as <rom file=>; ROMContent is the bytes
-	// installed there. Both empty renders <rom bar='off'/>.
-	ROMFile    string
+	VMName string
+	// Settings.Shares must arrive absolute and already checked to exist.
+	Settings Settings
+	// VirtioISO and ProvisionISO are cache paths, not knobs: moving them into
+	// Settings would make them sticky and journal them.
+	VirtioISO    string
+	ProvisionISO string
+	// ROMContent is the vBIOS installed at Settings.GPUROM; both empty renders
+	// <rom bar='off'/>.
 	ROMContent []byte
-	// KVMFR asks for the kvmfr backend, the caller having established the module
-	// is built for the running kernel. NewProfile still refuses a buffer too
+	// KVMFR asks for the kvmfr backend; NewProfile still refuses a buffer too
 	// large to vmalloc, so compare with Profile.KVMFR to detect the downgrade.
 	KVMFR bool
-	// Shares are absolute host directories to export over virtiofs, in
-	// drive-letter order; the caller has checked each exists and is a directory.
-	Shares []string
 }
 
 // Share is one host directory exported to the guest over virtiofs.
@@ -104,17 +90,16 @@ type Share struct {
 	Tag   string // virtiofs mount tag, and the volume name the guest shows
 	Drive string // guest drive letter, "Z:" form
 	// Service mounts this share. VirtioFsSvc holds one filesystem object and
-	// reads its tag from the command line, never its registry key, so it serves
-	// exactly one share and the rest need clones of it.
+	// reads its tag from the command line, never its registry key, so extra
+	// shares need clones of it.
 	Service string
 }
 
-// stockShareService is the service virtio-win installs; the first share reuses it.
+// stockShareService is the service virtio-win installs.
 const stockShareService = "VirtioFsSvc"
 
-// NewShares derives each share's tag, drive letter and guest service name from
-// the order given, so a converge that re-reads the registered directories
-// reproduces the same letters.
+// NewShares derives tag, drive letter and service name from the order given, so
+// a converge re-reading the registered directories reproduces the same letters.
 func NewShares(dirs []string) ([]Share, error) {
 	if len(dirs) > len(shareDrives) {
 		return nil, fmt.Errorf("%d shared directories is more than the %d drive letters a guest has for them",
@@ -148,7 +133,7 @@ func NewShares(dirs []string) ([]Share, error) {
 
 // shareTag builds a mount tag from a directory's base name, ASCII only: the tag
 // crosses the QEMU command line, the domain XML and a wide-string compare in the
-// guest service. Collisions take a numeric suffix.
+// guest service.
 func shareTag(dir string, taken map[string]bool) string {
 	var b strings.Builder
 	for _, r := range filepath.Base(dir) {
@@ -182,7 +167,6 @@ func truncateTag(tag string, max int) string {
 // BDF is a PCI address split into the hostdev XML address fields.
 type BDF struct{ Domain, Bus, Slot, Function string }
 
-// Pin maps one vCPU to one host CPU.
 type Pin struct{ VCPU, CPU int }
 
 // Profile is the fully computed domain description the template renders.
@@ -197,9 +181,8 @@ type Profile struct {
 	IOThreadPin     string
 	MaxPhysAddrBits int
 	IVSHMEMMiB      uint64
-	// KVMFR renders the buffer as a memory-backend-file on steps.KVMFRDevice
-	// instead of a <shmem> element: libvirt's <shmem> can only name a file under
-	// /dev/shm, so kvmfr has to go through <qemu:commandline>.
+	// KVMFR renders the buffer through <qemu:commandline>: libvirt's <shmem> can
+	// only name a file under /dev/shm.
 	KVMFR         bool
 	Width, Height int
 	DiskPath      string
@@ -207,9 +190,6 @@ type Profile struct {
 	Win11ISO      string
 	VirtioISO     string
 	ProvisionISO  string
-	GuestUser     string
-	GuestPassword string
-	Locale        string
 	SpiceSocket   string
 	GPU           BDF
 	Audio         *BDF
@@ -219,9 +199,10 @@ type Profile struct {
 	ROMContent    []byte
 	// Shares are the virtiofs exports; any at all force shared memory backing.
 	Shares []Share
+	// Settings is the record this profile was resolved from, defaults filled in.
+	Settings Settings
 }
 
-// NewProfile derives the domain profile from a detect result.
 func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	nvidia, err := r.GPUs.SoleNVIDIA()
 	if err != nil {
@@ -237,17 +218,17 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	if err := steps.CheckVMName(name); err != nil {
 		return Profile{}, err
 	}
+	s := o.Settings
 	p := Profile{
-		Name: name, DiskPath: o.DiskPath, DiskSizeGiB: o.DiskSizeGiB,
-		Win11ISO: o.Win11ISO, VirtioISO: o.VirtioISO, ProvisionISO: o.ProvisionISO,
-		GuestUser: o.GuestUser, GuestPassword: o.GuestPassword, Locale: o.Locale,
+		Name: name, DiskPath: s.Disk, DiskSizeGiB: s.DiskSizeGiB,
+		Win11ISO: s.Win11ISO, VirtioISO: o.VirtioISO, ProvisionISO: o.ProvisionISO,
 		SpiceSocket: steps.SpiceSocketPath(name),
-		ROMFile:     o.ROMFile, ROMContent: o.ROMContent,
+		ROMFile:     s.GPUROM, ROMContent: o.ROMContent,
 	}
-	if err := checkROM(o.ROMFile, o.ROMContent); err != nil {
+	if err := checkROM(s.GPUROM, o.ROMContent); err != nil {
 		return Profile{}, err
 	}
-	if p.Shares, err = NewShares(o.Shares); err != nil {
+	if p.Shares, err = NewShares(s.Shares); err != nil {
 		return Profile{}, err
 	}
 	if p.DiskSizeGiB == 0 {
@@ -257,7 +238,7 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		return Profile{}, fmt.Errorf("bad disk size %d GiB", p.DiskSizeGiB)
 	}
 	if p.DiskPath == "" {
-		p.DiskPath = "/var/lib/libvirt/images/" + name + ".qcow2"
+		p.DiskPath = filepath.Join(ImagesDir, name+".qcow2")
 	}
 	for _, path := range []string{p.DiskPath, p.Win11ISO, p.VirtioISO, p.ProvisionISO, p.SpiceSocket} {
 		if strings.ContainsAny(path, `<>&'"`) {
@@ -265,7 +246,7 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		}
 	}
 
-	ramGiB := o.RAMGiB
+	ramGiB := s.RAMGiB
 	if ramGiB == 0 {
 		ramGiB = DefaultGuestRAMGiB(r.Platform.MemTotalBytes)
 	}
@@ -273,7 +254,9 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		return Profile{}, fmt.Errorf("guest RAM %d GiB is below the 8 GiB minimum (host has %.1f GiB)",
 			ramGiB, utils.GiB(r.Platform.MemTotalBytes))
 	}
-	if r.Platform.MemTotalBytes > 0 && uint64(ramGiB)*utils.BytesPerGiB >= r.Platform.MemTotalBytes {
+	// Divide rather than multiply: uint64(ramGiB)*BytesPerGiB wraps to 0 at
+	// 2^34 GiB, and the wrapped --ram then sails past this check.
+	if r.Platform.MemTotalBytes > 0 && uint64(ramGiB) >= r.Platform.MemTotalBytes/utils.BytesPerGiB {
 		return Profile{}, fmt.Errorf("guest RAM %d GiB does not fit in host RAM %.1f GiB",
 			ramGiB, utils.GiB(r.Platform.MemTotalBytes))
 	}
@@ -292,15 +275,9 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 	p.EmulatorPin = hw.FormatCPUList(emu)
 	p.IOThreadPin = hw.FormatCPUList(iot)
 
-	w, h := o.Width, o.Height
-	if w == 0 && h == 0 {
-		w, h = DefaultWidth, DefaultHeight
-	}
-	if w <= 0 || h <= 0 {
-		return Profile{}, fmt.Errorf("bad resolution %dx%d", w, h)
-	}
-	if w > MaxDimension || h > MaxDimension {
-		return Profile{}, fmt.Errorf("resolution %dx%d exceeds the %d-pixel per-axis maximum", w, h, MaxDimension)
+	w, h, err := ParseResolution(s.Resolution)
+	if err != nil {
+		return Profile{}, err
 	}
 	p.Width, p.Height = w, h
 	p.IVSHMEMMiB = IVSHMEMMiB(w, h)
@@ -320,12 +297,19 @@ func NewProfile(r *hw.Result, o Options) (Profile, error) {
 		}
 		p.Audio = &b
 	}
+
+	// Defaults go back into the record: the next define re-reads them rather
+	// than re-deriving from a host that may have changed.
+	s.RAMGiB = ramGiB
+	s.Disk, s.DiskSizeGiB = p.DiskPath, p.DiskSizeGiB
+	s.Resolution = fmt.Sprintf("%dx%d", p.Width, p.Height)
+	p.Settings = s
 	return p, nil
 }
 
-// AssignableVCPUs is how many P-core threads reserve assigns to the guest.
-// The error is reserve's own: an unreadable topology and a genuinely small CPU
-// both yield no threads, and only reserve can tell preflight which it was.
+// AssignableVCPUs is how many P-core threads reserve assigns to the guest. The
+// error is reserve's own: an unreadable topology and a small CPU both yield no
+// threads, and only reserve can tell preflight which it was.
 func AssignableVCPUs(c hw.CPU) (int, error) {
 	vcpu, _, _, _, err := reserve(c)
 	if err != nil {
@@ -381,12 +365,12 @@ func KVMFRFits(sizeMiB, hostBytes uint64) bool {
 func (p Profile) IVSHMEMBytes() uint64 { return p.IVSHMEMMiB * utils.BytesPerMiB }
 
 // KVMFRDevice is the node the rendered XML names; a method so the template and
-// the hook cannot drift apart.
+// the hook cannot drift.
 func (Profile) KVMFRDevice() string { return steps.KVMFRDevice }
 
 // IVSHMEMMiB sizes the Looking Glass frame buffer in MiB for a w×h maximum.
 func IVSHMEMMiB(w, h int) uint64 {
-	need := uint64(w)*uint64(h)*4*2 + ivshmemOverhead
+	need := uint64(w)*uint64(h)*bytesPerPixel*lgFrames + ivshmemOverhead
 	size := uint64(1)
 	for size < need {
 		size <<= 1
@@ -394,11 +378,9 @@ func IVSHMEMMiB(w, h int) uint64 {
 	return size / utils.BytesPerMiB
 }
 
-// romMagic is the PCI expansion-ROM signature (bytes 0x55 0xAA).
+// romMagic is the PCI expansion-ROM signature.
 var romMagic = [2]byte{0x55, 0xaa}
 
-// checkROM validates a supplied vBIOS: the install path must be XML-safe and the
-// content must carry the PCI option-ROM signature.
 func checkROM(file string, content []byte) error {
 	if file == "" && len(content) == 0 {
 		return nil
@@ -415,7 +397,7 @@ func checkROM(file string, content []byte) error {
 	return nil
 }
 
-// ROMPath is the canonical vBIOS location a supplied --gpu-rom is installed to.
+// ROMPath is where a supplied --gpu-rom is installed.
 func ROMPath(name string) string { return steps.StateDirPath + "/vbios/" + name + ".rom" }
 
 // parseBDF splits "0000:01:00.0" into the hostdev address fields.
@@ -433,14 +415,12 @@ func parseBDF(addr string) (BDF, error) {
 	return BDF{Domain: parts[0], Bus: parts[1], Slot: parts[2], Function: fn}, nil
 }
 
-// xmlPath is where apply writes the domain XML.
 func xmlPath(name string) string { return steps.VMsDirPath + "/" + name + ".xml" }
 
 var domainTpl = template.Must(template.New("domain.xml").
 	Funcs(template.FuncMap{"xml": utils.XMLEscape}).
 	ParseFS(templateFS, "templates/domain.xml"))
 
-// render produces the domain XML for the profile.
 func render(p Profile) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := domainTpl.Execute(&buf, p); err != nil {
@@ -449,33 +429,9 @@ func render(p Profile) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// GuestConfig is the per-VM guest provisioning config carried in the domain XML metadata.
-type GuestConfig struct {
-	User       string `xml:"metadata>guest>user"`
-	Password   string `xml:"metadata>guest>password"`
-	Locale     string `xml:"metadata>guest>locale"`
-	Resolution string `xml:"metadata>guest>resolution"`
-	Win11ISO   string `xml:"metadata>guest>win11-iso"`
-	GPURom     string `xml:"metadata>guest>gpu-rom"`
-	// Shares are the registered virtiofs directories, in drive-letter order.
-	// Tags and letters are not stored — NewShares derives them from this order.
-	Shares []string `xml:"metadata>guest>share"`
-}
-
-// ReadGuestConfig loads the guest config from the VM's registry XML under root.
-func ReadGuestConfig(root, name string) GuestConfig {
-	var g GuestConfig
-	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
-	if err != nil {
-		return g
-	}
-	_ = xml.Unmarshal(b, &g)
-	return g
-}
-
 // ReadMemoryMiB returns the guest RAM in MiB from the VM's registry XML under
 // root. The template always renders unit='MiB'; any other unit is refused so a
-// caller sizing the hugepage pool can never mis-scale it.
+// caller sizing the hugepage pool cannot mis-scale it.
 func ReadMemoryMiB(root, name string) (uint64, error) {
 	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
 	if err != nil {
@@ -501,10 +457,9 @@ func ReadMemoryMiB(root, name string) (uint64, error) {
 }
 
 // KVMFRSizeMiB returns the buffer a VM's registry XML asks kvmfr for, and
-// whether that VM uses the kvmfr backend at all. The hook needs both: load the
-// module before qemu opens the device, and only for domains that name it.
-// Root-only — the registry copy is 0600 because it carries the guest password;
-// an unprivileged caller takes KVMFRSizeXML over libvirt's copy.
+// whether that VM uses the kvmfr backend at all. Root-only — the registry copy
+// is 0600 because it carries the guest password; an unprivileged caller takes
+// KVMFRSizeXML over libvirt's copy.
 func KVMFRSizeMiB(root, name string) (uint64, bool) {
 	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
 	if err != nil {
@@ -535,8 +490,8 @@ func KVMFRSizeXML(b []byte) (uint64, bool) {
 		if err != nil {
 			return 0, false
 		}
-		// Round up, since a partial MiB would size the module below the backend,
-		// but divide before adding: size+BytesPerMiB-1 wraps within a MiB of MaxUint64.
+		// Round up, or the module sizes below the backend; divide before adding,
+		// since size+BytesPerMiB-1 wraps within a MiB of MaxUint64.
 		n := size / utils.BytesPerMiB
 		if size%utils.BytesPerMiB != 0 {
 			n++
@@ -553,9 +508,8 @@ func KVMFRSizeXML(b []byte) (uint64, bool) {
 // backendSizeRe pulls the byte count out of the rendered memory-backend-file.
 var backendSizeRe = regexp.MustCompile(`"size":(\d+)`)
 
-// ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to guest
-// threads (vcpu, emulator, iothread) — the complement of the host's housekeeping
-// cores.
+// ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to
+// guest threads (vcpu, emulator, iothread).
 func ReadPinnedCPUs(root, name string) ([]int, error) {
 	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
 	if err != nil {
@@ -605,7 +559,7 @@ func ReadPinnedCPUs(root, name string) ([]int, error) {
 	return out, nil
 }
 
-// DomainXMLID and the other ID funcs return journal step IDs for a VM's domain steps.
+// DomainXMLID and the other ID funcs return journal step IDs.
 func DomainXMLID(vm string) string      { return "vm-domain-xml-" + vm }
 func DiskImageID(vm string) string      { return "vm-disk-image-" + vm }
 func DiskFcontextID(vm string) string   { return "vm-disk-fcontext-" + vm }
@@ -619,18 +573,18 @@ func DefineStepID(vm string) string     { return "vm-define-" + vm }
 type Stage string
 
 const (
-	// StageInstall is the install stage: emulated display + installer cdroms.
+	// StageInstall renders the emulated display and the installer cdroms.
 	StageInstall Stage = "install"
-	// StageNoVideo is the post-provisioning stage: no emulated display.
+	// StageNoVideo drops the emulated display.
 	StageNoVideo Stage = "novideo"
-	// StageFinal is the verified stage: installer cdroms removed.
+	// StageFinal drops the installer cdroms too.
 	StageFinal Stage = "final"
 )
 
 // Stages lists the stages in pipeline order.
 var Stages = []Stage{StageInstall, StageNoVideo, StageFinal}
 
-// CurrentStage reads the domain's stage back from its registry XML under root.
+// CurrentStage reads the stage back from the domain's registry XML under root.
 func CurrentStage(root, name string) Stage {
 	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
 	if err != nil {
@@ -647,7 +601,6 @@ func CurrentStage(root, name string) Stage {
 	}
 }
 
-// ApplyStage folds a pipeline stage into the profile.
 func (p *Profile) ApplyStage(s Stage) {
 	p.VideoNone = s != StageInstall
 	if s == StageFinal {
@@ -655,7 +608,7 @@ func (p *Profile) ApplyStage(s Stage) {
 	}
 }
 
-// JournaledDisk reports the disk image path and size from the vm's journaled create-volume op.
+// JournaledDisk reports the disk path and size from the vm's create-volume op.
 func JournaledDisk(m *steps.Manifest, vm string) (string, int, bool) {
 	args := m.OpArgs(DiskImageID(vm))
 	size, err := strconv.Atoi(args["size-gib"])
@@ -666,7 +619,7 @@ func JournaledDisk(m *steps.Manifest, vm string) (string, int, bool) {
 }
 
 // imageLabelSteps is the semanage-fcontext + restorecon pair every labeled
-// image file needs — one builder so the disk and ROM pairs cannot drift.
+// image file needs.
 func imageLabelSteps(fcID, rcID, path string) []steps.Step {
 	return []steps.Step{
 		{
@@ -681,8 +634,7 @@ func imageLabelSteps(fcID, rcID, path string) []steps.Step {
 	}
 }
 
-// Steps assembles the `vm define` step list: domain XML, disk image, SELinux
-// label, an optional vBIOS install, then define.
+// Steps assembles the `vm define` step list.
 func Steps(p Profile) ([]steps.Step, error) {
 	xml, err := render(p)
 	if err != nil {

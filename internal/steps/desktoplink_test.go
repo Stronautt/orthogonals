@@ -33,9 +33,8 @@ func noSessionBus(t *testing.T) {
 	t.Cleanup(func() { markTrusted = old })
 }
 
-// TestDesktopLinkSucceedsWithoutASession is the regression guard: the shortcut
-// must be created and the step must succeed even when the trust flag cannot be
-// set, because a defined domain and a created disk already exist by then.
+// The step must succeed when only the trust flag is unavailable: a defined
+// domain and a created disk already exist by the time it runs.
 func TestDesktopLinkSucceedsWithoutASession(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()
@@ -55,8 +54,8 @@ func TestDesktopLinkSucceedsWithoutASession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shortcut was not created: %v\n%s", err, out.String())
 	}
-	// Unprefixed on purpose: the shortcut has to resolve on the host, not
-	// inside the test's --root tree.
+	// Unprefixed on purpose: the shortcut resolves on the host, not inside the
+	// test's --root tree.
 	if target != entry {
 		t.Errorf("shortcut points at %q, want %q", target, entry)
 	}
@@ -65,8 +64,8 @@ func TestDesktopLinkSucceedsWithoutASession(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkIsIdempotent covers the re-run the engine performs when the
-// journaled shortcut has gone missing (Step.CreatesPath).
+// Covers the re-run the engine performs when the journaled shortcut has gone
+// missing (Step.CreatesPath).
 func TestDesktopLinkIsIdempotent(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()
@@ -87,9 +86,8 @@ func TestDesktopLinkIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkFailsLoudlyOnRealBreakage asserts the tolerance is scoped to
-// the trust flag: if the shortcut itself cannot be created the op must fail, or
-// a broken shortcut would pass silently.
+// The tolerance is scoped to the trust flag: a shortcut that cannot be created
+// must fail the op, not pass silently.
 func TestDesktopLinkFailsLoudlyOnRealBreakage(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()
@@ -113,9 +111,9 @@ func TestDesktopLinkFailsLoudlyOnRealBreakage(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkRefusesASymlinkedDesktop: the user owns the shortcut
-// directory and can replace it with a symlink. os.Chown follows one, handing
-// them a root-owned directory — the op must refuse before it writes anything.
+// The user owns the shortcut directory and can replace it with a symlink.
+// os.Chown follows one, handing them a root-owned directory — the op must
+// refuse before it writes anything.
 func TestDesktopLinkRefusesASymlinkedDesktop(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()
@@ -150,8 +148,7 @@ func TestDesktopLinkRefusesASymlinkedDesktop(t *testing.T) {
 	}
 }
 
-// TestLookupUserNamesTheUser keeps the on-host failure legible; opDesktopLink
-// returns this error verbatim when root is "".
+// opDesktopLink returns this error verbatim when root is "".
 func TestLookupUserNamesTheUser(t *testing.T) {
 	_, _, _, err := LookupUser("no-such-user-for-orthogonals")
 	if err == nil {
@@ -162,9 +159,8 @@ func TestLookupUserNamesTheUser(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkToleratesAnUnknownUserUnderRoot lets synthetic --root trees
-// name accounts the machine does not have: the shortcut is still created, and
-// the skipped ownership is reported rather than swallowed.
+// Synthetic --root trees may name accounts the machine does not have: the
+// shortcut is still created and the skipped ownership reported, not swallowed.
 func TestDesktopLinkToleratesAnUnknownUserUnderRoot(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()
@@ -186,8 +182,7 @@ func TestDesktopLinkToleratesAnUnknownUserUnderRoot(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkNeedsItsArguments guards the op contract undo replays from a
-// fresh process.
+// The op contract undo replays from a fresh process.
 func TestDesktopLinkNeedsItsArguments(t *testing.T) {
 	for _, missing := range []string{"user", "entry", "link"} {
 		args := map[string]string{
@@ -202,8 +197,8 @@ func TestDesktopLinkNeedsItsArguments(t *testing.T) {
 	}
 }
 
-// TestMarkTrustedReportsAMissingBus pins the real (unswapped) helper: with no
-// session bus for this uid it must report and return, never fail.
+// The real (unswapped) helper: with no session bus it must report and return,
+// never fail.
 func TestMarkTrustedReportsAMissingBus(t *testing.T) {
 	var out strings.Builder
 	// A uid that cannot have a runtime directory.
@@ -213,8 +208,6 @@ func TestMarkTrustedReportsAMissingBus(t *testing.T) {
 	}
 }
 
-// TestDesktopLinkReplacesAStaleShortcut: an existing link is replaced, not
-// left pointing elsewhere.
 func TestDesktopLinkReplacesAStaleShortcut(t *testing.T) {
 	noSessionBus(t)
 	root := t.TempDir()

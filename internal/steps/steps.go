@@ -19,7 +19,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// Kind selects the step behavior.
 type Kind string
 
 const (
@@ -51,8 +50,8 @@ type Step struct {
 	Input []byte
 	// Recheck re-runs a journaled step the host can lose behind orthogonals'
 	// back — a kernel update regenerates the BLS entries, dropping the kernel
-	// args apply added. The caller sets it from live state, so the step must be
-	// idempotent and the journal is no proof its effect is still there.
+	// args apply added. Set from live state by the caller, so the step must be
+	// idempotent.
 	Recheck bool
 
 	// KindEnableUnit
@@ -89,7 +88,6 @@ func (e *Engine) newOpClients() *OpClients {
 	return oc
 }
 
-// skipUnderRoot reports a dialing step under --root with no injected clients.
 func (e *Engine) skipUnderRoot(oc *OpClients) bool { return e.Root != "" && !oc.injected }
 
 // Apply runs steps in order, journaling each before its mutation lands.
@@ -127,9 +125,9 @@ func (e *Engine) applyOne(m *Manifest, s Step, oc *OpClients) error {
 	if s.ID == "" {
 		return errors.New("step has no id")
 	}
-	// A step that changed kind between releases diverges like any other, but the
-	// per-kind checks below read the field their own kind uses and would print an
-	// empty "was:" — the record holds the other kind's fields.
+	// Checked before the per-kind checks below: those read the field their own
+	// kind uses and would print an empty "was:" for a record holding the other
+	// kind's fields.
 	if rec := m.find(s.ID); rec != nil && rec.Kind != s.Kind {
 		return fmt.Errorf("journaled as %s, now %s — %s\nwas: %s\nnow: %s",
 			rec.Kind, s.Kind, undoFirst(s.ID), recordLine(rec), stepLine(s))
@@ -211,11 +209,10 @@ func (e *Engine) applyOp(m *Manifest, s Step, oc *OpClients) error {
 	return e.rollbackOnError(m, s.ID, entry.fn(oc, e.Root, e.Out, s.Args))
 }
 
-// journaledStepState decides what to do with a step already in the manifest:
-// re-run it because its declared input drifted, re-run it because the product
-// it creates has gone missing, or leave it alone. Shared by op and run_cmd so
-// the two kinds cannot drift apart. CreatesPath resolves against --root:
-// statting the bare path would consult the real filesystem instead.
+// journaledStepState decides whether a step already in the manifest re-runs.
+// Shared by op and run_cmd so the two kinds cannot drift apart. CreatesPath
+// resolves against --root: statting the bare path would consult the real
+// filesystem instead.
 func (e *Engine) journaledStepState(s Step, rec *Record) (inputDrift, done bool) {
 	switch {
 	case len(s.Input) > 0 && rec.InputSHA256 != utils.SHA256Hex(s.Input):
@@ -243,9 +240,8 @@ func (e *Engine) journal(m *Manifest, r Record) error {
 	return m.save(e.Root)
 }
 
-// undoFirst is the shared refusal suffix for a journaled step that no longer
-// matches the current settings — one wording, so a change cannot leave a stale
-// copy, and the id so the remedy is a command, not a search.
+// undoFirst is the shared refusal suffix — one wording, so a change cannot
+// leave a stale copy behind.
 func undoFirst(id string) string {
 	return "undo first: `orthogonals undo --step " + id + " --yes` for this step, `orthogonals undo` or `vm undefine` for the whole set"
 }
@@ -335,10 +331,9 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	return nil
 }
 
-// writeFile lands content at full, creating parent dirs. Temp-and-rename in
-// the target dir: a crash mid-write must never leave a torn config (a
-// half-written qemu shim breaks every GPU handover), and a torn file would
-// also fail undo's changed-since-apply hash gate.
+// writeFile lands content at full. Atomic: a torn config breaks every GPU
+// handover (a half-written qemu shim) and fails undo's changed-since-apply
+// hash gate.
 func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restorecon bool) error {
 	if err := utils.WriteAtomic(full, content, mode); err != nil {
 		return err
@@ -428,7 +423,6 @@ func (e *Engine) applyEnableUnit(m *Manifest, s Step, oc *OpClients) error {
 	return e.rollbackOnError(m, s.ID, setUnit())
 }
 
-// runCmd echoes argv to out and runs it.
 func runCmd(out io.Writer, argv ...string) error {
 	fmt.Fprintf(out, "run: %s\n", strings.Join(argv, " "))
 	b, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
@@ -438,7 +432,9 @@ func runCmd(out io.Writer, argv ...string) error {
 	return nil
 }
 
-// UnitEnabled reports whether unit is enabled under root.
+// UnitEnabled globs the *.wants links, and with root == "" falls through to
+// systemd itself — so a unit test must pass a root, never dial the developer's
+// own daemon.
 func UnitEnabled(root, unit string) bool {
 	wants, _ := filepath.Glob(filepath.Join(root, "/etc/systemd/system/*.wants/", unit))
 	if len(wants) > 0 {
@@ -452,7 +448,7 @@ func UnitEnabled(root, unit string) bool {
 	return false
 }
 
-// unitState reports the unit's enablement tri-state.
+// unitState reports enabled, disabled, or unknown.
 func (e *Engine) unitState(oc *OpClients, unit string) string {
 	if e.skipUnderRoot(oc) {
 		if UnitEnabled(e.Root, unit) {

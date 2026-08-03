@@ -49,11 +49,16 @@ func runMedia(cfg *Config, o mediaOpts, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	meta := domain.ReadGuestConfig(cfg.Root, name)
-	user := cmp.Or(meta.User, media.DefaultGuestUser)
-	pass := cmp.Or(meta.Password, media.DefaultGuestPassword)
-	loc := meta.Locale
-	w, h, err := parseResolution(meta.Resolution)
+	// Not tolerated: an unreadable registry here bakes the default credentials
+	// into the ISO instead of the registered ones.
+	s, err := domain.ReadSettings(cfg.Root, name)
+	if err != nil {
+		return err
+	}
+	user := cmp.Or(s.GuestUser, media.DefaultGuestUser)
+	pass := cmp.Or(s.GuestPassword, media.DefaultGuestPassword)
+	loc := s.Locale
+	w, h, err := domain.ParseResolution(s.Resolution)
 	if err != nil {
 		return err
 	}
@@ -80,7 +85,7 @@ func runMedia(cfg *Config, o mediaOpts, stdout, stderr io.Writer) error {
 	if loc == "" {
 		loc = info.DefaultLanguage
 	}
-	shares, err := domain.NewShares(meta.Shares)
+	shares, err := domain.NewShares(s.Shares)
 	if err != nil {
 		return err
 	}

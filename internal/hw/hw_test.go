@@ -138,9 +138,6 @@ func TestSummaryReference(t *testing.T) {
 	}
 }
 
-// TestKVMFRAvailable covers the module-present test the domain render keys on:
-// modules.dep rather than /sys/module, since up crosses a reboot and nothing is
-// loaded on the second leg.
 func TestKVMFRAvailable(t *testing.T) {
 	const release = "7.1.4-204.fc44.x86_64"
 	cases := []struct {

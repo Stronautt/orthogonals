@@ -15,7 +15,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// newUpCmd runs the whole pipeline as a persisted state machine.
 func newUpCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
 	var o vmOpts
 	var binding, nvidiaInstaller string
@@ -61,14 +60,21 @@ func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stder
 		st = orchestrate.StateFresh
 	}
 
-	applyO := applyOpts{binding: binding, user: o.user}
+	// The same merge vm define does, so apply's --user and the name in the hint
+	// are the ones the define will register rather than a second guess at them.
+	reg, err := domain.ReadSettings(cfg.Root, name)
+	if err != nil {
+		return err
+	}
+	merged := hostDefaults(o.Over(reg), name)
+	applyO := applyOpts{binding: binding, user: merged.User}
 	vmO := o
 	vmO.vmName = name
 	vmO.stage = ""
 	vmO.purge = false
 
 	launchHint := fmt.Sprintf("launch with `orthogonals vm launch --vm-name %s` or the %q desktop entry",
-		name, resolveDisplayName(cfg.Root, name, o.displayName))
+		name, merged.DisplayName)
 
 	if defined && domain.CurrentStage(cfg.Root, name) == domain.StageFinal {
 		fmt.Fprintf(stdout, "up: setup complete — converging host and VM %s to this binary's settings\n", name)
@@ -112,7 +118,7 @@ func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stder
 		fmt.Fprintln(stdout, "dry run — re-run with --yes to run the pipeline")
 		return nil
 	}
-	if o.win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
+	if o.Win11ISO == "" && st.Before(orchestrate.StateMediaBuilt) {
 		fmt.Fprintln(stderr, "usage: orthogonals up --yes --win11-iso <path> [flags]")
 		return exitCode(2)
 	}
@@ -124,7 +130,7 @@ func runUp(cfg *Config, o vmOpts, binding, nvidiaInstaller string, stdout, stder
 			return err
 		}
 	}
-	mediaO := mediaOpts{win11ISO: o.win11ISO, vmName: name, nvidiaInstaller: nvidiaInstaller}
+	mediaO := mediaOpts{win11ISO: o.Win11ISO, vmName: name, nvidiaInstaller: nvidiaInstaller}
 
 	c := virtClient()
 	defer func() { _ = c.Close() }()

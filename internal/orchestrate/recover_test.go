@@ -21,7 +21,6 @@ func fastRecover(t *testing.T) {
 	t.Cleanup(func() { hooks.RemoveSettle, hooks.RescanSettle = sr, sx })
 }
 
-// recordUnloads swaps hooks.DeleteModule for a recorder.
 func recordUnloads(t *testing.T) *[]string {
 	t.Helper()
 	var got []string

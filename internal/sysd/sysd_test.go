@@ -9,9 +9,8 @@ import (
 	godbus "github.com/godbus/dbus/v5"
 )
 
-// TestIsNoSuchUnit pins what gets swallowed. StopUnit and ResetFailedUnit
-// return nil when this says true, so a false positive makes the qemu hook
-// report that it stopped the sleep inhibitor when it did not.
+// StopUnit and ResetFailedUnit return nil when this says true, so a false
+// positive makes the qemu hook report a sleep inhibitor it never stopped.
 func TestIsNoSuchUnit(t *testing.T) {
 	tests := []struct {
 		name string

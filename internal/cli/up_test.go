@@ -88,7 +88,6 @@ func TestUpRequiresISOBeforeMediaStage(t *testing.T) {
 	}
 }
 
-// up stops cleanly at the reboot boundary after applying host config.
 func TestUpStopsAtRebootBoundary(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -107,7 +106,6 @@ func TestUpStopsAtRebootBoundary(t *testing.T) {
 	}
 }
 
-// a resume whose boot verification still fails errors at the bundle.
 func TestUpResumeFailedBootVerification(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -125,7 +123,6 @@ func TestUpResumeFailedBootVerification(t *testing.T) {
 	}
 }
 
-// resume from the installing state polls provisioning done, then verifies.
 func TestUpResumesInstallAndVerifies(t *testing.T) {
 	root := hwtest.ReferenceRoot(t)
 	dir := fakeVMPath(t)
@@ -168,7 +165,6 @@ func TestUpResumesInstallAndVerifies(t *testing.T) {
 	}
 }
 
-// a reboot-resume without --vm-name recovers the persisted name.
 func TestUpResumeRecoversAppliedVMName(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -187,7 +183,6 @@ func TestUpResumeRecoversAppliedVMName(t *testing.T) {
 	}
 }
 
-// a verified pipeline plus an undefined --vm-name restarts the pipeline.
 func TestUpNewVMRestartsPipeline(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
@@ -216,7 +211,6 @@ func TestUpNewVMRestartsPipeline(t *testing.T) {
 	}
 }
 
-// a completed VM converges host artifacts and the domain to the current binary.
 func TestUpCompletedInstallConverges(t *testing.T) {
 	t.Setenv("SUDO_USER", "testuser")
 	dir := fakeBinDir(t, append(append([]string{}, vmFakeBins...), applyFakeBins...))
@@ -287,7 +281,6 @@ func TestUpCompletedInstallConverges(t *testing.T) {
 	}
 }
 
-// up forwards the VM sizing flags verbatim to the vm stage.
 func TestUpForwardsVMSizingFlags(t *testing.T) {
 	fakeVMPath(t)
 	root := hwtest.ReferenceRoot(t)

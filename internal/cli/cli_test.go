@@ -20,9 +20,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-// TestMain swaps the libvirt and systemd seams for package-wide fakes. The
-// swaps precede testscript.Main so a script's command subprocess inherits
-// them; Main exits the process itself.
+// The seam swaps precede testscript.Main so a script's command subprocess
+// inherits them; Main exits the process itself.
 func TestMain(m *testing.M) {
 	newVirt = func() virt.Client { return &virttest.Fake{} }
 	newSysd = func() sysd.Client { return &sysdtest.Fake{} }
@@ -34,7 +33,6 @@ func TestMain(m *testing.M) {
 	})
 }
 
-// fakeVirt routes the package's libvirt seam at the given fake for one test.
 func fakeVirt(t *testing.T, f *virttest.Fake) *virttest.Fake {
 	t.Helper()
 	old := newVirt
@@ -43,7 +41,6 @@ func fakeVirt(t *testing.T, f *virttest.Fake) *virttest.Fake {
 	return f
 }
 
-// fakeSysd routes the package's systemd seam at the given fake for one test.
 func fakeSysd(t *testing.T, f *sysdtest.Fake) *sysdtest.Fake {
 	t.Helper()
 	old := newSysd
@@ -132,9 +129,9 @@ func TestNoCommand(t *testing.T) {
 	}
 }
 
-// TestNoCommandIgnoresTheProcessArguments pins Run's nil-args guard: cobra
-// falls back to os.Args[1:] when SetArgs is handed nil, so a caller asking for
-// "no arguments" would dispatch on whatever the process was started with.
+// cobra falls back to os.Args[1:] when SetArgs is handed nil, so a caller
+// asking for "no arguments" would dispatch on whatever the process was started
+// with.
 func TestNoCommandIgnoresTheProcessArguments(t *testing.T) {
 	old := os.Args
 	os.Args = []string{"orthogonals", "--definitely-not-a-flag"}

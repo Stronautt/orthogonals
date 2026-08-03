@@ -10,14 +10,12 @@ import (
 	"testing"
 )
 
-// Dev describes one fixture PCI device.
 type Dev struct {
 	Addr, Vendor, Device, Class, Driver string
 	Group                               int
 	Reset                               bool
 }
 
-// file is one fixture path and its content.
 type file struct{ rel, content string }
 
 // sharedHostFiles are the fixture files identical across every synthetic host.
@@ -40,7 +38,7 @@ func sharedHostFiles(cpuVendorID string) []file {
 		{"boot/loader/entries/fedora-6.14.0.conf",
 			"title Fedora Linux (6.14.0) 44\nversion 6.14.0\nlinux /vmlinuz-6.14.0\ninitrd /initramfs-6.14.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
 		// kernel-install copies this into the entry it generates for a new
-		// kernel, so kernel args apply does not write here last only until the
+		// kernel, so an arg apply leaves out of this file is dropped by the
 		// next kernel update.
 		{"etc/kernel/cmdline", "root=UUID=aaaa ro rhgb quiet\n"},
 		// Fedora 44's shipped qemu.conf: the cgroup_device_acl block commented
@@ -71,8 +69,6 @@ const (
 // secureBootOff is the SecureBoot efivar with the flag byte cleared.
 const secureBootOff = "\x06\x00\x00\x00\x00"
 
-// intelDesktop is the VT-d, ACPI, and chassis trio every Intel desktop fixture
-// shares; cap selects the IOMMU address width.
 func intelDesktop(cap string) []file {
 	return []file{
 		{"sys/class/iommu/dmar0/intel-iommu/cap", cap},
@@ -81,7 +77,6 @@ func intelDesktop(cap string) []file {
 	}
 }
 
-// referenceGPUs is the PoC desktop's iGPU + NVIDIA dGPU + HDMI audio trio.
 func referenceGPUs() []Dev {
 	return []Dev{
 		{Addr: "0000:00:02.0", Vendor: "0x8086", Device: "0xa780", Class: "0x030000", Driver: "i915", Group: 0, Reset: true},
@@ -91,7 +86,6 @@ func referenceGPUs() []Dev {
 	}
 }
 
-// referenceDisplay is the reference desktop's boot_vga and DRM connector layout.
 func referenceDisplay() []file {
 	return []file{
 		{"sys/bus/pci/devices/0000:00:02.0/boot_vga", "1\n"},
@@ -103,7 +97,6 @@ func referenceDisplay() []file {
 	}
 }
 
-// buildHost writes the PCI devices, shared files, and host-specific files under root.
 func buildHost(root, cpuVendorID string, devs []Dev, specific []file) error {
 	for _, d := range devs {
 		if err := addPCI(root, d); err != nil {
@@ -118,13 +111,13 @@ func buildHost(root, cpuVendorID string, devs []Dev, specific []file) error {
 	return nil
 }
 
-// BuildReferenceRoot writes the PoC reference desktop (i5-13600K + RTX 3080) under root.
+// BuildReferenceRoot is the PoC reference desktop: i5-13600K + RTX 3080.
 func BuildReferenceRoot(root string) error {
 	return buildHost(root, "GenuineIntel", referenceGPUs(),
 		append(intelDesktop(capMGAW39), referenceDisplay()...))
 }
 
-// BuildLaptopRoot writes an Intel + NVIDIA notebook: eDP-1 on the iGPU, a MUXless
+// BuildLaptopRoot is an Intel + NVIDIA notebook: eDP-1 on the iGPU, a MUXless
 // (3D-controller) dGPU runtime-suspended.
 func BuildLaptopRoot(root string) error {
 	return buildHost(root, "GenuineIntel", []Dev{
@@ -147,8 +140,8 @@ func BuildLaptopRoot(root string) error {
 	})
 }
 
-// BuildLaptopAMDRoot writes an AMD APU + NVIDIA notebook: AMD-Vi/IVRS IOMMU, an
-// AMD iGPU on a high bus, a MUXed dGPU runtime-suspended.
+// BuildLaptopAMDRoot is an AMD APU + NVIDIA notebook: AMD-Vi/IVRS IOMMU, an AMD
+// iGPU on a high bus, a MUXed dGPU runtime-suspended.
 func BuildLaptopAMDRoot(root string) error {
 	return buildHost(root, "AuthenticAMD", []Dev{
 		{Addr: "0000:05:00.0", Vendor: "0x1002", Device: "0x1638", Class: "0x030000", Driver: "amdgpu", Group: 0, Reset: true},
@@ -170,8 +163,8 @@ func BuildLaptopAMDRoot(root string) error {
 	})
 }
 
-// BuildDirtyGroupRoot writes a reference desktop whose dGPU shares its IOMMU
-// group with an unrelated NIC — the whole-group rule preflight must refuse.
+// BuildDirtyGroupRoot shares the dGPU's IOMMU group with an unrelated NIC — the
+// whole-group rule preflight must refuse.
 func BuildDirtyGroupRoot(root string) error {
 	devs := append(referenceGPUs(),
 		Dev{Addr: "0000:02:00.0", Vendor: "0x8086", Device: "0x15f3", Class: "0x020000", Driver: "igc", Group: 1})
@@ -179,8 +172,8 @@ func BuildDirtyGroupRoot(root string) error {
 		append(intelDesktop(capMGAW39), referenceDisplay()...))
 }
 
-// BuildNoIGPURoot writes a host whose only GPU is the NVIDIA dGPU: it cannot
-// both drive the desktop and be passed through.
+// BuildNoIGPURoot's only GPU is the NVIDIA dGPU: it cannot both drive the
+// desktop and be passed through.
 func BuildNoIGPURoot(root string) error {
 	return buildHost(root, "GenuineIntel", []Dev{
 		{Addr: "0000:01:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 1, Reset: true},
@@ -191,8 +184,8 @@ func BuildNoIGPURoot(root string) error {
 	))
 }
 
-// BuildDualNVIDIARoot writes an iGPU plus two identical RTX 3080s: static
-// vfio-pci.ids binding cannot tell them apart.
+// BuildDualNVIDIARoot has two identical RTX 3080s: static vfio-pci.ids binding
+// cannot tell them apart.
 func BuildDualNVIDIARoot(root string) error {
 	devs := append(referenceGPUs(),
 		Dev{Addr: "0000:02:00.0", Vendor: "0x10de", Device: "0x2206", Class: "0x030000", Driver: "nvidia", Group: 2, Reset: true},
@@ -203,8 +196,8 @@ func BuildDualNVIDIARoot(root string) error {
 				file{"sys/bus/pci/devices/0000:02:00.0/boot_vga", "0\n"})...))
 }
 
-// BuildForeignVFIORoot writes a reference desktop carrying vfio configuration
-// orthogonals did not write and has no manifest to claim.
+// BuildForeignVFIORoot carries vfio configuration orthogonals did not write and
+// has no manifest to claim.
 func BuildForeignVFIORoot(root string) error {
 	return buildHost(root, "GenuineIntel", referenceGPUs(),
 		append(intelDesktop(capMGAW39),
@@ -212,15 +205,15 @@ func BuildForeignVFIORoot(root string) error {
 				file{"etc/modprobe.d/vfio-preexisting.conf", "options vfio-pci ids=10de:2206,10de:1aef\n"})...))
 }
 
-// BuildNoAudioRoot writes a reference desktop whose dGPU has no HDMI audio
-// function, so the passthrough set is the GPU alone.
+// BuildNoAudioRoot's dGPU has no HDMI audio function, so the passthrough set is
+// the GPU alone.
 func BuildNoAudioRoot(root string) error {
 	return buildHost(root, "GenuineIntel", referenceGPUs()[:2],
 		append(intelDesktop(capMGAW39), referenceDisplay()...))
 }
 
-// BuildNoResetRoot writes a reference desktop whose dGPU exposes no sysfs reset
-// file, so it cannot be handed back and forth.
+// BuildNoResetRoot's dGPU exposes no sysfs reset file, so it cannot be handed
+// back and forth.
 func BuildNoResetRoot(root string) error {
 	devs := referenceGPUs()
 	devs[1].Reset = false
@@ -228,8 +221,7 @@ func BuildNoResetRoot(root string) error {
 		append(intelDesktop(capMGAW39), referenceDisplay()...))
 }
 
-// BuildWideIOMMURoot writes a 48-bit-IOMMU desktop with Secure Boot off and the
-// default network up, clearing the address-width, secure-boot, and
+// BuildWideIOMMURoot clears the address-width, secure-boot, and
 // default-network warnings the reference host raises.
 func BuildWideIOMMURoot(root string) error {
 	return buildHost(root, "GenuineIntel", referenceGPUs(),
@@ -239,8 +231,8 @@ func BuildWideIOMMURoot(root string) error {
 				file{"var/run/libvirt/network/default.xml", "<network><name>default</name></network>\n"})...))
 }
 
-// BuildBridgeRoot writes a reference desktop whose dGPU sits behind a PCIe
-// bridge sharing its IOMMU group — a bridge is not a stranger.
+// BuildBridgeRoot's dGPU sits behind a PCIe bridge sharing its IOMMU group — a
+// bridge is not a stranger.
 func BuildBridgeRoot(root string) error {
 	devs := append(referenceGPUs(),
 		Dev{Addr: "0000:00:01.0", Vendor: "0x8086", Device: "0xa70d", Class: "0x060400", Driver: "pcieport", Group: 1})
@@ -264,7 +256,7 @@ var Roots = map[string]func(string) error{
 	"bridge":       BuildBridgeRoot,
 }
 
-// RootNames lists every fixture in Roots, sorted.
+// RootNames is sorted.
 func RootNames() []string {
 	names := make([]string, 0, len(Roots))
 	for n := range Roots {
@@ -274,7 +266,6 @@ func RootNames() []string {
 	return names
 }
 
-// ReferenceRoot is BuildReferenceRoot in a temp dir.
 func ReferenceRoot(t testing.TB) string {
 	t.Helper()
 	root := t.TempDir()
@@ -284,7 +275,6 @@ func ReferenceRoot(t testing.TB) string {
 	return root
 }
 
-// WriteFile writes root/rel, creating parent directories.
 func WriteFile(t testing.TB, root, rel, content string) {
 	t.Helper()
 	if err := writeFile(root, rel, content); err != nil {
@@ -292,7 +282,6 @@ func WriteFile(t testing.TB, root, rel, content string) {
 	}
 }
 
-// Symlink creates root/rel pointing at target.
 func Symlink(t testing.TB, root, rel, target string) {
 	t.Helper()
 	if err := symlink(root, rel, target); err != nil {
@@ -300,7 +289,6 @@ func Symlink(t testing.TB, root, rel, target string) {
 	}
 }
 
-// AddPCI writes one device under root/sys/bus/pci/devices.
 func AddPCI(t testing.TB, root string, d Dev) {
 	t.Helper()
 	if err := addPCI(root, d); err != nil {
@@ -308,7 +296,6 @@ func AddPCI(t testing.TB, root string, d Dev) {
 	}
 }
 
-// FakeTools creates an executable stub per name and returns the dir.
 func FakeTools(t testing.TB, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -90,7 +90,6 @@ func staticBinding(root string) bool {
 	return err == nil && strings.Contains(args, hostcfg.VFIOIDsPrefix)
 }
 
-// agentPing waits for the qemu guest agent.
 func agentPing(c virt.Client, vm string) error {
 	var err error
 	for range pingTries {
@@ -102,7 +101,6 @@ func agentPing(c virt.Client, vm string) error {
 	return fmt.Errorf("guest agent did not answer within %v: %w", time.Duration(pingTries)*pingInterval, err)
 }
 
-// shutdown asks the guest to power off and waits.
 func shutdown(c virt.Client, vm string, out io.Writer) error {
 	if err := c.ShutdownDomain(vm); err != nil {
 		return err

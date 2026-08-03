@@ -1,7 +1,5 @@
 package bls
 
-// /etc/kernel/cmdline — the target the next kernel's entry is generated from.
-
 import (
 	"errors"
 	"io/fs"

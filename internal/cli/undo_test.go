@@ -11,8 +11,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// TestUndoRemovesProvisionISO: the ISO carries the password in cleartext and
-// is not journaled, so undo must clear it or it outlives the whole install.
+// The ISO carries the password in cleartext and is not journaled, so undo must
+// clear it or it outlives the whole install.
 func TestUndoRemovesProvisionISO(t *testing.T) {
 	root := t.TempDir()
 	iso := media.ISOPath(root, "win11")

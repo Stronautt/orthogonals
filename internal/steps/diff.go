@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// renderDiff shows the pending file change for dry-run output.
 func renderDiff(path string, exists bool, old []byte, oldMode fs.FileMode, new []byte, newMode fs.FileMode) string {
 	var b strings.Builder
 	if !exists {

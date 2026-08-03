@@ -25,22 +25,16 @@ type Client interface {
 	DomainState(name string) (string, error)
 	DomainUUID(name string) (string, error)
 	DomainBlockPhysical(name, dev string) (uint64, error)
-	// DomainMaxMemoryKiB is the domain's configured maximum memory in KiB.
 	DomainMaxMemoryKiB(name string) (uint64, error)
-	// DomainDisplay returns the SPICE host and port from the live domain XML.
 	DomainDisplay(name string) (host, port string, err error)
 	// DomainXML is the live domain XML — the copy an unprivileged caller can
 	// read, since /etc/orthogonals/vms is 0600 root.
 	DomainXML(name string) (string, error)
 	SendKeyEnter(name string) error
-	// AgentCommand sends one qemu-guest-agent request and returns the raw JSON reply.
 	AgentCommand(name, cmdJSON string) (string, error)
 	NetworkAutostart(name string) error
-	// EnsureNetworkActive starts a defined network unless it is already active.
 	EnsureNetworkActive(name string) error
-	// CreateVolumeQCow2 creates a qcow2 volume at path.
 	CreateVolumeQCow2(path string, sizeGiB int) error
-	// Ping reports whether the hypervisor is reachable at all.
 	Ping() error
 	Close() error
 }
@@ -70,8 +64,9 @@ func IsNotFound(err error) bool {
 	return false
 }
 
-// sockets to try in dial order.
-var sockets = []string{
+// Sockets to try in dial order. Exported for test/vfiohost, which dials
+// libvirt directly for the RPCs this client surface does not carry.
+var Sockets = []string{
 	"/var/run/libvirt/virtqemud-sock",
 	"/var/run/libvirt/libvirt-sock",
 }
@@ -85,7 +80,7 @@ func (c *client) ensure() (*libvirt.Libvirt, error) {
 		return c.l, nil
 	}
 	var lastErr error
-	for _, sock := range sockets {
+	for _, sock := range Sockets {
 		l := libvirt.NewWithDialer(dialers.NewLocal(dialers.WithSocket(sock)))
 		if err := l.ConnectToURI(libvirt.QEMUSystem); err != nil {
 			lastErr = err
@@ -94,7 +89,7 @@ func (c *client) ensure() (*libvirt.Libvirt, error) {
 		c.l = l
 		return l, nil
 	}
-	return nil, fmt.Errorf("connect to libvirt (%s): %w", strings.Join(sockets, ", "), lastErr)
+	return nil, fmt.Errorf("connect to libvirt (%s): %w", strings.Join(Sockets, ", "), lastErr)
 }
 
 // do runs one RPC, redialing once on a transport error.
@@ -220,7 +215,8 @@ func (c *client) DomainMaxMemoryKiB(name string) (uint64, error) {
 	return mem, err
 }
 
-// ErrNoDisplay means the domain has no resolved SPICE port yet.
+// ErrNoDisplay means the SPICE display is not resolved yet, not that there is
+// none: vm launch polls on it.
 var ErrNoDisplay = errors.New("no graphics display port yet")
 
 func (c *client) DomainXML(name string) (string, error) {

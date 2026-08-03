@@ -11,7 +11,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// PCI vendor IDs used by GPU classification and preflight vendor gates.
 const (
 	VendorIntel  = "0x8086"
 	VendorNVIDIA = "0x10de"
@@ -41,12 +40,10 @@ type PCIDevice struct {
 	Connectors []string `json:"connectors,omitempty"`
 }
 
-// VendorDeviceID renders the vendor:device pair.
 func (d PCIDevice) VendorDeviceID() string {
 	return strings.TrimPrefix(d.Vendor, "0x") + ":" + strings.TrimPrefix(d.Device, "0x")
 }
 
-// ScanPCI enumerates root/sys/bus/pci/devices.
 func ScanPCI(root string) ([]PCIDevice, error) {
 	base := filepath.Join(root, "/sys/bus/pci/devices")
 	entries, err := os.ReadDir(base)
@@ -105,13 +102,11 @@ func (d DGPU) VendorDeviceIDs() []string {
 	return ids
 }
 
-// GPUs is the classified GPU topology preflight gates on.
 type GPUs struct {
 	IGPU  *PCIDevice `json:"igpu,omitempty"`
 	DGPUs []DGPU     `json:"dgpus,omitempty"`
 }
 
-// NVIDIA returns the discrete NVIDIA GPUs.
 func (g GPUs) NVIDIA() []DGPU {
 	var out []DGPU
 	for _, d := range g.DGPUs {
@@ -122,7 +117,6 @@ func (g GPUs) NVIDIA() []DGPU {
 	return out
 }
 
-// SoleNVIDIA returns the single discrete NVIDIA GPU.
 func (g GPUs) SoleNVIDIA() (DGPU, error) {
 	nvidia := g.NVIDIA()
 	if len(nvidia) != 1 {
@@ -131,22 +125,18 @@ func (g GPUs) SoleNVIDIA() (DGPU, error) {
 	return nvidia[0], nil
 }
 
-// SetDriverOverride writes the driver_override attribute of a PCI device.
 func SetDriverOverride(root, addr, driver string) error {
 	return writeDeviceAttr(root, addr, "driver_override", driver)
 }
 
-// RemoveDevice hot-removes a PCI device from the bus.
 func RemoveDevice(root, addr string) error {
 	return writeDeviceAttr(root, addr, "remove", "1")
 }
 
-// RescanPCI asks the PCI core to re-enumerate the bus.
 func RescanPCI(root string) error {
 	return echoSysfs(filepath.Join(root, "/sys/bus/pci/rescan"), "1")
 }
 
-// DeviceDriver is the bound driver of a PCI device.
 func DeviceDriver(root, addr string) string {
 	return utils.LinkBase(filepath.Join(root, "/sys/bus/pci/devices", addr, "driver"))
 }
@@ -161,7 +151,6 @@ func SetPowerControl(root, addr, val string) error {
 	return writeDeviceAttr(root, addr, "power/control", val)
 }
 
-// UnbindDevice detaches a PCI device from its current driver.
 func UnbindDevice(root, addr string) error {
 	if DeviceDriver(root, addr) == "" {
 		return nil
@@ -169,7 +158,6 @@ func UnbindDevice(root, addr string) error {
 	return echoSysfs(filepath.Join(root, "/sys/bus/pci/devices", addr, "driver/unbind"), addr)
 }
 
-// ProbeDevice asks the PCI core to match a device against registered drivers.
 func ProbeDevice(root, addr string) error {
 	return echoSysfs(filepath.Join(root, "/sys/bus/pci/drivers_probe"), addr)
 }
@@ -178,12 +166,11 @@ func writeDeviceAttr(root, addr, attr, val string) error {
 	return echoSysfs(filepath.Join(root, "/sys/bus/pci/devices", addr, attr), val)
 }
 
-// echoSysfs writes val plus a trailing newline to a sysfs attribute.
 func echoSysfs(path, val string) error {
 	return os.WriteFile(path, []byte(val+"\n"), 0o644)
 }
 
-// ScanGPUs classifies the PCI GPU topology, skipping the CPU/platform probes Detect runs.
+// ScanGPUs skips the CPU and platform probes Detect runs.
 func ScanGPUs(root string) (GPUs, error) {
 	devs, err := ScanPCI(root)
 	if err != nil {
@@ -192,8 +179,7 @@ func ScanGPUs(root string) (GPUs, error) {
 	return classifyGPUs(devs), nil
 }
 
-// classifyGPUs splits display-class devices into the iGPU (selectIGPU) and the
-// discrete GPUs, preserving device order.
+// classifyGPUs preserves device order.
 func classifyGPUs(devices []PCIDevice) GPUs {
 	var g GPUs
 	igpuAddr := selectIGPU(devices)
@@ -243,7 +229,6 @@ func audioSibling(devices []PCIDevice, gpu PCIDevice) *PCIDevice {
 	return nil
 }
 
-// scanDRM reads a PCI device's drm/ directory and its connected connectors.
 func scanDRM(devDir string) (card string, connected []string) {
 	entries, err := os.ReadDir(filepath.Join(devDir, "drm"))
 	if err != nil {

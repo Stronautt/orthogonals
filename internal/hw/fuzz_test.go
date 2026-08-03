@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// fuzzFile makes root/rel's parent directory once, for the whole run: a
-// t.TempDir() per execution costs more I/O than the parse under test, enough on
-// a loaded runner to stall every worker and time the run out.
+// fuzzFile makes the parent directory once for the whole run: a t.TempDir() per
+// execution costs more I/O than the parse under test, enough on a loaded runner
+// to stall every worker and time the run out.
 func fuzzFile(f *testing.F, rel string) (root, path string) {
 	f.Helper()
 	root = f.TempDir()
@@ -28,8 +28,7 @@ func writeFuzzFile(t *testing.T, path, content string) {
 	}
 }
 
-// FuzzMeminfoKiB asserts arbitrary /proc/meminfo content never panics; preflight
-// sizes the guest from this value.
+// FuzzMeminfoKiB guards the value preflight sizes the guest from.
 func FuzzMeminfoKiB(f *testing.F) {
 	f.Add("MemTotal:       33554432 kB\nMemFree:  20000000 kB\n")
 	f.Add("MemTotal:\n")
@@ -46,8 +45,8 @@ func FuzzMeminfoKiB(f *testing.F) {
 	})
 }
 
-// FuzzDetectNVIDIA asserts arbitrary driver-version content never panics; the
-// manifest stamps this string and undo compares against it.
+// FuzzDetectNVIDIA guards the string the manifest stamps and undo compares
+// against.
 func FuzzDetectNVIDIA(f *testing.F) {
 	f.Add("NVRM version: NVIDIA UNIX x86_64 Kernel Module  570.153.02  Wed Apr 30 01:53:00 UTC 2025\n")
 	f.Add("NVRM version:\n")
@@ -61,8 +60,6 @@ func FuzzDetectNVIDIA(f *testing.F) {
 	})
 }
 
-// FuzzChassisType asserts arbitrary DMI content never panics and never yields a
-// laptop verdict from a value that is not a laptop class.
 func FuzzChassisType(f *testing.F) {
 	f.Add("3\n")
 	f.Add("10\n")
@@ -81,9 +78,6 @@ func FuzzChassisType(f *testing.F) {
 	})
 }
 
-// FuzzParseCPUList asserts arbitrary cpulist strings never panic, and that any
-// list the parser accepts is usable for CPU pinning: no negative indices, and
-// ranges expanded in order.
 func FuzzParseCPUList(f *testing.F) {
 	f.Add("0-3,7,9-11")
 	f.Add("")

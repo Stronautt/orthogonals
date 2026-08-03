@@ -1,11 +1,7 @@
 // Package bls reads and edits the host's boot configuration: the Boot Loader
 // Specification entries (/boot/loader/entries/*.conf) that boot today, and
 // /etc/kernel/cmdline, which kernel-install copies into the entry it generates
-// for the next kernel.
-//
-// Both are targets of every operation, and this file is the API over the pair:
-// entries.go and cmdline.go implement one target each, exposing the same two
-// verbs — read the options tokens, rewrite them through a transform.
+// for the next kernel. Both are targets of every operation.
 package bls
 
 import (
@@ -17,7 +13,6 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
-// EntriesPath is the BLS entries directory.
 const EntriesPath = "/boot/loader/entries"
 
 // KernelCmdlinePath is what kernel-install reads when it writes a new entry's
@@ -25,7 +20,6 @@ const EntriesPath = "/boot/loader/entries"
 // update regenerates the entries (see /usr/lib/kernel/install.d/90-loaderentry.install).
 const KernelCmdlinePath = "/etc/kernel/cmdline"
 
-// transform rewrites one target's options tokens.
 type transform func([]string) []string
 
 // Args is what the boot config already says about a wanted arg set. The two
@@ -111,9 +105,6 @@ func tokenSets(root string) ([][]string, error) {
 	return sets, nil
 }
 
-// edit maps every target's options through fn and writes it back: the entries
-// that boot today, and /etc/kernel/cmdline so the next kernel's generated entry
-// keeps the args.
 func edit(root string, fn transform) error {
 	if err := editEntries(root, fn); err != nil {
 		return err
@@ -123,13 +114,10 @@ func edit(root string, fn transform) error {
 
 // writeIfChanged skips the rewrite when the transform was a no-op: apply
 // re-checks the boot config on every run, and /boot does not need the churn.
-// Kept here rather than in utils because it compares against bytes the caller
-// already read to transform them; a utils version would re-read the file.
 func writeIfChanged(path string, was, now []byte, mode fs.FileMode) error {
 	if string(now) == string(was) {
-		// The undo of a killed kernel-args edit lands here: the add never
-		// reached the entry, so removing it changes nothing and the sweep
-		// WriteAtomic would have done never runs.
+		// Undoing a killed kernel-args edit lands here: the add never reached
+		// the entry, so WriteAtomic's sweep never runs.
 		utils.SweepTemps(filepath.Dir(path))
 		return nil
 	}

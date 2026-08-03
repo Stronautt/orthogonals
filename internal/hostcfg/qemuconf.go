@@ -9,14 +9,13 @@ import (
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
-// DeviceACLStepID is the journaled qemu.conf edit.
 const DeviceACLStepID = "libvirt-device-acl"
 
 // aclDevices are the entries orthogonals guarantees in cgroup_device_acl.
 // Setting that key REPLACES libvirt's compiled-in default list rather than
 // extending it, and Fedora's commented sample omits /dev/kvm — so uncommenting
 // the shipped block, which is what the Looking Glass documentation instructs,
-// leaves the guest unable to use KVM. Both entries are ours to guarantee.
+// leaves the guest unable to use KVM.
 var aclDevices = []string{"/dev/kvm", steps.KVMFRDevice}
 
 var (
@@ -26,7 +25,7 @@ var (
 
 // DeviceACLStep is the journaled edit that lets qemu open the kvmfr device.
 // libvirt populates the private /dev it gives qemu from the same list, so one
-// edit covers both the cgroup filter and the node's visibility. libvirt ignores
+// edit covers both the cgroup filter and the node's visibility, and it ignores
 // non-existent paths, so the entry is safe on a host that never loads kvmfr.
 func DeviceACLStep(qemuConf string) (steps.Step, error) {
 	out, err := EnsureDeviceACL(qemuConf, aclDevices)
@@ -41,8 +40,7 @@ func DeviceACLStep(qemuConf string) (steps.Step, error) {
 
 // EnsureDeviceACL returns conf with every device present in an active
 // cgroup_device_acl list, activating libvirt's commented sample if that is all
-// the file has. It is idempotent: a conf that already lists everything comes
-// back unchanged.
+// the file has. Idempotent: a conf that already lists everything is unchanged.
 func EnsureDeviceACL(conf string, devices []string) (string, error) {
 	block := activeACL.FindString(conf)
 	if block == "" {
@@ -77,13 +75,11 @@ func EnsureDeviceACL(conf string, devices []string) (string, error) {
 // is why the caller only reaches here when no other dkms module exists.
 const DKMSDropInPath = "/etc/dkms/framework.conf.d/orthogonals-kvmfr.conf"
 
-// DKMSSigningSteps make kvmfr sign with a key Secure Boot already trusts,
-// sparing the user a MOK enrollment. The rebuild is not optional: the module
-// installed by the RPM was already signed with dkms's own unenrolled key, and
-// only a forced rebuild re-signs it for the running kernel.
+// DKMSSigningSteps make kvmfr sign with a key Secure Boot already trusts. The
+// rebuild is not optional: the RPM's module was signed with dkms's own
+// unenrolled key, and only a forced rebuild re-signs it for the running kernel.
 // The version is not a parameter: dkms addresses the tree kvmfr-dkms
-// registered, which the spec names for the RPM version, so there is exactly one
-// correct value.
+// registered, which the spec names for the RPM version.
 func DKMSSigningSteps(cert, key string) []steps.Step {
 	content := []byte("# Written by orthogonals: sign kvmfr with the key this host has already\n" +
 		"# enrolled, so Secure Boot needs no new MOK.\n" +
@@ -108,7 +104,6 @@ func DKMSSigningSteps(cert, key string) []steps.Step {
 	}
 }
 
-// uncomment strips one leading '#' from every line of a commented block.
 func uncomment(block string) string {
 	var b strings.Builder
 	for line := range strings.Lines(block) {

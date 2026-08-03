@@ -63,21 +63,18 @@ func (m *Manifest) stamp(root string) {
 	m.NVIDIAVersion, m.NVIDIAFlavor = n.Version, n.Flavor
 }
 
-// StateDirPath is the orthogonals state directory.
 const StateDirPath = "/var/lib/orthogonals"
 
-// StateDir is StateDirPath under root.
 func StateDir(root string) string { return filepath.Join(root, StateDirPath) }
 
-// ManifestPath is the undo journal path under root.
 func ManifestPath(root string) string { return filepath.Join(StateDir(root), "manifest.json") }
 
-// StatePath is the persisted up pipeline position under root.
+// StatePath is where the up pipeline persists its position.
 func StatePath(root string) string { return filepath.Join(StateDir(root), "state.json") }
 
 func backupDir(root string) string { return filepath.Join(StateDir(root), "backup") }
 
-// Load reads the manifest under root.
+// Load returns an empty manifest when none exists yet.
 func Load(root string) (*Manifest, error) {
 	b, err := os.ReadFile(ManifestPath(root))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -103,7 +100,6 @@ func (m *Manifest) save(root string) error {
 	return utils.WriteAtomic(ManifestPath(root), b, 0o600)
 }
 
-// Has reports whether a step id is already journaled.
 func (m *Manifest) Has(id string) bool { return m.find(id) != nil }
 
 // Cmd returns the journaled argv for id, nil if not journaled.
@@ -139,9 +135,8 @@ func (m *Manifest) put(r Record) {
 	m.Records = append(m.Records, r)
 }
 
-// drop removes a record, undoing a write-ahead journal entry whose mutation
-// then failed. Without it a failed step would read as "already applied" on the
-// next run and never be retried.
+// drop removes a write-ahead record whose mutation then failed. Without it the
+// next run reads that step as "already applied" and never retries it.
 func (m *Manifest) drop(id string) {
 	m.Records = slices.DeleteFunc(m.Records, func(r Record) bool { return r.ID == id })
 }

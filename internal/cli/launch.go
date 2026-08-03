@@ -12,6 +12,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hooks"
+	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/steps"
@@ -25,17 +26,15 @@ var (
 	launchPollInterval = time.Second
 )
 
-// execProcess replaces the current process with looking-glass-client.
 var execProcess = syscall.Exec
 
-// vmLaunch starts the VM if needed and hands off to looking-glass-client.
 func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer) int {
-	displayName := resolveDisplayName(cfg.Root, name, "")
+	title := displayName(cfg.Root, name)
 	fail := func(format string, a ...any) int {
 		msg := fmt.Sprintf(format, a...)
 		fmt.Fprintf(stderr, "orthogonals vm launch: %s\n", msg)
 		if !utils.IsTerminal(stderr) {
-			notify.Send(notify.Notification{Title: displayName, Icon: "orthogonals", Body: msg})
+			notify.Send(notify.Notification{Title: title, Icon: "orthogonals", Body: msg})
 		}
 		return 1
 	}
@@ -78,7 +77,10 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	} else {
 		fmt.Fprintf(stdout, "connecting to %s at %s:%s\n", name, host, port)
 	}
-	args := []string{"looking-glass-client", "-F", "-c", host, "-p", port}
+	// Title and app-id are what the shell shows in the dock; the app-id must be
+	// the desktop entry's basename or the window falls back to the binary name.
+	args := []string{"looking-glass-client", "-F", "-c", host, "-p", port,
+		"win:title=" + title, "win:appId=" + hostcfg.DesktopAppID(name)}
 	// The client prefers /dev/kvmfr0 whenever it exists, so a module left loaded
 	// by an earlier VM would hijack a /dev/shm domain and wait for a host that
 	// never arrives. The backend is read from libvirt, not /etc/orthogonals/vms:
@@ -97,7 +99,6 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	return 0
 }
 
-// ensureMemory refuses the start when the host has less free RAM than the guest pins.
 func ensureMemory(root string, c virt.Client, name string, fail func(string, ...any) int) (int, bool) {
 	needKiB, err := c.DomainMaxMemoryKiB(name)
 	if err != nil {
@@ -111,7 +112,6 @@ func ensureMemory(root string, c virt.Client, name string, fail func(string, ...
 	return 0, true
 }
 
-// waitForDisplay polls until libvirt reports a SPICE port or the timeout hits.
 func waitForDisplay(c virt.Client, name string) (host, port string, err error) {
 	deadline := time.Now().Add(launchTimeout)
 	for {
@@ -126,8 +126,8 @@ func waitForDisplay(c virt.Client, name string) (host, port string, err error) {
 	}
 }
 
-// executablePath resolves the orthogonals binary path, refusing a temp-dir path.
-// A var so tests can stand in for a binary they did not install.
+// executablePath refuses a temp-dir path; a var so tests can stand in for a
+// binary they did not install.
 var executablePath = func() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,40 +24,32 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt"
 )
 
-// vmOpts carries the flags of vm define, shared with up.
+// vmOpts carries the flags of vm define, shared with up. A flag left at its
+// zero value means "keep what is registered", never "use the default", so no
+// flag may declare a default — defaults belong in domain.NewProfile.
 type vmOpts struct {
-	vmName        string
-	displayName   string
-	user          string
-	ram           int
-	disk          string
-	diskSize      int
-	resolution    string
-	guestUser     string
-	guestPassword string
-	locale        string
-	win11ISO      string
-	gpuROM        string
-	shares        []string
-	stage         string
-	purge         bool
+	vmName string
+	domain.Settings
+	stage string
+	purge bool
 }
 
-// addVMFlags registers the define flags shared by vm define and up.
 func addVMFlags(fs *pflag.FlagSet, o *vmOpts) {
-	fs.StringVar(&o.vmName, "vm-name", "", "libvirt domain name (default: win11)")
-	fs.StringVar(&o.displayName, "display-name", "", "desktop shortcut name (default: the registered name, \"Windows 11\" for the default VM, else the VM name)")
-	fs.StringVar(&o.user, "user", defaultUser(), "desktop user whose ~/Desktop gets the VM shortcut link")
-	fs.IntVar(&o.ram, "ram", 0, "guest RAM in GiB (default: 5/8 of host RAM)")
-	fs.StringVar(&o.disk, "disk", "", "qcow2 disk image path (default /var/lib/libvirt/images/<vm-name>.qcow2)")
-	fs.IntVar(&o.diskSize, "disk-size", 0, "disk image size in GiB (default 100)")
-	fs.StringVar(&o.resolution, "resolution", "", "maximum guest resolution WxH, sizes the Looking Glass shared memory; the actual mode is picked in Windows display settings (default 3840x2160)")
-	fs.StringVar(&o.guestUser, "guest-user", "", "guest admin account name (default \""+media.DefaultGuestUser+"\")")
-	fs.StringVar(&o.guestPassword, "guest-password", "", "guest admin password (default \""+media.DefaultGuestPassword+"\")")
-	fs.StringVar(&o.locale, "locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
-	fs.StringVar(&o.win11ISO, "win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
-	fs.StringVar(&o.gpuROM, "gpu-rom", "", "path to an extracted GPU vBIOS ROM, installed and rendered as <rom file=>; needed only when a MUXless laptop dGPU gives no guest output")
-	fs.StringArrayVar(&o.shares, "share", nil, "host directory to export to the guest over virtiofs; repeat for more, each taking the next drive letter down from Z:. Passing --share replaces the registered set, --share \"\" clears it")
+	// Every "(default: …)" is interpolated from the constant that decides it, or
+	// the help goes stale the day a default moves.
+	fs.StringVar(&o.vmName, "vm-name", "", "libvirt domain name (default: "+steps.DefaultVMName+")")
+	fs.StringVar(&o.DisplayName, "display-name", "", fmt.Sprintf("desktop shortcut name (default: the registered name, %q for the default VM, else the VM name)", defaultDisplayName(steps.DefaultVMName)))
+	fs.StringVar(&o.User, "user", "", "desktop user whose ~/Desktop gets the VM shortcut link (default: the registered user, else the user behind sudo)")
+	fs.IntVar(&o.RAMGiB, "ram", 0, fmt.Sprintf("guest RAM in GiB (default: %d/%d of host RAM)", domain.DefaultRAMNum, domain.DefaultRAMDen))
+	fs.StringVar(&o.Disk, "disk", "", "qcow2 disk image path (default "+filepath.Join(domain.ImagesDir, "<vm-name>.qcow2")+")")
+	fs.IntVar(&o.DiskSizeGiB, "disk-size", 0, fmt.Sprintf("disk image size in GiB (default %d)", domain.DefaultDiskSizeGiB))
+	fs.StringVar(&o.Resolution, "resolution", "", fmt.Sprintf("maximum guest resolution WxH, sizes the Looking Glass shared memory; the actual mode is picked in Windows display settings (default %dx%d)", domain.DefaultWidth, domain.DefaultHeight))
+	fs.StringVar(&o.GuestUser, "guest-user", "", "guest admin account name (default \""+media.DefaultGuestUser+"\")")
+	fs.StringVar(&o.GuestPassword, "guest-password", "", "guest admin password (default \""+media.DefaultGuestPassword+"\")")
+	fs.StringVar(&o.Locale, "locale", "", "guest locale and keyboard, e.g. uk-UA (default: the Windows ISO's default language)")
+	fs.StringVar(&o.Win11ISO, "win11-iso", "", "path to the user-supplied Windows 11 installation ISO, attached as the install CD")
+	fs.StringVar(&o.GPUROM, "gpu-rom", "", "path to an extracted GPU vBIOS ROM, installed and rendered as <rom file=>; needed only when a MUXless laptop dGPU gives no guest output")
+	fs.StringArrayVar(&o.Shares, "share", nil, "host directory to export to the guest over virtiofs; repeat for more, each taking the next drive letter down from Z:. Passing --share replaces the registered set, --share \"\" clears it")
 }
 
 func newVMCmd(cfg *Config, stdout, stderr io.Writer) *cobra.Command {
@@ -150,42 +141,22 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 			return fmt.Errorf("unknown --stage %q (install|novideo|final)", o.stage)
 		}
 	}
-	prev := domain.ReadGuestConfig(cfg.Root, o.vmName)
-	isoPath := prev.Win11ISO
-	if o.win11ISO != "" {
-		if isoPath, err = filepath.Abs(o.win11ISO); err != nil {
-			return err
-		}
+	prev, err := domain.ReadSettings(cfg.Root, o.vmName)
+	if err != nil {
+		return err
 	}
-	if isoPath == "" && stage != domain.StageFinal {
+	s, romContent, err := resolveSettings(cfg.Root, m, o, prev)
+	if err != nil {
+		return err
+	}
+	if s.Win11ISO == "" && stage != domain.StageFinal {
 		fmt.Fprintln(stderr, "usage: orthogonals vm --win11-iso <path> [flags] define")
 		return exitCode(2)
 	}
-	w, h, err := parseResolution(cmp.Or(o.resolution, prev.Resolution))
-	if err != nil {
-		return err
-	}
-	romFile, romContent, err := resolveGPUROM(cfg.Root, o.vmName, o.gpuROM, prev.GPURom)
-	if err != nil {
-		return err
-	}
-	shares, err := resolveShares(cfg.Root, o.shares, prev.Shares)
-	if err != nil {
-		return err
-	}
-	sharesChanged := !slices.Equal(shares, prev.Shares)
+	sharesChanged := !slices.Equal(s.Shares, prev.Shares)
 	res, err := hw.Detect(cfg.Root)
 	if err != nil {
 		return err
-	}
-	diskPath, diskSizeGiB := o.disk, o.diskSize
-	if diskPath == "" {
-		if jp, jsize, ok := domain.JournaledDisk(m, o.vmName); ok {
-			diskPath = jp
-			if diskSizeGiB == 0 {
-				diskSizeGiB = jsize
-			}
-		}
 	}
 	wantKVMFR := hw.KVMFRAvailable(cfg.Root)
 	// Built is not loadable. A domain the hook refuses traps the user: the
@@ -198,21 +169,14 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 		wantKVMFR = false
 	}
 	p, err := domain.NewProfile(res, domain.Options{
-		VMName: o.vmName, RAMGiB: o.ram, DiskPath: diskPath, DiskSizeGiB: diskSizeGiB,
-		Width: w, Height: h, KVMFR: wantKVMFR, Shares: shares,
-		GuestUser:     cmp.Or(o.guestUser, prev.User),
-		GuestPassword: cmp.Or(o.guestPassword, prev.Password),
-		Locale:        cmp.Or(o.locale, prev.Locale),
-		Win11ISO:      isoPath,
-		VirtioISO:     filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
-		ProvisionISO:  media.ISOPath("", o.vmName),
-		ROMFile:       romFile,
-		ROMContent:    romContent,
+		VMName: o.vmName, Settings: s, KVMFR: wantKVMFR,
+		VirtioISO:    filepath.Join(media.CacheDir(""), artifacts.VirtioWin.File),
+		ProvisionISO: media.ISOPath("", o.vmName),
+		ROMContent:   romContent,
 	})
 	if err != nil {
 		return err
 	}
-	// The remaining downgrade is the buffer being too large to vmalloc.
 	if wantKVMFR && !p.KVMFR {
 		fmt.Fprintf(stdout, "kvmfr declined: a %d MiB buffer for %dx%d is more than 1/%d of host RAM — using /dev/shm\n",
 			p.IVSHMEMMiB, p.Width, p.Height, domain.KVMFRRAMDivisor)
@@ -246,7 +210,7 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	vmSteps, err := hostcfg.VMSteps(p.Name, resolveDisplayName(cfg.Root, p.Name, o.displayName), o.user, exe)
+	vmSteps, err := hostcfg.VMSteps(p.Name, p.Settings.DisplayName, p.Settings.User, exe)
 	if err != nil {
 		return err
 	}
@@ -262,18 +226,61 @@ func runVMDefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// resolveShares takes the directories --share asks for, else the registered
-// ones, and refuses any that is not an existing directory: libvirt starts
-// virtiofsd before the guest, so a bad path costs the whole VM its start. No
-// flag keeps the registered set — what makes an `up` converge non-destructive —
-// and a lone empty --share clears it.
-func resolveShares(root string, flag, prev []string) ([]string, error) {
-	dirs := prev
-	if len(flag) > 0 {
-		dirs = flag
-		if len(dirs) == 1 && dirs[0] == "" {
-			return nil, nil
+// resolveSettings merges the flags over what the last define registered, then
+// normalises the knobs that cannot be a plain copy. Each resolves from the
+// merged value, never from the flag and the registered value separately.
+func resolveSettings(root string, m *steps.Manifest, o vmOpts, prev domain.Settings) (domain.Settings, []byte, error) {
+	s := o.Over(prev)
+
+	// Absolute, so a converge run from another directory registers the same file.
+	for _, p := range []*string{&s.Win11ISO, &s.Disk} {
+		if *p == "" {
+			continue
 		}
+		abs, err := filepath.Abs(*p)
+		if err != nil {
+			return domain.Settings{}, nil, err
+		}
+		*p = abs
+	}
+	// The journal outlives the domain XML an undefine removes, so it is what
+	// re-adopts an existing disk when nothing is registered any more.
+	if s.Disk == "" {
+		if path, size, ok := domain.JournaledDisk(m, o.vmName); ok {
+			s.Disk = path
+			if s.DiskSizeGiB == 0 {
+				s.DiskSizeGiB = size
+			}
+		}
+	}
+	romContent, err := resolveGPUROM(root, o.vmName, &s)
+	if err != nil {
+		return domain.Settings{}, nil, err
+	}
+	if s.Shares, err = resolveShares(root, s.Shares); err != nil {
+		return domain.Settings{}, nil, err
+	}
+	return hostDefaults(s, o.vmName), romContent, nil
+}
+
+// hostDefaults fills the two knobs whose default comes from the host rather
+// than from domain.NewProfile. Shared with up: resolved twice, the desktop link
+// and the shortcut it names could end up on different users.
+func hostDefaults(s domain.Settings, vm string) domain.Settings {
+	s.User = cmp.Or(s.User, defaultUser())
+	s.DisplayName = cmp.Or(s.DisplayName, defaultDisplayName(vm))
+	return s
+}
+
+// resolveShares refuses any share that is not an existing directory: libvirt
+// starts virtiofsd before the guest, so a bad path costs the whole VM its
+// start. A lone empty --share is how the registered set is cleared, and it
+// survives the merge as a one-element slice to say so.
+func resolveShares(root string, dirs []string) ([]string, error) {
+	// nil, not an empty slice: the resolved record has to compare equal to the
+	// one read back, and a share-less domain reads back nil.
+	if len(dirs) == 0 || (len(dirs) == 1 && dirs[0] == "") {
+		return nil, nil
 	}
 	out := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
@@ -297,8 +304,7 @@ func resolveShares(root string, flag, prev []string) ([]string, error) {
 }
 
 // warnLateShares reports that the guest cannot mount a share the domain just
-// gained: the mount services are made during provisioning, which an installed
-// guest no longer re-runs.
+// gained: the mount services are made during provisioning only.
 func warnLateShares(w io.Writer, vm string, shares []domain.Share) {
 	if len(shares) == 0 {
 		fmt.Fprintf(w, "%s: the virtiofs devices are gone from the domain, but its mount services remain in the guest — delete them there with sc.exe delete\n", vm)
@@ -310,47 +316,52 @@ func warnLateShares(w io.Writer, vm string, shares []domain.Share) {
 		if i == 0 {
 			verb = "config" // virtio-win already installs this one
 		}
-		fmt.Fprintf(w, "  sc.exe %s %s binPath= \"<virtiofs.exe> -t %s -m %s\" start= delayed-auto   (%s)\n",
+		fmt.Fprintf(w, "  sc.exe %s %s binPath= \"<virtiofs.exe> -t %s -m %s\" start= auto depend= WinFsp.Launcher/VirtioFsDrv   (%s)\n",
 			verb, s.Service, s.Tag, s.Drive, s.Dir)
 	}
 	fmt.Fprintln(w, "  <virtiofs.exe> is the path already in VirtioFsSvc's ImagePath")
 }
 
-// resolveGPUROM returns the canonical vBIOS path and bytes: from --gpu-rom, else
-// re-read from a registered ROM, else empty.
-func resolveGPUROM(root, vm, flag, prev string) (romFile string, content []byte, err error) {
-	switch {
-	case flag != "":
-		src, err := filepath.Abs(flag)
+// resolveGPUROM rewrites s.GPUROM to the installed copy and returns its bytes.
+func resolveGPUROM(root, vm string, s *domain.Settings) ([]byte, error) {
+	installed := domain.ROMPath(vm)
+	switch s.GPUROM {
+	case "":
+		return nil, nil
+	case installed:
+		content, err := os.ReadFile(filepath.Join(root, installed))
 		if err != nil {
-			return "", nil, err
+			return nil, fmt.Errorf("gpu rom %s is registered but unreadable — re-run with --gpu-rom: %w", installed, err)
+		}
+		return content, nil
+	default:
+		src, err := filepath.Abs(s.GPUROM)
+		if err != nil {
+			return nil, err
 		}
 		content, err := os.ReadFile(src)
 		if err != nil {
-			return "", nil, fmt.Errorf("read --gpu-rom %s: %w", flag, err)
+			return nil, fmt.Errorf("read --gpu-rom %s: %w", s.GPUROM, err)
 		}
-		return domain.ROMPath(vm), content, nil
-	case prev != "":
-		content, err := os.ReadFile(filepath.Join(root, prev))
-		if err != nil {
-			return "", nil, fmt.Errorf("gpu rom %s is registered but unreadable — re-run with --gpu-rom: %w", prev, err)
-		}
-		return prev, content, nil
-	default:
-		return "", nil, nil
+		s.GPUROM = installed
+		return content, nil
 	}
 }
 
-// resolveDisplayName picks the desktop shortcut name.
-func resolveDisplayName(root, name, flag string) string {
-	fallback := name
-	if name == steps.DefaultVMName {
-		fallback = "Windows 11"
+func defaultDisplayName(vm string) string {
+	if vm == steps.DefaultVMName {
+		return "Windows 11"
 	}
-	return cmp.Or(flag, hostcfg.DisplayName(root, name), fallback)
+	return vm
 }
 
-// runVMUndefine removes the domain and its host artifacts, purging the disk with --purge.
+// displayName is the registered shortcut name; an unreadable registry falls
+// back to the default rather than failing a command whose work is already done.
+func displayName(root, vm string) string {
+	s, _ := domain.ReadSettings(root, vm)
+	return cmp.Or(s.DisplayName, defaultDisplayName(vm))
+}
+
 func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 	c := virtClient()
 	defer func() { _ = c.Close() }()
@@ -400,7 +411,7 @@ func runVMUndefine(cfg *Config, o vmOpts, stdout, stderr io.Writer) error {
 
 // vmNameOrSole returns flag when set, else the single managed VM name.
 // Validated here, not per caller: the name reaches ISOPath, the registry and
-// journal step ids from launch, undefine, media and verify alike.
+// the journal step ids.
 func vmNameOrSole(root, flag string) (string, error) {
 	if flag != "" {
 		if err := steps.CheckVMName(flag); err != nil {
@@ -411,7 +422,6 @@ func vmNameOrSole(root, flag string) (string, error) {
 	return soleVMName(root)
 }
 
-// soleVMName resolves an omitted --vm-name to the single managed VM.
 func soleVMName(root string) (string, error) {
 	vms := steps.VMNames(root)
 	switch len(vms) {
@@ -421,18 +431,4 @@ func soleVMName(root string) (string, error) {
 		return vms[0], nil
 	}
 	return "", fmt.Errorf("multiple VMs managed (%s) — pass --vm-name", strings.Join(vms, ", "))
-}
-
-// parseResolution parses "1920x1080"; empty picks the default.
-func parseResolution(s string) (int, int, error) {
-	if s == "" {
-		return 0, 0, nil
-	}
-	ws, hs, ok := strings.Cut(s, "x")
-	w, errW := strconv.Atoi(ws)
-	h, errH := strconv.Atoi(hs)
-	if !ok || errW != nil || errH != nil || w <= 0 || h <= 0 {
-		return 0, 0, fmt.Errorf("bad resolution %q (want WxH, e.g. 1920x1080)", s)
-	}
-	return w, h, nil
 }

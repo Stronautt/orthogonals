@@ -74,14 +74,37 @@ function Get-VirtioFsExe {
     throw "cannot find virtiofs.exe in the $stockFsService command line: $img"
 }
 
-# Automatic (delayed start) is Start=2 plus DelayedAutostart=1, which
-# Get-Service reports as plain Automatic — hence reading the key.
-function Test-FsService($Share) {
+# What an automatic start has to wait for: the FUSE layer under every mount and
+# the driver that enumerates the device it mounts. Both are what the delayed
+# start used to buy by sleeping. Whatever virtio-win registered on the shipped
+# service is kept, since a clone built from scratch inherits none of it.
+#
+# The SCM refuses to start a service whose DependOnService names one that does
+# not exist, and that refusal outlives the reboot that caused it, so a name is
+# written only if its key is there. The key, not Get-Service: VirtioFsDrv is a
+# kernel driver, and the service list does not have to enumerate those.
+# Re-runs re-read the union they last wrote.
+function Get-FsServiceDeps {
+    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\'
+    $deps = @((Get-ItemProperty -Path ($key + $stockFsService) -ErrorAction SilentlyContinue).DependOnService)
+    $deps += 'WinFsp.Launcher'
+    $deps += 'VirtioFsDrv'
+    $out = @()
+    foreach ($d in $deps) {
+        if ($d -and $out -notcontains $d -and (Test-Path ($key + $d))) { $out += $d }
+    }
+    return $out
+}
+
+# Get-Service reports Start=2 as Automatic whether or not DelayedAutostart is
+# set, so plain automatic can only be told from delayed by reading the key.
+function Test-FsService($Share, $Deps) {
     $svc = Get-Service -Name $Share.Service -ErrorAction SilentlyContinue
     if (-not $svc -or $svc.Status -ne 'Running') { return $false }
     $p = Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $Share.Service) -ErrorAction SilentlyContinue
-    return $p -and $p.Start -eq 2 -and $p.DelayedAutostart -eq 1 -and
-        $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
+    if (-not $p -or $p.Start -ne 2 -or $p.DelayedAutostart -eq 1) { return $false }
+    foreach ($d in $Deps) { if (@($p.DependOnService) -notcontains $d) { return $false } }
+    return $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
 }
 
 Write-Status -Stage 'start' -Ok $true

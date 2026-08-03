@@ -35,7 +35,6 @@ type Profile struct {
 	DefaultNetActive bool
 }
 
-// NewProfile derives the profile from a detect result.
 func NewProfile(r *hw.Result, user, binding string, defaultNetActive bool) (Profile, error) {
 	if err := steps.CheckUser(user); err != nil {
 		return Profile{}, err
@@ -59,13 +58,11 @@ const (
 	BindingStatic  = "static"
 )
 
-// KernelArgsStepID and VFIOIDsPrefix are the journaled boot-config contract.
 const (
 	KernelArgsStepID = "kernel-args"
 	VFIOIDsPrefix    = "vfio-pci.ids="
 )
 
-// Unit names apply enables or disables.
 const (
 	UnitPersistenced  = "nvidia-persistenced.service"
 	UnitLibvirtGuests = "libvirt-guests.service"
@@ -78,8 +75,7 @@ const (
 
 // IOMMUIsAMD reports whether the platform's IOMMU is AMD-Vi. The firmware's
 // ACPI table names the technology directly; the CPU vendor answers only for
-// firmware that exposes no table yet — the preflight-remedy case, before the
-// BIOS switch is flipped. Unknown keeps the Intel default.
+// firmware that exposes no table yet, before the BIOS switch is flipped.
 func IOMMUIsAMD(iommuTable, cpuVendor string) bool {
 	if iommuTable != "" {
 		return iommuTable == hw.IOMMUTableIVRS
@@ -87,9 +83,8 @@ func IOMMUIsAMD(iommuTable, cpuVendor string) bool {
 	return cpuVendor == hw.CPUVendorAMD
 }
 
-// IOMMUKernelArgs is the IOMMU passthrough kernel args for a platform. The
-// single platform→karg mapping — preflight quotes it as the remedy, so a
-// private copy there could drift and lie.
+// IOMMUKernelArgs is the single platform→karg mapping: preflight quotes it as
+// the remedy, so a private copy there could drift and lie.
 func IOMMUKernelArgs(iommuTable, cpuVendor string) string {
 	if IOMMUIsAMD(iommuTable, cpuVendor) {
 		return "iommu=pt"
@@ -97,7 +92,6 @@ func IOMMUKernelArgs(iommuTable, cpuVendor string) string {
 	return "intel_iommu=on iommu=pt"
 }
 
-// KernelArgs is the exact karg string apply adds.
 func KernelArgs(p Profile) string {
 	args := IOMMUKernelArgs(p.IOMMUTable, p.CPUVendor)
 	if p.Binding == BindingStatic {
@@ -106,7 +100,6 @@ func KernelArgs(p Profile) string {
 	return args
 }
 
-// addedKargs is args minus the tokens the host already had.
 func addedKargs(args string, preexisting []string) string {
 	var added []string
 	for _, tok := range strings.Fields(args) {
@@ -134,15 +127,12 @@ func kernelArgsStep(args string, boot bls.Args) steps.Step {
 	return s
 }
 
-// DesktopEntryID and DesktopLinkID are per-VM journal step IDs.
 func DesktopEntryID(vm string) string { return "desktop-entry-" + vm }
 func DesktopLinkID(vm string) string  { return "desktop-link-" + vm }
 
-// RunDirConfID and RunDirCreateID are the per-VM SPICE socket directory steps.
 func RunDirConfID(vm string) string   { return "vm-rundir-conf-" + vm }
 func RunDirCreateID(vm string) string { return "vm-rundir-create-" + vm }
 
-// runDirConfPath is the per-VM tmpfiles.d fragment.
 func runDirConfPath(vm string) string { return "/etc/tmpfiles.d/orthogonals-" + vm + ".conf" }
 
 // Artifact is one rendered configuration file ready for a WriteFile step.
@@ -153,13 +143,16 @@ type Artifact struct {
 	Content []byte
 }
 
-// tplSpec maps one embedded template to its install path.
 type tplSpec struct {
 	tpl, path, id string
 	mode          fs.FileMode
 }
 
-// artifactSpecs maps embedded templates to install paths, in apply order.
+// tmpfilesLookingGlass is both where the fragment installs and what the
+// install-run systemd-tmpfiles --create names; two literals drift.
+const tmpfilesLookingGlass = "/etc/tmpfiles.d/looking-glass.conf"
+
+// artifactSpecs maps templates to install paths, in apply order.
 var artifactSpecs = []tplSpec{
 	{"vfio.conf", "/etc/dracut.conf.d/vfio.conf", "dracut-vfio-conf", 0o644},
 	// Assumes Fedora's modular libvirt (virtqemud), not monolithic libvirtd.
@@ -167,7 +160,7 @@ var artifactSpecs = []tplSpec{
 	{"virtqemud-socket.conf", "/etc/systemd/system/virtqemud.socket.d/orthogonals.conf", "libvirt-socket-perms", 0o644},
 	{"61-mutter-ignore-nvidia.rules", "/etc/udev/rules.d/61-mutter-ignore-nvidia.rules", "udev-mutter-ignore", 0o644},
 	{"50-orthogonals-igpu.conf", "/etc/environment.d/50-orthogonals-igpu.conf", "environment-igpu-pins", 0o644},
-	{"looking-glass.conf", "/etc/tmpfiles.d/looking-glass.conf", "tmpfiles-looking-glass", 0o644},
+	{"looking-glass.conf", tmpfilesLookingGlass, "tmpfiles-looking-glass", 0o644},
 	{"libvirt-guests", "/etc/sysconfig/libvirt-guests", "sysconfig-libvirt-guests", 0o644},
 }
 
@@ -178,10 +171,8 @@ var laptopArtifactSpecs = []tplSpec{
 	{"80-orthogonals-nvidia-pm.rules", "/etc/udev/rules.d/80-orthogonals-nvidia-pm.rules", "udev-nvidia-pm", 0o644},
 }
 
-// templates holds every embedded artifact template, parsed once.
 var templates = template.Must(template.ParseFS(templateFS, "templates/*"))
 
-// renderTemplate executes one embedded template against data.
 func renderTemplate(name string, data any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := templates.ExecuteTemplate(&buf, name, data); err != nil {
@@ -190,7 +181,7 @@ func renderTemplate(name string, data any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// VMSteps renders the per-VM artifacts `vm define` journals: desktop entry and ~/Desktop link.
+// VMSteps renders the per-VM artifacts `vm define` journals.
 func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 	if err := steps.CheckVMName(vmName); err != nil {
 		return nil, err
@@ -204,7 +195,7 @@ func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 	if err := steps.CheckExecPath(exe); err != nil {
 		return nil, err
 	}
-	data := struct{ VMName, DisplayName, Exe, User string }{vmName, displayName, exe, user}
+	data := struct{ VMName, DisplayName, Exe, User, AppID string }{vmName, displayName, exe, user, DesktopAppID(vmName)}
 	content, err := renderTemplate("vm-looking-glass.desktop", data)
 	if err != nil {
 		return nil, err
@@ -246,23 +237,15 @@ func VMSteps(vmName, displayName, user, exe string) ([]steps.Step, error) {
 	), nil
 }
 
-// desktopEntryPath carries the .orthogonals marker to avoid distro-entry collisions.
-func desktopEntryPath(vm string) string {
-	return "/usr/share/applications/" + vm + ".orthogonals.desktop"
-}
+// DesktopAppID is the entry's basename and the window app-id `vm launch` hands
+// looking-glass-client — the shell matches a window to its launcher by that
+// pair, and without the match the dock shows "looking-glass-client" and the
+// stock binary icon instead of the VM's name and icon. The .orthogonals marker
+// also keeps the entry from colliding with a distro one.
+func DesktopAppID(vm string) string { return vm + ".orthogonals" }
 
-// DisplayName returns the display name a defined VM's desktop entry carries.
-func DisplayName(root, vm string) string {
-	b, err := os.ReadFile(filepath.Join(root, desktopEntryPath(vm)))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if name, ok := strings.CutPrefix(line, "Name="); ok {
-			return name
-		}
-	}
-	return ""
+func desktopEntryPath(vm string) string {
+	return "/usr/share/applications/" + DesktopAppID(vm) + ".desktop"
 }
 
 // igpuApps are desktop entries opted out of the NVIDIA Vulkan driver.
@@ -287,7 +270,6 @@ var igpuApps = []string{
 	"discord.desktop",
 }
 
-// vulkanDriverSelect is the VK_LOADER_DRIVERS_SELECT glob for the iGPU's Mesa driver.
 func vulkanDriverSelect(igpuVendor string) string {
 	if igpuVendor == hw.VendorAMD {
 		return "*radeon*"
@@ -323,7 +305,6 @@ func IGPUOverrides(root, igpuVendor string) ([]Artifact, error) {
 	return out, nil
 }
 
-// renderArtifacts renders every host configuration file for the profile.
 func renderArtifacts(p Profile) ([]Artifact, error) {
 	specs := artifactSpecs
 	if p.Laptop {
@@ -341,8 +322,7 @@ func renderArtifacts(p Profile) ([]Artifact, error) {
 }
 
 // Steps assembles the ordered host-configuration step list. boot is the live
-// state of the kernel args across the boot config; the zero value reads as a
-// host that carries none of them.
+// state of the kernel args; its zero value reads as a host carrying none.
 func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 	arts, err := renderArtifacts(p)
 	if err != nil {
@@ -355,8 +335,8 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 			Path: a.Path, Content: a.Content, Mode: a.Mode,
 		})
 	}
-	// Before libvirt-socket-reload below, which is what restarts virtqemud and
-	// so makes the new ACL live.
+	// Before libvirt-socket-reload below, which restarts virtqemud and so makes
+	// the new ACL live.
 	acl, err := DeviceACLStep(qemuConf)
 	if err != nil {
 		return nil, err
@@ -376,12 +356,12 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 		},
 		steps.Step{
 			ID: "selinux-lg-fcontext", Kind: steps.KindRunCmd,
-			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "svirt_tmpfs_t", "/dev/shm/looking-glass"},
-			UndoCmd: []string{"semanage", "fcontext", "-d", "/dev/shm/looking-glass"},
+			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "svirt_tmpfs_t", steps.LookingGlassSHM},
+			UndoCmd: []string{"semanage", "fcontext", "-d", steps.LookingGlassSHM},
 		},
 		steps.Step{
 			ID: "lg-shm-restorecon", Kind: steps.KindRunCmd,
-			Cmd: []string{"restorecon", "-i", "/dev/shm/looking-glass"},
+			Cmd: []string{"restorecon", "-i", steps.LookingGlassSHM},
 		},
 		// qemu_var_run_t is the policy's type for /var/lib/libvirt/qemu, where
 		// libvirt drops its own SPICE sockets; svirt_var_run_t does not exist.
@@ -394,12 +374,15 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 		// tmpfiles.d owns these from the next boot; this covers the install run.
 		steps.Step{
 			ID: "tmpfiles-create", Kind: steps.KindRunCmd,
-			Cmd: []string{"systemd-tmpfiles", "--create", "/etc/tmpfiles.d/looking-glass.conf"},
+			Cmd: []string{"systemd-tmpfiles", "--create", tmpfilesLookingGlass},
 		},
 		steps.Step{
 			ID: "spice-rundir-restorecon", Kind: steps.KindRunCmd,
 			Cmd: []string{"restorecon", "-R", "-i", steps.RunDirPath},
 		},
+		// No UndoCmd on purpose: the user may have been in libvirt before this
+		// ever ran, and removing them on undo would take away access orthogonals
+		// never granted.
 		steps.Step{
 			ID: "user-libvirt-group", Kind: steps.KindRunCmd,
 			Cmd: []string{"usermod", "-aG", "libvirt", p.User},
