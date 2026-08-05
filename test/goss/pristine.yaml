@@ -27,6 +27,10 @@ file:
     exists: false
   /etc/orthogonals/vms/{{.Vars.vm}}.xml:
     exists: false
+  /etc/default/grub:
+    exists: true
+    contains:
+      - "!intel_iommu=on"
 
 command:
   grubby --info=ALL:

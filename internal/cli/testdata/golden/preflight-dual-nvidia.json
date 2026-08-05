@@ -6,6 +6,11 @@
       "status": "pass"
     },
     {
+      "message": "/etc/default/grub is editable",
+      "name": "grub-defaults",
+      "status": "pass"
+    },
+    {
       "message": "found 2 NVIDIA dGPUs; exactly one is supported",
       "name": "gpu-topology",
       "remedy": "remove or disable the extra GPU",

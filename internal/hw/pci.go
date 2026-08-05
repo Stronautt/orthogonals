@@ -92,6 +92,20 @@ func (d DGPU) Addresses() []string {
 	return addrs
 }
 
+// UngroupedDevices is the addresses with no iommu_group. vfio-pci binds through
+// an IOMMU group and its probe fails with EINVAL without one, so this is a
+// precondition of a handover, not a diagnostic.
+func (d DGPU) UngroupedDevices() []string {
+	var out []string
+	if d.IOMMUGroup < 0 {
+		out = append(out, d.Address)
+	}
+	if d.Audio != nil && d.Audio.IOMMUGroup < 0 {
+		out = append(out, d.Audio.Address)
+	}
+	return out
+}
+
 // VendorDeviceIDs is the vendor:device pair of the GPU plus its audio
 // sibling's, if any — what vfio-pci binds to.
 func (d DGPU) VendorDeviceIDs() []string {

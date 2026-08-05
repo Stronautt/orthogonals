@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,34 @@ import (
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
+
+// bootConfigCarries reports whether any boot-config file under root mentions
+// tok. Wanted answers per target; these tests want the union across all of them,
+// which is the question "did anything write to the boot config at all".
+func bootConfigCarries(t *testing.T, root, tok string) bool {
+	t.Helper()
+	carries := false
+	for _, p := range []string{
+		filepath.Join(root, bls.EntriesPath),
+		filepath.Join(root, bls.KernelCmdlinePath),
+		filepath.Join(root, bls.GrubDefaultsPath),
+	} {
+		err := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil //nolint:nilerr // an absent target is not a carrier
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr == nil && strings.Contains(string(b), tok) {
+				carries = true
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", p, err)
+		}
+	}
+	return carries
+}
 
 // applyFakeBins lists every binary apply shells out to, plus hw.RequiredTools.
 var applyFakeBins = append([]string{
@@ -88,8 +118,8 @@ func TestApplyDryRunTouchesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "/var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("dry run wrote a manifest")
 	}
-	if w, _ := bls.Wanted(root, "intel_iommu=on"); len(w.Present) > 0 {
-		t.Errorf("dry run edited the BLS entries: %v", w.Present)
+	if bootConfigCarries(t, root, "intel_iommu=on") {
+		t.Error("dry run edited the boot config")
 	}
 }
 
@@ -249,16 +279,48 @@ func TestApplyRepairsKargsLostToAKernelUpdate(t *testing.T) {
 	if code, stdout, stderr := run(t, "undo", "--root", root, "--yes"); code != 0 {
 		t.Fatalf("undo exit %d\n%s%s", code, stdout, stderr)
 	}
-	if w, _ := bls.Wanted(root, "intel_iommu=on iommu=pt"); len(w.Present) > 0 {
-		t.Errorf("undo after a repair left %v on the boot config", w.Present)
+	for _, tok := range []string{"intel_iommu=on", "iommu=pt"} {
+		if bootConfigCarries(t, root, tok) {
+			t.Errorf("undo after a repair left %s on the boot config", tok)
+		}
 	}
 }
 
+func kernelArgsRecord(t *testing.T, m *steps.Manifest) steps.Record {
+	t.Helper()
+	for _, r := range m.Records {
+		if r.ID == "kernel-args" {
+			return r
+		}
+	}
+	t.Fatal("no kernel-args record journaled")
+	return steps.Record{}
+}
+
+// A host whose boot-config targets disagree before apply: one entry already
+// carries intel_iommu=on and nothing else does. Undo owes that entry its token
+// back and owes every other target the removal of what apply put there — a
+// single union of removals gets one of those two wrong whichever way it leans.
 func TestApplyUndoKeepsPreexistingKargs(t *testing.T) {
 	fakeApplyPath(t)
 	root := hwtest.ReferenceRoot(t)
 	hwtest.WriteFile(t, root, "boot/loader/entries/fedora-6.15.0.conf",
 		"title Fedora Linux (6.15.0) 44\noptions root=UUID=aaaa ro rhgb quiet intel_iommu=on\n")
+	bootFiles := []string{
+		"boot/loader/entries/fedora-6.15.0.conf",
+		"boot/loader/entries/fedora-6.14.0.conf",
+		"etc/kernel/cmdline",
+		"etc/default/grub",
+	}
+	before := map[string]string{}
+	for _, f := range bootFiles {
+		b, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[f] = string(b)
+	}
+
 	code, out := runApplyCLI(t, root, "--yes")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
@@ -267,16 +329,29 @@ func TestApplyUndoKeepsPreexistingKargs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range m.Records {
-		if r.ID != "kernel-args" {
-			continue
-		}
-		if r.UndoOp != steps.OpKernelArgsRem || r.UndoArgs["args"] != "iommu=pt" {
-			t.Errorf("undo = %s %v, want remove iommu=pt only — the user's intel_iommu=on must survive", r.UndoOp, r.UndoArgs)
-		}
-		return
+	rec := kernelArgsRecord(t, m)
+	want := map[string]string{
+		"/boot/loader/entries/fedora-6.15.0.conf": "iommu=pt",
+		"/boot/loader/entries/fedora-6.14.0.conf": "intel_iommu=on iommu=pt",
+		bls.KernelCmdlinePath:                     "intel_iommu=on iommu=pt",
+		bls.GrubDefaultsPath:                      "intel_iommu=on iommu=pt",
 	}
-	t.Fatal("no kernel-args record journaled")
+	if rec.UndoOp != steps.OpKernelArgsRem || !maps.Equal(rec.UndoArgs, want) {
+		t.Errorf("undo = %s %v,\nwant %v", rec.UndoOp, rec.UndoArgs, want)
+	}
+
+	if code, stdout, stderr := run(t, "undo", "--root", root, "--yes"); code != 0 {
+		t.Fatalf("undo exit %d\n%s%s", code, stdout, stderr)
+	}
+	for _, f := range bootFiles {
+		b, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != before[f] {
+			t.Errorf("undo did not restore %s:\nwas %q\nnow %q", f, before[f], b)
+		}
+	}
 }
 
 func TestApplyBadFlags(t *testing.T) {
@@ -307,8 +382,8 @@ func TestApplyRefusesPreflightFail(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
-	if w, _ := bls.Wanted(root, "intel_iommu=on"); len(w.Present) > 0 {
-		t.Errorf("refused apply still edited the BLS entries: %v", w.Present)
+	if bootConfigCarries(t, root, "intel_iommu=on") {
+		t.Error("refused apply still edited the boot config")
 	}
 	if _, err := os.Stat(filepath.Join(root, "var/lib/orthogonals/manifest.json")); err == nil {
 		t.Error("refused apply journaled steps")

@@ -110,6 +110,15 @@ manifest_records() { # root -> count
 		"$1/var/lib/orthogonals/manifest.json"
 }
 
+# journaled_write_paths lists every file apply rewrote, read from the journal
+# rather than hardcoded: a step added later is covered without touching this.
+journaled_write_paths() { # [root] -> one path per line
+	python3 -c 'import json,sys
+for r in json.load(open(sys.argv[1]))["records"]:
+    if r.get("path"):
+        print(r["path"])' "${1:-}/var/lib/orthogonals/manifest.json"
+}
+
 # pipeline_state reads the `up` state machine's persisted stage.
 pipeline_state() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$STATE"; }
 

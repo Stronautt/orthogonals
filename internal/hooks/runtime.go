@@ -58,10 +58,17 @@ func Detach(root, user string, sd sysd.Client) error {
 	if err != nil {
 		return err
 	}
-	if deviceDriver(root, gpu) == "vfio-pci" {
+	if deviceDriver(root, gpu.Address) == "vfio-pci" {
 		log("GPU already on vfio-pci — nothing to do")
 		boostGovernor(root, log)
 		return nil
+	}
+	// Before the first mutation: without a group the handover would unload the
+	// NVIDIA stack and then strand the card on no driver at all.
+	if err := iommuGroupErr(gpu); err != nil {
+		log("refusing handover — %v", err)
+		notify.Send(vmNote(user, "GPU passthrough needs an IOMMU — the VM cannot start.\nRun: orthogonals status", true))
+		return err
 	}
 	log("handover start: %s", strings.Join(devs, " "))
 
@@ -75,8 +82,17 @@ func Detach(root, user string, sd sysd.Client) error {
 		return fmt.Errorf("GPU busy — close these apps first: %s", apps)
 	}
 	log("holder gate passed")
-	if err := wakeDevices(root, devs, log); err != nil {
-		return abort(root, user, log, "%v", err)
+
+	// The marker goes after the holder gate: a refusal there mutates nothing, and
+	// a marker left behind it would make the release hook unbind a healthy GPU.
+	h := &handover{root: root, user: user, devs: devs, sd: sd, log: log}
+	if err := h.begin(); err != nil {
+		return h.abort("record handover: %v", err)
+	}
+	woken, err := wakeDevices(root, devs, log)
+	h.woken = woken
+	if err != nil {
+		return h.abort("%v", err)
 	}
 	// Non-urgent: every failure past this point notifies urgently, so this is
 	// never the last word left on screen.
@@ -85,31 +101,31 @@ func Detach(root, user string, sd sysd.Client) error {
 	for _, m := range NVIDIAUnloadOrder {
 		if hw.ModuleLoaded(root, m) {
 			if err := DeleteModule(m); err != nil {
-				return abort(root, user, log, "unload %s: %v", m, err)
+				return h.abort("unload %s: %v", m, err)
 			}
 		}
 	}
 	log("nvidia modules unloaded")
 
 	if out, err := exec.Command("modprobe", "vfio-pci").CombinedOutput(); err != nil {
-		return abort(root, user, log, "modprobe vfio-pci: %v\n%s", err, bytes.TrimSpace(out))
+		return h.abort("modprobe vfio-pci: %v\n%s", err, bytes.TrimSpace(out))
 	}
 	for _, d := range devs {
 		if err := hw.SetDriverOverride(root, d, "vfio-pci"); err != nil {
-			return abort(root, user, log, "override %s: %v", d, err)
+			return h.abort("override %s: %v", d, err)
 		}
 		if err := hw.UnbindDevice(root, d); err != nil {
-			return abort(root, user, log, "unbind %s: %v", d, err)
+			return h.abort("unbind %s: %v", d, err)
 		}
 		if err := hw.ProbeDevice(root, d); err != nil {
-			return abort(root, user, log, "probe %s: %v", d, err)
+			return h.abort("probe %s: %v", d, err)
 		}
 	}
 	log("bound to vfio-pci")
 
 	for _, d := range devs {
 		if drv := deviceDriver(root, d); drv != "vfio-pci" {
-			return abort(root, user, log, "%s ended on %q, not vfio-pci", d, drv)
+			return h.abort("%s ended on %q, not vfio-pci", d, drv)
 		}
 	}
 	_ = sd.TryRestartUnit(hostcfg.UnitSwitcheroo)
@@ -126,8 +142,12 @@ func Reattach(root, user string, sd sysd.Client) error {
 		return err
 	}
 	restoreGovernor(root, log)
-	if deviceDriver(root, gpu) != "vfio-pci" {
-		log("GPU not on vfio-pci (failed/refused start) — nothing to undo")
+	// The marker, not the bind, is what says a handover happened: a detach killed
+	// partway leaves no bind to test, sometimes nothing but unloaded modules, and
+	// a bind test calls that "nothing to undo". The bind test stays for a marker
+	// lost to anything but a reboot.
+	if !handoverStarted(root) && deviceDriver(root, gpu.Address) != "vfio-pci" {
+		log("no handover in progress (failed/refused start) — nothing to undo")
 		return nil
 	}
 	log("reattach start: %s", strings.Join(devs, " "))
@@ -141,6 +161,7 @@ func Reattach(root, user string, sd sysd.Client) error {
 	}
 	if err := HealthCheck(root); err == nil {
 		restoreRuntimePM(root, devs, log)
+		ClearHandover(root)
 		log("GPU back on host, healthy")
 		return nil
 	}
@@ -150,6 +171,7 @@ func Reattach(root, user string, sd sysd.Client) error {
 	}
 	if err := HealthCheck(root); err == nil {
 		restoreRuntimePM(root, devs, log)
+		ClearHandover(root)
 		log("GPU back on host after PCI rescan, healthy")
 		return nil
 	}
@@ -159,22 +181,24 @@ func Reattach(root, user string, sd sysd.Client) error {
 }
 
 // wakeDevices resumes a runtime-suspended device to D0 before its driver is
-// unbound: unbinding a D3cold device fails.
-func wakeDevices(root string, devs []string, log logFunc) error {
+// unbound: unbinding a D3cold device fails. woken names the devices it pinned,
+// including on the error return — a partial wake still has to be handed back.
+func wakeDevices(root string, devs []string, log logFunc) (woken []string, err error) {
 	for _, d := range devs {
 		if status := runtimeStatus(root, d); status != "suspended" && status != "suspending" {
 			continue
 		}
 		log("waking %s from runtime suspend", d)
 		if err := hw.SetPowerControl(root, d, "on"); err != nil {
-			return fmt.Errorf("wake %s: %w", d, err)
+			return woken, fmt.Errorf("wake %s: %w", d, err)
 		}
+		woken = append(woken, d)
 		if err := waitActive(root, d); err != nil {
-			return err
+			return woken, err
 		}
 		log("%s active", d)
 	}
-	return nil
+	return woken, nil
 }
 
 func waitActive(root, d string) error {
@@ -234,23 +258,40 @@ func reloadNVIDIA(root string, devs []string, sd sysd.Client) error {
 	return nil
 }
 
-func abort(root, user string, log logFunc, format string, a ...any) error {
-	err := fmt.Errorf(format, a...)
-	log("failed — %v", err)
-	notify.Send(vmNote(user, "GPU handover failed — VM not started. See: "+filepath.Join(root, LogPath), true))
-	return err
+// iommuGroupErr reports why the passthrough devices cannot reach vfio-pci: it
+// binds through an IOMMU group and its probe fails with EINVAL without one.
+func iommuGroupErr(gpu hw.DGPU) error {
+	ungrouped := gpu.UngroupedDevices()
+	if len(ungrouped) == 0 {
+		return nil
+	}
+	return fmt.Errorf("no IOMMU group on %s — the kernel cannot bind it to vfio-pci. "+
+		"A package update can regenerate the boot config and drop the kernel arguments: "+
+		"run `orthogonals status`, and if the arguments are gone re-run `sudo orthogonals apply --yes` "+
+		"and reboot. Otherwise enable VT-d/AMD-Vi in firmware", strings.Join(ungrouped, " "))
 }
 
-func nvidiaDevices(root string) (gpu string, devs []string, err error) {
+// CheckIOMMUGroups is iommuGroupErr for callers that have not scanned yet. A
+// host it cannot scan reports nil: Detach's gate is the authority, this only
+// lets the CLI refuse before libvirt does.
+func CheckIOMMUGroups(root string) error {
+	gpu, _, err := nvidiaDevices(root)
+	if err != nil {
+		return nil
+	}
+	return iommuGroupErr(gpu)
+}
+
+func nvidiaDevices(root string) (gpu hw.DGPU, devs []string, err error) {
 	gpus, err := hw.ScanGPUs(root)
 	if err != nil {
-		return "", nil, err
+		return hw.DGPU{}, nil, err
 	}
 	nvidia, err := gpus.SoleNVIDIA()
 	if err != nil {
-		return "", nil, err
+		return hw.DGPU{}, nil, err
 	}
-	return nvidia.Address, nvidia.Addresses(), nil
+	return nvidia, nvidia.Addresses(), nil
 }
 
 type holder struct {

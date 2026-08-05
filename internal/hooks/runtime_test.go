@@ -20,7 +20,19 @@ import (
 
 func TestMain(m *testing.M) {
 	LogWriter = io.Discard
-	os.Exit(m.Run())
+	// An empty PATH, so a binary no test faked cannot resolve to the developer's
+	// own nvidia-smi or modprobe. fakeBin prepends, so faking still works; the
+	// shebang in its scripts is an absolute path and does not need PATH.
+	dir, err := os.MkdirTemp("", "hooks-nopath")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("PATH", dir); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 const (
@@ -40,6 +52,9 @@ func hookRoot(t *testing.T) string {
 			t.Fatal(err)
 		}
 		hwtest.WriteFile(t, root, "sys/bus/pci/drivers/"+dev.drv+"/unbind", "")
+		// Real sysfs always exposes driver_override; seeding it lets a rollback
+		// that clears the override land byte-identically on where it started.
+		hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+dev.addr+"/driver_override", "\n")
 	}
 	for _, m := range NVIDIAUnloadOrder {
 		hwtest.WriteFile(t, root, "sys/module/"+m+"/refcnt", "0\n")
@@ -84,11 +99,18 @@ func stubRuntimeStatusFromControl(t *testing.T) {
 
 func stubDeleteModule(t *testing.T, err error) *[]string {
 	t.Helper()
+	return stubDeleteModuleFunc(t, func(string) error { return err })
+}
+
+// stubDeleteModuleFunc is stubDeleteModule for a test that has to fail on one
+// named module rather than on all of them.
+func stubDeleteModuleFunc(t *testing.T, fn func(name string) error) *[]string {
+	t.Helper()
 	var got []string
 	old := DeleteModule
 	DeleteModule = func(name string) error {
 		got = append(got, name)
-		return err
+		return fn(name)
 	}
 	t.Cleanup(func() { DeleteModule = old })
 	return &got
@@ -192,6 +214,70 @@ func TestDetachPersistencedStoppedBeforeHolderGate(t *testing.T) {
 	if len(sd.Calls) == 0 || sd.Calls[0] != "stop nvidia-persistenced.service" {
 		t.Errorf("persistenced stop must come first: %v", sd.Calls)
 	}
+}
+
+func stripIOMMUGroups(t *testing.T, root string) {
+	t.Helper()
+	for _, addr := range []string{gpuAddr, audAddr} {
+		if err := os.Remove(filepath.Join(root, "sys/bus/pci/devices", addr, "iommu_group")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A host that booted without an IOMMU cannot bind vfio-pci at all, so the
+// refusal has to land before the first mutation — including the unit stops,
+// which nothing restores.
+func TestDetachRefusesWithoutIOMMUGroup(t *testing.T) {
+	root := hookRoot(t)
+	stripIOMMUGroups(t, root)
+	stubDeviceDriver(t, driverFromOverride)
+	unloaded := stubDeleteModule(t, nil)
+	notes := stubNotify(t)
+	fakeBin(t, "modprobe", "")
+	sd := &sysdtest.Fake{}
+
+	err := Detach(root, "tester", sd)
+	if err == nil || !strings.Contains(err.Error(), "no IOMMU group") {
+		t.Fatalf("err = %v, want a refusal naming the missing IOMMU group", err)
+	}
+	if !strings.Contains(err.Error(), gpuAddr) {
+		t.Errorf("refusal does not name the device: %v", err)
+	}
+	if len(sd.Calls) != 0 {
+		t.Errorf("units touched before the gate: %v", sd.Calls)
+	}
+	if len(*unloaded) != 0 {
+		t.Errorf("modules unloaded without an IOMMU: %v", *unloaded)
+	}
+	if got := read(t, filepath.Join(root, "sys/bus/pci/devices", gpuAddr, "driver_override")); strings.TrimSpace(got) != "" {
+		t.Errorf("driver_override = %q, want untouched before the gate", got)
+	}
+	if len(*notes) == 0 || !strings.Contains((*notes)[0], "needs an IOMMU") {
+		t.Errorf("no refusal notification: %v", *notes)
+	}
+}
+
+func TestCheckIOMMUGroups(t *testing.T) {
+	t.Run("grouped host passes", func(t *testing.T) {
+		if err := CheckIOMMUGroups(hookRoot(t)); err != nil {
+			t.Errorf("CheckIOMMUGroups = %v, want nil", err)
+		}
+	})
+	t.Run("ungrouped host refuses", func(t *testing.T) {
+		root := hookRoot(t)
+		stripIOMMUGroups(t, root)
+		if err := CheckIOMMUGroups(root); err == nil {
+			t.Error("CheckIOMMUGroups = nil, want a refusal")
+		}
+	})
+	// An unscannable root is not a pass — it is no answer, and Detach's own gate
+	// is the one that refuses.
+	t.Run("unscannable root defers", func(t *testing.T) {
+		if err := CheckIOMMUGroups(t.TempDir()); err != nil {
+			t.Errorf("CheckIOMMUGroups = %v, want nil", err)
+		}
+	})
 }
 
 func TestDetachHolderRefusal(t *testing.T) {
@@ -440,6 +526,52 @@ func TestReattachHealthy(t *testing.T) {
 	}
 }
 
+// A detach killed partway leaves no bind to test — sometimes nothing but
+// unloaded modules — so the marker is what tells the release hook there is work
+// to do. Without it the GPU stays on no driver until the next reboot.
+func TestReattachUndoesInterruptedHandover(t *testing.T) {
+	root := hookRoot(t)
+	hwtest.WriteFile(t, root, handoverSaveFile, "")
+	for _, d := range []string{gpuAddr, audAddr} {
+		hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+d+"/driver_override", "vfio-pci\n")
+	}
+	stubDeviceDriver(t, func(_, _ string) string { return "" })
+	stubNotify(t)
+	modprobe := fakeBin(t, "modprobe", "")
+	fakeBin(t, "nvidia-smi", "")
+
+	if err := Reattach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Reattach: %v", err)
+	}
+	for _, d := range []string{gpuAddr, audAddr} {
+		if got := read(t, filepath.Join(root, "sys/bus/pci/devices", d, "driver_override")); strings.TrimSpace(got) != "" {
+			t.Errorf("%s driver_override = %q, want cleared", d, got)
+		}
+	}
+	if got := read(t, modprobe); got != "nvidia\nnvidia_uvm\nnvidia_drm\n" {
+		t.Errorf("reload order = %q, want the nvidia stack reloaded", got)
+	}
+	if handoverStarted(root) {
+		t.Error("marker survived a healthy reattach")
+	}
+}
+
+// A start that never mutated anything must not cost the desktop its display
+// driver: no marker, no undo.
+func TestReattachWithoutMarkerDoesNothing(t *testing.T) {
+	root := hookRoot(t)
+	stubDeviceDriver(t, func(_, _ string) string { return "nvidia" })
+	stubNotify(t)
+	modprobe := fakeBin(t, "modprobe", "")
+
+	if err := Reattach(root, "tester", &sysdtest.Fake{}); err != nil {
+		t.Fatalf("Reattach: %v", err)
+	}
+	if _, err := os.Stat(modprobe); err == nil {
+		t.Error("reattach reloaded the driver stack with no handover in progress")
+	}
+}
+
 func TestReattachFallbackThenHealthy(t *testing.T) {
 	root := hookRoot(t)
 	hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+gpuAddr+"/driver_override", "vfio-pci\n")
@@ -448,7 +580,8 @@ func TestReattachFallbackThenHealthy(t *testing.T) {
 	fakeBin(t, "modprobe", "")
 	RemoveSettle, RescanSettle = time.Millisecond, time.Millisecond
 	counter := filepath.Join(t.TempDir(), "n")
-	fakeBin(t, "nvidia-smi", "n=$(cat '"+counter+"' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '"+counter+"'; [ $n -ge 2 ] || exit 1")
+	// Shell builtins only: TestMain empties PATH, so no coreutils to call.
+	fakeBin(t, "nvidia-smi", "n=0; [ -f '"+counter+"' ] && read n < '"+counter+"'; n=$((n+1)); echo $n > '"+counter+"'; [ $n -ge 2 ] || exit 1")
 
 	if err := Reattach(root, "tester", &sysdtest.Fake{}); err != nil {
 		t.Fatalf("Reattach: %v", err)

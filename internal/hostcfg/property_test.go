@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -74,44 +75,45 @@ func snapshot(t *rapid.T, root string) string {
 	return s
 }
 
-// seedPreexisting adds a subset of the profile's kernel args to every boot entry
-// and to /etc/kernel/cmdline — a host that carried them carries them in both,
-// since kernel-install writes one from the other. kernelArgsStep undoes only
-// what it added, so undo must leave these in place.
+// seedPreexisting adds a subset of the profile's kernel args to each boot-config
+// target, drawn per target so the targets may disagree. That disagreement is the
+// case a single union of removals gets wrong whichever way it leans: undo is
+// journaled per target, so every one of them owes back exactly what it started
+// with.
 func seedPreexisting(t *rapid.T, root string, p Profile) {
 	t.Helper()
 	args := strings.Fields(KernelArgs(p))
-	keep := make([]string, 0, len(args))
-	for _, a := range args {
-		if rapid.Bool().Draw(t, "preexisting") {
-			keep = append(keep, a)
+	subset := func(label string) []string {
+		var keep []string
+		for _, a := range args {
+			if rapid.Bool().Draw(t, label+" carries "+a) {
+				keep = append(keep, a)
+			}
 		}
+		return keep
 	}
-	if len(keep) == 0 {
-		return
+	splice := func(path, after string, keep []string) {
+		if len(keep) == 0 {
+			return
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		updated := strings.Replace(string(b), after, after+strings.Join(keep, " ")+" ", 1)
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			t.Fatalf("%v", err)
+		}
 	}
 	entries, err := filepath.Glob(filepath.Join(root, "boot/loader/entries/*.conf"))
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("no boot entries in fixture: %v", err)
 	}
-	for _, e := range entries {
-		b, err := os.ReadFile(e)
-		if err != nil {
-			t.Fatalf("%v", err)
-		}
-		updated := strings.Replace(string(b), "options ", "options "+strings.Join(keep, " ")+" ", 1)
-		if err := os.WriteFile(e, []byte(updated), 0o644); err != nil {
-			t.Fatalf("%v", err)
-		}
+	for i, e := range entries {
+		splice(e, "options ", subset("entry "+strconv.Itoa(i)))
 	}
-	cmdline := filepath.Join(root, bls.KernelCmdlinePath)
-	b, err := os.ReadFile(cmdline)
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	if err := os.WriteFile(cmdline, []byte(strings.Join(keep, " ")+" "+string(b)), 0o644); err != nil {
-		t.Fatalf("%v", err)
-	}
+	splice(filepath.Join(root, bls.KernelCmdlinePath), "", subset("cmdline"))
+	splice(filepath.Join(root, bls.GrubDefaultsPath), `GRUB_CMDLINE_LINUX="`, subset("grub"))
 }
 
 // For any profile, undo puts the host back exactly as it was — including kernel

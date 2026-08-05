@@ -50,5 +50,29 @@ EOF
 	pass "$kind (preflight fails on $check, apply refused and wrote nothing)"
 done
 
+# A /etc/default/grub this build will not edit is a refusal of its own. The
+# alternative to naming the line is appending an assignment past it, which wins
+# under sh and drops whatever the host booted with at the next regeneration.
+step "grub-export"
+root=$WORK/grub-export
+prep_root reference "$root"
+sed -i 's/^GRUB_CMDLINE_LINUX=/export GRUB_CMDLINE_LINUX=/' "$root/etc/default/grub"
+grep -q '^export GRUB_CMDLINE_LINUX=' "$root/etc/default/grub" ||
+	fail "grub-export: the fixture no longer has a GRUB_CMDLINE_LINUX line to export"
+snapshot_into "$root" grub-export
+
+run 1 preflight --root "$root"
+grep -q 'grub-defaults' "$WORK/out" ||
+	fail "grub-export: preflight never named the grub-defaults check"
+grep -q 'boot-entries.*fail' "$WORK/out" &&
+	fail "grub-export: a grub value must not fail the boot-entries check"
+
+rc=$(run_any apply --root "$root" --user testuser --yes)
+[ "$rc" != 0 ] || fail "grub-export: apply --yes succeeded on a grub file it cannot edit"
+[ -e "$root/var/lib/orthogonals/manifest.json" ] &&
+	fail "grub-export: refused apply still wrote a manifest"
+assert_restored "$root" grub-export "grub-export refused apply"
+pass "grub-export (an unmanageable GRUB_CMDLINE_LINUX refuses apply and changes nothing)"
+
 echo
-echo "refusal: all ${#SCENARIOS[@]} rejected hosts were left untouched"
+echo "refusal: every rejected host was left untouched"

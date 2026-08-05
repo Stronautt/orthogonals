@@ -10,6 +10,13 @@ file:
     contains:
       - intel_iommu=on
       - iommu=pt
+  # grub2-mkconfig rebuilds the entries and /etc/kernel/cmdline from this file,
+  # so args missing here survive only until the next update that regenerates.
+  /etc/default/grub:
+    exists: true
+    contains:
+      - intel_iommu=on
+      - iommu=pt
   /etc/dracut.conf.d/vfio.conf:
     exists: true
     mode: "0644"
@@ -66,6 +73,11 @@ command:
     stdout:
       - intel_iommu=on
       - iommu=pt
+  # WriteAtomic renames a temp file into place, and a temp file takes the
+  # directory's type transition rather than the label of the file it replaces:
+  # /etc/default is etc_t while /etc/default/grub is bootloader_etc_t.
+  matchpathcon -V /etc/default/grub:
+    exit-status: 0
   semanage fcontext -l:
     exit-status: 0
     stdout:

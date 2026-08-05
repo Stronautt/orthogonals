@@ -41,6 +41,15 @@ func sharedHostFiles(cpuVendorID string) []file {
 		// kernel, so an arg apply leaves out of this file is dropped by the
 		// next kernel update.
 		{"etc/kernel/cmdline", "root=UUID=aaaa ro rhgb quiet\n"},
+		// grub2-mkconfig regenerates both files above from this one, so an arg
+		// apply leaves out of it is dropped by the next update that regenerates.
+		// GRUB_DISTRIBUTOR carries the shell expansion Fedora ships: the editor
+		// has to leave lines other than GRUB_CMDLINE_LINUX alone.
+		{"etc/default/grub", "GRUB_TIMEOUT=5\n" +
+			"GRUB_DISTRIBUTOR=\"$(sed 's, release .*$,,g' /etc/system-release)\"\n" +
+			"GRUB_DEFAULT=saved\n" +
+			"GRUB_CMDLINE_LINUX=\"rhgb quiet\"\n" +
+			"GRUB_ENABLE_BLSCFG=true\n"},
 		// Fedora 44's shipped qemu.conf: the cgroup_device_acl block commented
 		// out and missing /dev/kvm. apply rewrites this file, so the fixture has
 		// to carry the trap.

@@ -34,7 +34,35 @@ type Facts struct {
 	// unprivileged preflight cannot judge the boot entries either way.
 	BLSUnreadable bool          `json:"bls_unreadable,omitempty"`
 	Signing       ModuleSigning `json:"module_signing"`
+	// GrubError is why /etc/default/grub cannot be edited, "" when it can. Kept
+	// apart from BLSError: the remedy is one line in one file, not a boot-config
+	// conversion.
+	GrubError string `json:"grub_error,omitempty"`
+	// KernelArgs is what became of the args a previous apply journaled, and
+	// KernelArgsMissing the tokens that state is about.
+	KernelArgs        KernelArgsState `json:"kernel_args_state,omitempty"`
+	KernelArgsMissing []string        `json:"kernel_args_missing,omitempty"`
 }
+
+// KernelArgsState is what preflight knows about the kernel args a previous apply
+// recorded. Every inactive-IOMMU remedy turns on it, and "apply will fix this"
+// is true in exactly one of them.
+type KernelArgsState string
+
+const (
+	// KernelArgsUnknown is an unprivileged run: the manifest is root-only, so
+	// this preflight cannot tell whether apply has ever run. Reporting it as
+	// never-applied is what told a host that had lost its args to run the apply
+	// it had already run. It is the zero value on purpose — a Facts nobody
+	// filled in knows nothing, and saying so is the one answer never wrong.
+	KernelArgsUnknown KernelArgsState = ""
+	KernelArgsNever   KernelArgsState = "never-applied"
+	// KernelArgsLostBoot is journaled args the boot config no longer carries —
+	// what a regeneration from /etc/default/grub leaves behind.
+	KernelArgsLostBoot KernelArgsState = "missing-from-boot-config"
+	KernelArgsPending  KernelArgsState = "pending-reboot"
+	KernelArgsLive     KernelArgsState = "live"
+)
 
 // GatherFacts reads the live host (prefixed by root, the test seam). Every
 // probe is best-effort: an unreadable path is reported as the absent fact it
@@ -62,12 +90,56 @@ func GatherFacts(root string) Facts {
 	if f.SwitcherooEnabled {
 		f.SwitcherooNVIDIA = switcherooListsNVIDIA(root)
 	}
-	if err := bls.CheckAccess(root); errors.Is(err, fs.ErrPermission) {
+	f.classifyBoot(bls.CheckAccess(root))
+	f.KernelArgs, f.KernelArgsMissing = kernelArgsState(root)
+	return f
+}
+
+// classifyBoot routes a boot-config read error to the check that owns it: a
+// root-only entries directory is not a broken host, and a grub line this build
+// will not edit is not a BLS-entry problem.
+func (f *Facts) classifyBoot(err error) {
+	var ge *bls.GrubError
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrPermission):
 		f.BLSUnreadable = true
-	} else if err != nil {
+	case errors.As(err, &ge):
+		f.GrubError = ge.Error()
+	default:
 		f.BLSError = err.Error()
 	}
-	return f
+}
+
+// kernelArgsState answers what became of the args a previous apply journaled. A
+// manifest it cannot read reports unknown, never never-applied: folding "cannot
+// read" into "was never there" is the same mistake as folding EACCES into
+// "absent", and here it prints "apply will add them" to a host that has.
+func kernelArgsState(root string) (KernelArgsState, []string) {
+	args, err := hostcfg.JournaledKernelArgs(root)
+	switch {
+	case errors.Is(err, hostcfg.ErrNoKernelArgsStep):
+		return KernelArgsNever, nil
+	case err != nil:
+		return KernelArgsUnknown, nil
+	}
+	// A boot config that will not parse is already reported: CheckAccess runs the
+	// same parse. Falling through to the live check keeps the remedy at "reboot"
+	// rather than inventing a state out of a file nobody could read.
+	if w, err := bls.Wanted(root, args); err == nil && len(w.Missing) > 0 {
+		return KernelArgsLostBoot, w.Missing
+	}
+	// An unreadable /proc/cmdline is not proof the args are live. Reporting
+	// them all missing keeps the remedy at "reboot", where reading it as
+	// live would blame the firmware for a state never observed.
+	missing, err := bls.MissingLive(root, args)
+	if err != nil {
+		missing = strings.Fields(args)
+	}
+	if len(missing) > 0 {
+		return KernelArgsPending, missing
+	}
+	return KernelArgsLive, nil
 }
 
 func scanForeignVFIO(root string) []string {

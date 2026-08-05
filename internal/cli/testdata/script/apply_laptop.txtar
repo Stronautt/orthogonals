@@ -27,6 +27,7 @@ exec orthogonals apply --root $WORK/amd --user testuser --yes
 exists $WORK/amd/etc/modprobe.d/nvidia-rtd3.conf
 grep 'iommu=pt' $WORK/amd/boot/loader/entries/fedora-6.15.0.conf
 ! grep 'intel_iommu' $WORK/amd/boot/loader/entries/fedora-6.15.0.conf
+grep 'GRUB_CMDLINE_LINUX="rhgb quiet iommu=pt"' $WORK/amd/etc/default/grub
 
 exec orthogonals undo --root $WORK/amd --yes
 snapshot $WORK/amd amd-restored.txt

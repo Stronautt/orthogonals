@@ -1,10 +1,13 @@
 package preflight
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/steps"
 )
 
 func fakeSwitcheroo(t *testing.T, listsNVIDIA bool) {
@@ -34,6 +37,40 @@ func TestGatherFacts(t *testing.T) {
 		}
 		if f.SwitcherooEnabled || f.SwitcherooNVIDIA {
 			t.Error("switcheroo facts should be false on a bare root")
+		}
+	})
+	// The manifest is 0600. Folding "cannot read it" into "apply has never run"
+	// prints the never-applied remedy to a host that has already applied — and
+	// then lost its args, which is the state that remedy is wrong for.
+	t.Run("kernel-arg state", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a 0000 file")
+		}
+		root := t.TempDir()
+		if got := GatherFacts(root).KernelArgs; got != KernelArgsNever {
+			t.Errorf("no manifest: KernelArgs = %q, want %q", got, KernelArgsNever)
+		}
+
+		hwtest.WriteFile(t, root, "var/lib/orthogonals/manifest.json",
+			`{"records":[{"id":"kernel-args","kind":"op","op":"kernel-args-add","op_args":{"args":"intel_iommu=on"}}]}`)
+		if err := os.Chmod(filepath.Join(root, steps.ManifestPath("")), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if got := GatherFacts(root).KernelArgs; got != KernelArgsUnknown {
+			t.Errorf("unreadable manifest: KernelArgs = %q, want %q", got, KernelArgsUnknown)
+		}
+	})
+	// A grub line this build will not edit is not a BLS-entry problem: it has its
+	// own check, and its own remedy.
+	t.Run("a grub refusal does not become a BLS error", func(t *testing.T) {
+		root := hwtest.ReferenceRoot(t)
+		hwtest.WriteFile(t, root, "etc/default/grub", "export GRUB_CMDLINE_LINUX=\"quiet\"\n")
+		f := GatherFacts(root)
+		if !strings.Contains(f.GrubError, "assignment form") {
+			t.Errorf("GrubError = %q, want the parser's reason", f.GrubError)
+		}
+		if f.BLSError != "" {
+			t.Errorf("BLSError = %q, want empty — the entries are fine", f.BLSError)
 		}
 	})
 	t.Run("persistenced enabled and default net active", func(t *testing.T) {

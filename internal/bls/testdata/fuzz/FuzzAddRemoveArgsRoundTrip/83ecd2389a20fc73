@@ -1,0 +1,4 @@
+go test fuzz v1
+string("options ro quiet\n")
+string("quiet")
+string("00\nGRUB_CMDLINE_LINUX=0")

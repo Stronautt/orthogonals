@@ -6,6 +6,11 @@
       "status": "pass"
     },
     {
+      "message": "/etc/default/grub is editable",
+      "name": "grub-defaults",
+      "status": "pass"
+    },
+    {
       "message": "Intel iGPU 0000:00:02.0 + NVIDIA dGPU 0000:01:00.0",
       "name": "gpu-topology",
       "status": "pass"

@@ -86,7 +86,7 @@ func Verify(c virt.Client, root, vm string, out io.Writer) error {
 
 // staticBinding reports whether the host was applied with --binding=static.
 func staticBinding(root string) bool {
-	args, err := manifestKernelArgs(root)
+	args, err := hostcfg.JournaledKernelArgs(root)
 	return err == nil && strings.Contains(args, hostcfg.VFIOIDsPrefix)
 }
 

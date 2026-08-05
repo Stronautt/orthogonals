@@ -9,6 +9,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
@@ -49,7 +50,8 @@ var hardTools = map[string]bool{
 
 func Analyze(r *hw.Result, f Facts) []Check {
 	return []Check{
-		checkIOMMU(r),
+		checkIOMMU(r, f),
+		checkGrubDefaults(f),
 		checkGPUTopology(r),
 		checkDisplayTopology(r),
 		checkBootVGA(r),
@@ -86,6 +88,18 @@ func checkBLS(f Facts) Check {
 	return Check{name, Pass, "boot loader entries are readable", ""}
 }
 
+// checkGrubDefaults is its own check because its remedy is one line in one file.
+// Reported through checkBLS it inherited "convert to Boot Loader Spec", which
+// does nothing for a grub value orthogonals will not edit — and the host it was
+// aimed at was already BLS.
+func checkGrubDefaults(f Facts) Check {
+	const name = "grub-defaults"
+	if f.GrubError != "" {
+		return Check{name, Fail, f.GrubError, bls.GrubRemedy}
+	}
+	return Check{name, Pass, bls.GrubDefaultsPath + " is editable", ""}
+}
+
 func checkLibvirt(f Facts) Check {
 	const name = "libvirt"
 	if !f.LibvirtReachable {
@@ -110,15 +124,39 @@ func Overall(checks []Check) Status {
 	return out
 }
 
-func checkIOMMU(r *hw.Result) Check {
+// checkIOMMU turns on what became of the journaled kernel args. "apply will fix
+// this" is only true where apply has never run: once its args are journaled, an
+// inactive IOMMU means they were lost from the boot config, are waiting on a
+// reboot, or the firmware switch is off — and each wants a different thing done.
+func checkIOMMU(r *hw.Result, f Facts) Check {
 	const name = "iommu"
 	if r.Platform.IOMMUAddressWidth > 0 {
 		return Check{name, Pass, fmt.Sprintf("IOMMU active, host address width %d bits", r.Platform.IOMMUAddressWidth), ""}
 	}
 	tech, karg, bios := iommuTech(r.Platform.IOMMUTable, r.CPU.Vendor)
-	if r.Platform.IOMMUTable != "" {
-		return Check{name, Warn, "IOMMU is not active, but the firmware exposes " + tech,
-			fmt.Sprintf("no action needed — apply adds %s (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group", karg)}
+	// The first two states both fall through where the firmware exposes no IOMMU
+	// at all: no kernel argument reaches an IOMMU that is not there, so that is
+	// the firmware answer whatever the manifest does or does not say.
+	switch f.KernelArgs {
+	case KernelArgsUnknown:
+		if r.Platform.IOMMUTable != "" {
+			return Check{name, Warn,
+				"IOMMU is not active, and this run cannot tell whether apply has already configured it",
+				"re-run preflight as root — " + steps.ManifestPath("") + " is root-only"}
+		}
+	case KernelArgsNever:
+		if r.Platform.IOMMUTable != "" {
+			return Check{name, Warn, "IOMMU is not active, but the firmware exposes " + tech,
+				fmt.Sprintf("no action needed — apply adds %s (reboot required); re-run preflight after that reboot to validate the GPU IOMMU group", karg)}
+		}
+	case KernelArgsLostBoot:
+		return Check{name, Warn,
+			fmt.Sprintf("the boot configuration no longer carries %s", strings.Join(f.KernelArgsMissing, " ")),
+			fmt.Sprintf("a package update regenerated it from %s — re-run `sudo orthogonals apply --yes`, then reboot", bls.GrubDefaultsPath)}
+	case KernelArgsPending:
+		return Check{name, Warn,
+			fmt.Sprintf("%s is configured but not on the running kernel", strings.Join(f.KernelArgsMissing, " ")),
+			"reboot to pick it up, then re-run preflight to validate the GPU IOMMU group"}
 	}
 	if fw := firmwareIOMMUHint(r.Platform.FirmwareIOMMU); fw != "" {
 		bios += "; " + fw

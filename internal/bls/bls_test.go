@@ -3,6 +3,7 @@ package bls
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,7 +31,26 @@ initrd /initramfs-6.15.0.img
 options root=UUID=abc ro rhgb quiet
 `
 
-func TestWantedSplitsPresentFromMissing(t *testing.T) {
+// removeEverywhere strips the same tokens off every target. Production never
+// does this — apply journals what it added per target — so it is only for the
+// tests whose subject is the edit rather than the undo bookkeeping.
+func removeEverywhere(t *testing.T, root, args string) error {
+	t.Helper()
+	ts, err := targets(root)
+	if err != nil {
+		return err
+	}
+	byPath := make(map[string]string, len(ts))
+	for _, target := range ts {
+		byPath[target.rel] = args
+	}
+	return RemoveArgs(root, byPath)
+}
+
+// Undo removes per target, so what each one lacks has to be tracked separately:
+// a union would either strip a token from the entry that had it or leave
+// everything apply wrote to the entry that did not.
+func TestWantedReportsMissingPerTarget(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{
 		"a.conf": "options root=UUID=abc ro quiet\n",
@@ -40,11 +60,15 @@ func TestWantedSplitsPresentFromMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"ro", "quiet"}; !slices.Equal(got.Present, want) {
-		t.Errorf("Present = %v, want %v", got.Present, want)
-	}
 	if want := []string{"quiet", "iommu=pt"}; !slices.Equal(got.Missing, want) {
 		t.Errorf("Missing = %v, want %v", got.Missing, want)
+	}
+	want := map[string]string{
+		EntriesPath + "/a.conf": "iommu=pt",
+		EntriesPath + "/b.conf": "quiet iommu=pt",
+	}
+	if !maps.Equal(got.MissingIn, want) {
+		t.Errorf("MissingIn = %v, want %v", got.MissingIn, want)
 	}
 }
 
@@ -89,7 +113,7 @@ func TestArgsFollowKernelCmdline(t *testing.T) {
 	if want := "# managed by anaconda\nroot=UUID=abc ro intel_iommu=on iommu=pt\n"; got != want {
 		t.Errorf("cmdline after add = %q, want %q", got, want)
 	}
-	if err := RemoveArgs(root, "intel_iommu=on iommu=pt"); err != nil {
+	if err := removeEverywhere(t, root, "intel_iommu=on iommu=pt"); err != nil {
 		t.Fatal(err)
 	}
 	if want := "# managed by anaconda\nroot=UUID=abc ro\n"; readCmdline(t, root) != want {
@@ -181,7 +205,7 @@ func TestAddRemoveRoundTrip(t *testing.T) {
 	if err := AddArgs(root, args); err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveArgs(root, args); err != nil {
+	if err := removeEverywhere(t, root, args); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(filepath.Join(root, EntriesPath, "a.conf"))
@@ -214,9 +238,6 @@ func TestOptionsLinesCombine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(got.Present, "iommu=pt") {
-		t.Errorf("Present = %v, want iommu=pt from the second options line", got.Present)
-	}
 	if len(got.Missing) > 0 {
 		t.Errorf("Missing = %v, want none", got.Missing)
 	}
@@ -239,7 +260,7 @@ func TestAddArgsDoesNotDuplicateAcrossOptionsLines(t *testing.T) {
 		t.Errorf("options = %v, want %v", optionsOf(string(b)), want)
 	}
 
-	if err := RemoveArgs(root, "intel_iommu=on"); err != nil {
+	if err := removeEverywhere(t, root, "intel_iommu=on"); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(path)
@@ -251,7 +272,7 @@ func TestAddArgsDoesNotDuplicateAcrossOptionsLines(t *testing.T) {
 func TestRemoveToleratesMissingToken(t *testing.T) {
 	root := t.TempDir()
 	seedEntries(t, root, map[string]string{"a.conf": "options root=UUID=abc ro\n"})
-	if err := RemoveArgs(root, "iommu=pt"); err != nil {
+	if err := removeEverywhere(t, root, "iommu=pt"); err != nil {
 		t.Errorf("RemoveArgs on absent token: %v", err)
 	}
 }

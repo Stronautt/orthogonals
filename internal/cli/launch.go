@@ -47,6 +47,12 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 		return fail("query %s (is libvirtd running?): %v", name, err)
 	}
 	if !virt.Live(state) {
+		// Refuse here so the reason reads as a CLI error rather than reaching the
+		// user wrapped in a libvirt domain-start failure. The hook gate is what
+		// makes it safe; this only makes it legible.
+		if err := hooks.CheckIOMMUGroups(cfg.Root); err != nil {
+			return fail("%v", err)
+		}
 		if code, ok := ensureMemory(cfg.Root, c, name, fail); !ok {
 			return code
 		}

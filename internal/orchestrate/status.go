@@ -46,8 +46,8 @@ func Status(root string) []Check {
 		out = append(out, c)
 	}
 
-	if want, err := manifestKernelArgs(root); err == nil {
-		add("kernel arguments", kargsLive(root, want))
+	if _, err := hostcfg.JournaledKernelArgs(root); err == nil {
+		add("kernel arguments", KargsLive(root))
 		add("iommu", iommuActive(root))
 		add("vfio module", vfioModuleLoaded(root))
 	} else {

@@ -321,37 +321,35 @@ func TestKernelArgs(t *testing.T) {
 	}
 }
 
-func TestAddedKargsKeepsPreexistingTokens(t *testing.T) {
-	args := "intel_iommu=on iommu=pt"
-	cases := []struct {
-		name        string
-		preexisting []string
-		want        string
-	}{
-		{"none preexisting", nil, "intel_iommu=on iommu=pt"},
-		{"one preexisting", []string{"ro", "intel_iommu=on"}, "iommu=pt"},
-		{"all preexisting", []string{"intel_iommu=on", "iommu=pt"}, ""},
-	}
-	for _, tc := range cases {
-		if got := addedKargs(args, tc.preexisting); got != tc.want {
-			t.Errorf("%s: added = %q, want %q", tc.name, got, tc.want)
-		}
+// pristineBoot is what Wanted reports for the reference fixture carrying none of
+// the args: every target lacks all of them, so the undo names every target with
+// the full set.
+func pristineBoot(args string) bls.Args {
+	return bls.Args{
+		Missing: strings.Fields(args),
+		MissingIn: map[string]string{
+			bls.EntriesPath + "/fedora-6.14.0.conf": args,
+			bls.EntriesPath + "/fedora-6.15.0.conf": args,
+			bls.KernelCmdlinePath:                   args,
+			bls.GrubDefaultsPath:                    args,
+		},
 	}
 }
 
 func TestKernelArgsStepOmitsUndoWhenAllPreexisting(t *testing.T) {
 	args := "intel_iommu=on iommu=pt"
-	added := kernelArgsStep(args, bls.Args{Missing: strings.Fields(args)})
+	missing := map[string]string{bls.KernelCmdlinePath: args}
+	added := kernelArgsStep(args, bls.Args{Missing: strings.Fields(args), MissingIn: missing})
 	if added.Op != steps.OpKernelArgsAdd || added.Args["args"] != args {
 		t.Errorf("add step = %+v", added)
 	}
-	if added.UndoOp != steps.OpKernelArgsRem || added.UndoArgs["args"] != args {
-		t.Errorf("undo = %s %v, want remove-all", added.UndoOp, added.UndoArgs)
+	if added.UndoOp != steps.OpKernelArgsRem || !maps.Equal(added.UndoArgs, missing) {
+		t.Errorf("undo = %s %v, want %v", added.UndoOp, added.UndoArgs, missing)
 	}
 	if !added.Recheck {
 		t.Error("a token no target carries must recheck the journaled step")
 	}
-	s := kernelArgsStep(args, bls.Args{Present: strings.Fields(args)})
+	s := kernelArgsStep(args, bls.Args{})
 	if s.UndoOp != "" {
 		t.Errorf("undo should be empty when all preexisting, got %s", s.UndoOp)
 	}
@@ -360,16 +358,21 @@ func TestKernelArgsStepOmitsUndoWhenAllPreexisting(t *testing.T) {
 	}
 }
 
-// A token the entries have but /etc/kernel/cmdline lacks is still the step's
-// work: present (do not undo it) and missing (write it) at once.
-func TestKernelArgsStepRechecksPartialBootConfig(t *testing.T) {
+// A token the entries have but /etc/kernel/cmdline lacks is the step's work, and
+// the undo names only the target that lacked it: undoing it everywhere would
+// strip the entries of a token they carried before apply ran.
+func TestKernelArgsStepUndoesOnlyWhereItWrote(t *testing.T) {
 	args := "intel_iommu=on iommu=pt"
-	s := kernelArgsStep(args, bls.Args{Present: strings.Fields(args), Missing: []string{"iommu=pt"}})
+	s := kernelArgsStep(args, bls.Args{
+		Missing:   []string{"iommu=pt"},
+		MissingIn: map[string]string{bls.KernelCmdlinePath: "iommu=pt"},
+	})
 	if !s.Recheck {
 		t.Error("a token missing from one target must recheck the journaled step")
 	}
-	if s.UndoOp != "" {
-		t.Errorf("undo = %s, want none — the host already carried both tokens", s.UndoOp)
+	want := map[string]string{bls.KernelCmdlinePath: "iommu=pt"}
+	if !maps.Equal(s.UndoArgs, want) {
+		t.Errorf("undo = %v, want %v", s.UndoArgs, want)
 	}
 }
 
@@ -401,7 +404,8 @@ func stepByID(t *testing.T, list []steps.Step, id string) steps.Step {
 }
 
 func TestSteps(t *testing.T) {
-	list, err := Steps(referenceProfile(t, "dynamic"), bls.Args{}, fedoraQemuConf)
+	const kernelArgs = "intel_iommu=on iommu=pt"
+	list, err := Steps(referenceProfile(t, "dynamic"), pristineBoot(kernelArgs), fedoraQemuConf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +422,7 @@ func TestSteps(t *testing.T) {
 	if kargs.Op != steps.OpKernelArgsAdd || kargs.Args["args"] != "intel_iommu=on iommu=pt" {
 		t.Errorf("kargs op = %s %v, want kernel-args-add", kargs.Op, kargs.Args)
 	}
-	if kargs.UndoOp != steps.OpKernelArgsRem || kargs.UndoArgs["args"] != "intel_iommu=on iommu=pt" {
+	if kargs.UndoOp != steps.OpKernelArgsRem || !maps.Equal(kargs.UndoArgs, pristineBoot(kernelArgs).MissingIn) {
 		t.Errorf("kargs undo = %s %v", kargs.UndoOp, kargs.UndoArgs)
 	}
 	if !kargs.Reboot {
@@ -497,7 +501,7 @@ func TestSteps(t *testing.T) {
 func TestStepsNetActiveAndStatic(t *testing.T) {
 	p := referenceProfile(t, "static")
 	p.DefaultNetActive = true
-	list, err := Steps(p, bls.Args{}, fedoraQemuConf)
+	list, err := Steps(p, pristineBoot(KernelArgs(p)), fedoraQemuConf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,8 +514,13 @@ func TestStepsNetActiveAndStatic(t *testing.T) {
 	if !strings.Contains(kargs.Args["args"], "vfio-pci.ids=10de:2206,10de:1aef") {
 		t.Errorf("static binding must add vfio-pci.ids karg, got %v", kargs.Args)
 	}
-	if !strings.Contains(kargs.UndoArgs["args"], "vfio-pci.ids=") {
-		t.Error("static kargs undo must remove vfio-pci.ids too")
+	if len(kargs.UndoArgs) == 0 {
+		t.Fatal("static kargs step journaled no undo")
+	}
+	for target, undo := range kargs.UndoArgs {
+		if !strings.Contains(undo, "vfio-pci.ids=") {
+			t.Errorf("static kargs undo for %s = %q, must remove vfio-pci.ids too", target, undo)
+		}
 	}
 }
 

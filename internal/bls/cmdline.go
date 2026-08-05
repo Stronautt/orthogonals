@@ -1,57 +1,51 @@
 package bls
 
 import (
-	"errors"
-	"io/fs"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-// cmdlineTokens is /etc/kernel/cmdline's options tokens. ok is false when the
-// host has no such file, which leaves kernel-install falling back to
-// /proc/cmdline — already carrying the args once the host has booted with them.
-func cmdlineTokens(root string) ([]string, bool, error) {
-	b, err := os.ReadFile(filepath.Join(root, KernelCmdlinePath))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
+// cmdlineTarget is /etc/kernel/cmdline. A host without one contributes no
+// target, which leaves kernel-install falling back to /proc/cmdline — already
+// carrying the args once the host has booted with them. AddArgs must not create
+// one: its presence is what makes kernel-install stop consulting /proc/cmdline.
+func cmdlineTarget(root string) (*target, error) {
+	path := filepath.Join(root, KernelCmdlinePath)
+	lines, mode, err := fileLines(path)
+	if err != nil || lines == nil {
+		return nil, err
 	}
-	if err != nil {
-		return nil, false, err
-	}
-	toks, _ := parseCmdline(strings.Split(string(b), "\n"))
-	return toks, true, nil
+	toks, first := parseCmdline(lines)
+	return &target{
+		rel: KernelCmdlinePath, path: path, mode: mode,
+		was:    []byte(strings.Join(lines, "\n")),
+		tokens: toks,
+		render: func(toks []string) ([]byte, error) { return renderCmdline(lines, first, toks), nil },
+	}, nil
 }
 
-// editCmdline rewrites /etc/kernel/cmdline in place through fn, leaving comment
-// lines alone and collapsing the args onto the first line they occupied.
-// Absent file is not an error: AddArgs must not create one, since its presence
-// is what makes kernel-install stop consulting /proc/cmdline.
-func editCmdline(root string, fn transform) error {
-	path := filepath.Join(root, KernelCmdlinePath)
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(b), "\n")
-	toks, first := parseCmdline(lines)
+// renderCmdline leaves comment lines alone and collapses the args onto the first
+// line they occupied. A file of nothing but comments has no such line and gains
+// one: without it the target reports every arg missing forever, and apply
+// rechecks a step that can never satisfy it.
+func renderCmdline(lines []string, first int, toks []string) []byte {
+	out := slices.Clone(lines)
 	if first < 0 {
-		return nil
+		// Nothing to say and no line to say it on: appending an empty one would
+		// leave a line behind that undo could never take back off.
+		if len(toks) == 0 {
+			return []byte(strings.Join(out, "\n"))
+		}
+		return []byte(strings.Join(appendLine(out, strings.Join(toks, " ")), "\n"))
 	}
-	for i := first + 1; i < len(lines); i++ {
-		if t := strings.TrimSpace(lines[i]); t != "" && !strings.HasPrefix(t, "#") {
-			lines[i] = ""
+	for i := first + 1; i < len(out); i++ {
+		if t := strings.TrimSpace(out[i]); t != "" && !strings.HasPrefix(t, "#") {
+			out[i] = ""
 		}
 	}
-	lines[first] = strings.Join(fn(toks), " ")
-	return writeIfChanged(path, b, []byte(strings.Join(lines, "\n")), info.Mode())
+	out[first] = strings.Join(toks, " ")
+	return []byte(strings.Join(out, "\n"))
 }
 
 // parseCmdline collects the tokens of every non-comment line and the index of

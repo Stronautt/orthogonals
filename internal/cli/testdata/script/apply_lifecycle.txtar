@@ -40,6 +40,10 @@ chmod 0755 $WORK/root/etc/libvirt/hooks/qemu
 # every boot loader entry carries the IOMMU args
 grep 'intel_iommu=on iommu=pt' $WORK/root/boot/loader/entries/fedora-6.15.0.conf
 grep 'intel_iommu=on iommu=pt' $WORK/root/boot/loader/entries/fedora-6.14.0.conf
+grep 'intel_iommu=on iommu=pt' $WORK/root/etc/kernel/cmdline
+
+# and so does the file a regeneration would rebuild the two above from
+grep 'GRUB_CMDLINE_LINUX="rhgb quiet intel_iommu=on iommu=pt"' $WORK/root/etc/default/grub
 
 # the initramfs was regenerated
 grep -count=1 'regenerate-all' $WORK/fakebin/dracut.log
@@ -65,6 +69,8 @@ exec orthogonals undo --root $WORK/root --yes
 stdout 'undo complete'
 ! exists $WORK/root/var/lib/orthogonals/manifest.json
 ! grep 'intel_iommu' $WORK/root/boot/loader/entries/fedora-6.15.0.conf
+! grep 'intel_iommu' $WORK/root/etc/kernel/cmdline
+! grep 'intel_iommu' $WORK/root/etc/default/grub
 
 snapshot $WORK/root restored.txt
 cmp pristine.txt restored.txt

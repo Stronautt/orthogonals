@@ -338,11 +338,14 @@ func opKernelArgsAdd(_ *OpClients, root string, out io.Writer, args map[string]s
 	return nil
 }
 
+// opKernelArgsRem takes the whole args map: apply journals what it added to each
+// boot-config target separately, so undo can strip exactly that and leave alone
+// whatever a target carried beforehand.
 func opKernelArgsRem(_ *OpClients, root string, out io.Writer, args map[string]string) error {
-	if err := bls.RemoveArgs(root, args["args"]); err != nil {
+	if err := bls.RemoveArgs(root, args); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "kernel args removed: %s\n", args["args"])
+	fmt.Fprintf(out, "%s\n", opLine("kernel args removed:", args))
 	return nil
 }
 

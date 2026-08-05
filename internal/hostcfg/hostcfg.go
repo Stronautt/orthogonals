@@ -92,6 +92,26 @@ func IOMMUKernelArgs(iommuTable, cpuVendor string) string {
 	return "intel_iommu=on iommu=pt"
 }
 
+// ErrNoKernelArgsStep is a manifest that loaded and holds no kernel-args step.
+// Callers must keep it apart from a manifest they could not read at all: it is
+// 0600, so an unprivileged caller gets a permission error, and answering that
+// with "apply has never run" tells a configured host to configure itself.
+var ErrNoKernelArgsStep = errors.New("no journaled kernel-args step — run `orthogonals apply --yes` first")
+
+// JournaledKernelArgs is the kernel args a previous apply recorded, so a check
+// answers against what this host was configured with rather than what a fresh
+// profile would ask for now.
+func JournaledKernelArgs(root string) (string, error) {
+	m, err := steps.Load(root)
+	if err != nil {
+		return "", err
+	}
+	if args := m.OpArgs(KernelArgsStepID); args["args"] != "" {
+		return args["args"], nil
+	}
+	return "", ErrNoKernelArgsStep
+}
+
 func KernelArgs(p Profile) string {
 	args := IOMMUKernelArgs(p.IOMMUTable, p.CPUVendor)
 	if p.Binding == BindingStatic {
@@ -100,29 +120,27 @@ func KernelArgs(p Profile) string {
 	return args
 }
 
-func addedKargs(args string, preexisting []string) string {
-	var added []string
-	for _, tok := range strings.Fields(args) {
-		if !slices.Contains(preexisting, tok) {
-			added = append(added, tok)
-		}
-	}
-	return strings.Join(added, " ")
-}
-
 // kernelArgsStep adds args to every boot-config target, undoing only what it
 // added. A token any target lacks rechecks the journaled step: kernel-install
 // regenerates the entries from /etc/kernel/cmdline on every kernel update, so
 // "already applied" is not "still there".
+//
+// The undo is what each target was missing, per target: a host whose targets
+// disagreed before apply gets a different set written to each, and a single
+// union would either strip a token a file carried beforehand or, erring the
+// other way, leave everything apply wrote.
 func kernelArgsStep(args string, boot bls.Args) steps.Step {
 	s := steps.Step{
 		ID: KernelArgsStepID, Kind: steps.KindOp, Reboot: true,
 		Op: steps.OpKernelArgsAdd, Args: map[string]string{"args": args},
 		Recheck: len(boot.Missing) > 0,
 	}
-	if added := addedKargs(args, boot.Present); added != "" {
+	// Gate on Missing, not on MissingIn: MissingIn names every target whether or
+	// not it needs anything, so its length says nothing about whether this step
+	// will write.
+	if len(boot.Missing) > 0 {
 		s.UndoOp = steps.OpKernelArgsRem
-		s.UndoArgs = map[string]string{"args": added}
+		s.UndoArgs = boot.MissingIn
 	}
 	return s
 }

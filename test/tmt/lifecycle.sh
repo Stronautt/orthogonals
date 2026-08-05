@@ -72,9 +72,15 @@ for scenario in "${SCENARIOS[@]}"; do
 	# stop here survive only until the next kernel update.
 	grep -q "$kargs" "$root/etc/kernel/cmdline" ||
 		fail "$kind: /etc/kernel/cmdline missing kernel args '$kargs'"
+	# grub2-mkconfig rebuilds both files above from this one, so args that stop
+	# there survive only until the next update that regenerates them.
+	grep -q "$kargs" "$root/etc/default/grub" ||
+		fail "$kind: /etc/default/grub missing kernel args '$kargs'"
 	if [ "$kargs" = "iommu=pt" ]; then
 		grep -rq intel_iommu "$root/boot/loader/entries/" &&
 			fail "$kind: AMD host got intel_iommu"
+		grep -q intel_iommu "$root/etc/default/grub" &&
+			fail "$kind: AMD host got intel_iommu in /etc/default/grub"
 	fi
 	grep -qi 'reboot required' "$WORK/out" || fail "$kind: apply --yes missing the reboot notice"
 	grep -q 'skipped under --root' "$WORK/out" ||
@@ -103,6 +109,8 @@ for scenario in "${SCENARIOS[@]}"; do
 		fail "$kind: undo left IOMMU kernel args in the BLS entries"
 	grep -q iommu "$root/etc/kernel/cmdline" &&
 		fail "$kind: undo left IOMMU kernel args in /etc/kernel/cmdline"
+	grep -q iommu "$root/etc/default/grub" &&
+		fail "$kind: undo left IOMMU kernel args in /etc/default/grub"
 	assert_restored "$root" "$kind" "$kind undo"
 
 	pass "$kind ($records records, kargs='$kargs', byte-identical restore)"

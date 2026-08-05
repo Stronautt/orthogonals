@@ -6,36 +6,48 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-func entryTokens(root string) ([][]string, error) {
+func entryTargets(root string) ([]target, error) {
 	files, err := entryFiles(root)
 	if err != nil {
 		return nil, err
 	}
-	sets := make([][]string, 0, len(files))
+	ts := make([]target, 0, len(files))
 	for _, f := range files {
-		toks, err := entryOptions(f)
+		t, err := entryTarget(f, filepath.Join(EntriesPath, filepath.Base(f)))
 		if err != nil {
 			return nil, err
 		}
-		sets = append(sets, toks)
+		ts = append(ts, *t)
 	}
-	return sets, nil
+	return ts, nil
 }
 
-func editEntries(root string, fn transform) error {
-	files, err := entryFiles(root)
+// entryTarget is the one target for which an absent file is an error: entryFiles
+// has just listed it, so it went missing mid-read rather than naming a host that
+// keeps none.
+func entryTarget(path, rel string) (*target, error) {
+	lines, mode, err := fileLines(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, f := range files {
-		if err := editEntry(f, fn); err != nil {
-			return err
-		}
+	if lines == nil {
+		return nil, fmt.Errorf("%s disappeared while the boot entries were being read", path)
 	}
-	return nil
+	toks, first := parseOptions(lines)
+	if first < 0 {
+		return nil, fmt.Errorf("%s has no options line", path)
+	}
+	if err := kerneloptsGuard(path, toks); err != nil {
+		return nil, err
+	}
+	return &target{
+		rel: rel, path: path, mode: mode, was: []byte(strings.Join(lines, "\n")), tokens: toks,
+		render: func(toks []string) ([]byte, error) { return renderEntry(lines, first, toks), nil },
+	}, nil
 }
 
 func entryFiles(root string) ([]string, error) {
@@ -59,18 +71,6 @@ func entryFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-func entryOptions(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	toks, first := parseOptions(strings.Split(string(b), "\n"))
-	if first < 0 {
-		return nil, fmt.Errorf("%s has no options line", path)
-	}
-	return toks, kerneloptsGuard(path, toks)
-}
-
 // parseOptions collects the tokens of every options line and the index of the
 // first of them. The BLS spec lets the key repeat and combines the values, so an
 // entry carries one option set however many lines spell it out — reading only
@@ -91,37 +91,22 @@ func parseOptions(lines []string) ([]string, int) {
 	return toks, first
 }
 
-// editEntry rewrites one entry's options through fn, collapsing the combined set
-// onto the first options line and blanking any others.
+// renderEntry collapses the combined set onto the first options line and blanks
+// any others.
 //
 // Collapsing is what makes the edit reversible. Transforming each line on its
 // own instead writes an added token to every line that lacked it, and the
 // removal then strips it from a line that had carried it all along — so
 // add-then-remove silently drops an arg the host booted with.
-func editEntry(path string, fn transform) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(b), "\n")
-	toks, first := parseOptions(lines)
-	if first < 0 {
-		return fmt.Errorf("%s has no options line", path)
-	}
-	if err := kerneloptsGuard(path, toks); err != nil {
-		return err
-	}
-	for i := first + 1; i < len(lines); i++ {
-		if _, ok := cutKey(lines[i], "options"); ok {
-			lines[i] = ""
+func renderEntry(lines []string, first int, toks []string) []byte {
+	out := slices.Clone(lines)
+	for i := first + 1; i < len(out); i++ {
+		if _, ok := cutKey(out[i], "options"); ok {
+			out[i] = ""
 		}
 	}
-	lines[first] = strings.TrimSpace("options " + strings.Join(fn(toks), " "))
-	return writeIfChanged(path, b, []byte(strings.Join(lines, "\n")), info.Mode())
+	out[first] = strings.TrimSpace("options " + strings.Join(toks, " "))
+	return []byte(strings.Join(out, "\n"))
 }
 
 // cutKey splits a BLS "key value" line. The separator must be real whitespace,

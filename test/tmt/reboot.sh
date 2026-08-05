@@ -102,7 +102,41 @@ case "$COUNT" in
 	grep -q intel_iommu=on /proc/cmdline &&
 		fail "kernel args are live before the reboot — the fixture host was already configured"
 
-	pass "host applied, pipeline stopped at the reboot boundary"
+	# The outage this tier exists to close: a package update runs grub2-mkconfig,
+	# which rebuilds the entries and /etc/kernel/cmdline from /etc/default/grub.
+	# Args that stopped at the two derived files are gone by the next boot, and
+	# the host comes up with no IOMMU. Run the regeneration here so arm 1's
+	# /proc/cmdline check answers for a host that survived one.
+	grub2-mkconfig -o /boot/grub2/grub.cfg >"$WORK/mkconfig.txt" 2>&1 ||
+		fail "grub2-mkconfig failed: $(cat "$WORK/mkconfig.txt")"
+	grubby --info=ALL >"$WORK/grubby-regenerated.txt"
+	grep -q intel_iommu=on "$WORK/grubby-regenerated.txt" ||
+		fail "grub2-mkconfig dropped the kernel args — /etc/default/grub was not written"
+
+	# Every file apply rewrote must still match its policy label. WriteAtomic
+	# renames a temp file into place, and a temp file takes the directory's type
+	# transition, not the label of the file it replaces: /etc/default is etc_t
+	# while /etc/default/grub is bootloader_etc_t. No unit test can see this —
+	# relabelling needs root and an SELinux filesystem — and undo compares bytes
+	# and modes, never contexts, so this is the only guard there is.
+	# Not skipped when SELinux is off: this tier provisions Fedora Cloud, which
+	# enforces, so a disabled SELinux means the guest is not the machine this
+	# check was written for — and a skip here would report success having proved
+	# nothing.
+	selinuxenabled || fail "SELinux is disabled on this guest — the label check cannot run"
+	mislabelled=""
+	for path in $(journaled_write_paths) /etc/default/grub /etc/kernel/cmdline \
+		/boot/loader/entries/*.conf; do
+		[ -e "$path" ] || continue
+		matchpathcon -V "$path" >>"$WORK/labels.txt" 2>&1 || mislabelled="$mislabelled $path"
+	done
+	if [ -n "$mislabelled" ]; then
+		cat "$WORK/labels.txt" >&2
+		fail "apply left these files mislabelled:$mislabelled"
+	fi
+	pass "every file apply wrote still matches its SELinux policy label"
+
+	pass "host applied, kernel args survived a grub2-mkconfig, stopped at the reboot boundary"
 	tmt-reboot
 	;;
 

@@ -32,7 +32,8 @@ func refResult() *hw.Result {
 
 func goodFacts() Facts {
 	return Facts{DefaultNetActive: true, FreeDiskBytes: 500 << 30,
-		SwitcherooEnabled: true, SwitcherooNVIDIA: true, LibvirtReachable: true}
+		SwitcherooEnabled: true, SwitcherooNVIDIA: true, LibvirtReachable: true,
+		KernelArgs: KernelArgsNever}
 }
 
 func findCheck(t *testing.T, checks []Check, name string) Check {
@@ -83,6 +84,62 @@ func TestAnalyzers(t *testing.T) {
 			name:   "iommu inactive with dmar table warns",
 			mutate: func(r *hw.Result, _ *Facts) { r.Platform.IOMMUAddressWidth = 0 },
 			check:  "iommu", want: Warn, has: []string{"VT-d", "apply", "reboot"},
+		},
+		// The outage: apply ran, then a package update regenerated the boot
+		// config from /etc/default/grub and dropped the args. The old check said
+		// "no action needed — apply adds them", which they already had.
+		{
+			name: "iommu inactive with args lost from the boot config",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.IOMMUAddressWidth = 0
+				f.KernelArgs = KernelArgsLostBoot
+				f.KernelArgsMissing = []string{"intel_iommu=on"}
+			},
+			check: "iommu", want: Warn,
+			has: []string{"intel_iommu=on", "/etc/default/grub", "apply --yes", "reboot"},
+		},
+		{
+			name: "iommu inactive with args configured but not live",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.IOMMUAddressWidth = 0
+				f.KernelArgs = KernelArgsPending
+				f.KernelArgsMissing = []string{"intel_iommu=on"}
+			},
+			check: "iommu", want: Warn, has: []string{"configured but not on the running kernel", "reboot"},
+		},
+		// Args journaled, in the boot config and on the running kernel, and the
+		// IOMMU is still off: nothing apply can do, so this is the firmware.
+		{
+			name: "iommu inactive with args live blames the firmware",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.IOMMUAddressWidth = 0
+				f.KernelArgs = KernelArgsLive
+			},
+			check: "iommu", want: Fail, has: []string{"BIOS"},
+		},
+		// An unprivileged run cannot read the 0600 manifest. Answering that with
+		// the never-applied remedy tells a host that has already applied — and
+		// then lost its args — to run the apply it ran.
+		{
+			name: "iommu inactive with an unreadable manifest says so",
+			mutate: func(r *hw.Result, f *Facts) {
+				r.Platform.IOMMUAddressWidth = 0
+				f.KernelArgs = KernelArgsUnknown
+			},
+			check: "iommu", want: Warn,
+			has: []string{"cannot tell", "as root", "manifest.json"},
+		},
+		{
+			name:   "a grub line orthogonals will not edit fails its own check",
+			mutate: func(_ *hw.Result, f *Facts) { f.GrubError = "line 2 carries " + "a shell expansion" },
+			check:  "grub-defaults", want: Fail, has: []string{"shell expansion"},
+		},
+		// The remedy for a grub value belongs to grub-defaults. Reported through
+		// boot-entries it came out as "convert to Boot Loader Spec".
+		{
+			name:   "a grub refusal leaves the boot-entries check alone",
+			mutate: func(_ *hw.Result, f *Facts) { f.GrubError = "line 1 carries a shell expansion" },
+			check:  "boot-entries", want: Pass,
 		},
 		{
 			name: "amd iommu inactive with ivrs warns",

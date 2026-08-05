@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -123,9 +122,12 @@ func runApply(cfg *Config, o applyOpts, stdout, stderr io.Writer) error {
 			needReboot = true
 		}
 	}
+	// Per-token: a substring test on the joined args answers about adjacency in
+	// /proc/cmdline, so one extra arg between them re-banners every idempotent
+	// re-run as a pending reboot.
 	argsLive := false
-	if b, err := os.ReadFile(filepath.Join(cfg.Root, "/proc/cmdline")); err == nil {
-		argsLive = strings.Contains(string(b), args)
+	if missing, err := bls.MissingLive(cfg.Root, args); err == nil {
+		argsLive = len(missing) == 0
 	}
 	const recovery = "recovery: if the host fails to boot to the desktop, press 'e' at the GRUB menu and delete these kernel arguments for a one-boot disable: %s\n"
 	switch {

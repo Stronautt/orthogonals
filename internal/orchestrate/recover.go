@@ -38,6 +38,8 @@ func Recover(root string, s sysd.Client, yes bool, out io.Writer) error {
 	if err := hooks.HealthCheck(root); err != nil {
 		return fmt.Errorf("nvidia-smi still fails — reboot required: %w", err)
 	}
+	// The restore happened here, so a later release hook has nothing left to undo.
+	hooks.ClearHandover(root)
 	fmt.Fprintf(out, "recovered — %s is back on the host driver\n", devs[0])
 	return nil
 }

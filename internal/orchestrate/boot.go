@@ -3,14 +3,10 @@ package orchestrate
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"slices"
-	"strings"
 
+	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
-	"github.com/stronautt/orthogonals/internal/steps"
 )
 
 func VerifyBoot(root string) error {
@@ -26,34 +22,16 @@ func VerifyBoot(root string) error {
 // KargsLive reports whether the kernel args apply journaled are on the running
 // kernel — the difference between "reboot pending" and "the firmware is off".
 func KargsLive(root string) error {
-	want, err := manifestKernelArgs(root)
+	want, err := hostcfg.JournaledKernelArgs(root)
 	if err != nil {
 		return err
 	}
-	return kargsLive(root, want)
-}
-
-func manifestKernelArgs(root string) (string, error) {
-	m, err := steps.Load(root)
+	missing, err := bls.MissingLive(root, want)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if args := m.OpArgs(hostcfg.KernelArgsStepID); args["args"] != "" {
-		return args["args"], nil
-	}
-	return "", errors.New("no journaled kernel-args step — run `orthogonals apply --yes` first")
-}
-
-func kargsLive(root, want string) error {
-	b, err := os.ReadFile(filepath.Join(root, "/proc/cmdline"))
-	if err != nil {
-		return fmt.Errorf("read kernel cmdline: %w", err)
-	}
-	live := strings.Fields(string(b))
-	for _, arg := range strings.Fields(want) {
-		if !slices.Contains(live, arg) {
-			return fmt.Errorf("kernel argument %q is not active on the running kernel — reboot, or re-run `orthogonals apply --yes`", arg)
-		}
+	if len(missing) > 0 {
+		return fmt.Errorf("kernel argument %q is not active on the running kernel — reboot, or re-run `orthogonals apply --yes`", missing[0])
 	}
 	return nil
 }

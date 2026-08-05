@@ -133,10 +133,49 @@ func SweepTemps(dir string) {
 	}
 }
 
+// SecurityXattr is the SELinux label. Tests point it at a user.* attribute:
+// security.* is mediated by the LSM, so an unprivileged run cannot exercise the
+// copy against the real one.
+var SecurityXattr = "security.selinux"
+
+// carryLabel copies the label of the file being replaced onto its replacement.
+// A temp file takes its parent directory's type transition instead, which is not
+// the same thing: /etc/default is etc_t while /etc/default/grub is
+// bootloader_etc_t, so an atomic rewrite silently downgrades the label of a
+// bootloader file and nothing puts it back.
+//
+// A kernel that says no — SELinux off, a filesystem without xattrs, a policy
+// that will not let this domain relabel — is not an error here: the write is
+// still the right thing to do, and test/tmt/reboot.sh fails on the mislabel that
+// results. A storage error is, since that is the write itself going wrong.
+func carryLabel(path string, to *os.File) error {
+	size, err := unix.Lgetxattr(path, SecurityXattr, nil)
+	if err != nil {
+		return skipUnsupportedXattr(err)
+	}
+	label := make([]byte, size)
+	if _, err := unix.Lgetxattr(path, SecurityXattr, label); err != nil {
+		return skipUnsupportedXattr(err)
+	}
+	return skipUnsupportedXattr(unix.Fsetxattr(int(to.Fd()), SecurityXattr, label, 0))
+}
+
+func skipUnsupportedXattr(err error) error {
+	switch {
+	case err == nil,
+		errors.Is(err, fs.ErrNotExist),   // creating the file, nothing to carry
+		errors.Is(err, unix.ENODATA),     // unlabelled file
+		errors.Is(err, unix.EOPNOTSUPP),  // filesystem without xattrs (== ENOTSUP)
+		errors.Is(err, fs.ErrPermission): // policy forbids this domain the relabel
+		return nil
+	}
+	return err
+}
+
 // WriteAtomic writes content to path via a temp file in the same directory,
 // creating parent directories. File and directory are both fsynced, so a reader
 // sees the old contents or the new ones across a power loss, never a partial
-// write.
+// write. The replaced file's security label is carried over.
 func WriteAtomic(path string, content []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -158,6 +197,10 @@ func WriteAtomic(path string, content []byte, mode fs.FileMode) error {
 	// CreateTemp opens 0600 regardless of mode, and OpenFile would subtract the
 	// umask; Chmod does neither.
 	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := carryLabel(path, f); err != nil {
 		_ = f.Close()
 		return err
 	}

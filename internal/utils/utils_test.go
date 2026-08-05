@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // withUmask makes a mode assertion meaningful: the developer's umask would
@@ -65,6 +67,60 @@ func TestWriteAtomicAppliesModeDespiteUmask(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "body\n" {
 		t.Errorf("content = %q, want %q", b, "body\n")
+	}
+}
+
+// A rewrite must not relabel the file it replaces. The temp file takes its
+// parent directory's SELinux type transition, which for /etc/default is etc_t
+// while /etc/default/grub is bootloader_etc_t — so without this a bootloader
+// file is silently downgraded on every apply and undo never puts it back.
+//
+// security.selinux is LSM-mediated and an unprivileged test cannot set it, so
+// the copy is exercised through a user.* attribute; test/tmt/reboot.sh checks
+// the real label with matchpathcon on a host that has one.
+func TestWriteAtomicCarriesTheSecurityLabel(t *testing.T) {
+	const label = "system_u:object_r:bootloader_etc_t:s0"
+	old := SecurityXattr
+	SecurityXattr = "user.orthogonals-test-label"
+	t.Cleanup(func() { SecurityXattr = old })
+
+	path := filepath.Join(t.TempDir(), "grub")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Setxattr(path, SecurityXattr, []byte(label), 0); err != nil {
+		t.Skipf("this filesystem refuses user xattrs: %v", err)
+	}
+	if err := WriteAtomic(path, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(label))
+	n, err := unix.Lgetxattr(path, SecurityXattr, got)
+	if err != nil {
+		t.Fatalf("the rewritten file lost its label: %v", err)
+	}
+	if string(got[:n]) != label {
+		t.Errorf("label = %q, want %q", got[:n], label)
+	}
+}
+
+// A file being created has no label to carry, and a filesystem without xattrs
+// has none to read: neither may fail the write.
+func TestWriteAtomicWithNoLabelToCarry(t *testing.T) {
+	old := SecurityXattr
+	SecurityXattr = "user.orthogonals-test-label"
+	t.Cleanup(func() { SecurityXattr = old })
+
+	dir := t.TempDir()
+	if err := WriteAtomic(filepath.Join(dir, "new"), []byte("x\n"), 0o644); err != nil {
+		t.Errorf("creating a file: %v", err)
+	}
+	unlabelled := filepath.Join(dir, "unlabelled")
+	if err := os.WriteFile(unlabelled, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAtomic(unlabelled, []byte("new\n"), 0o644); err != nil {
+		t.Errorf("replacing an unlabelled file: %v", err)
 	}
 }
 
