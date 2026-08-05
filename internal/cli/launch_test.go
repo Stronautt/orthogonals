@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
@@ -130,6 +131,60 @@ func TestVMLaunchStartsShutOffDomain(t *testing.T) {
 	}
 	if !f.Logged("start win11") {
 		t.Errorf("shut-off domain was not started: %v", f.Calls)
+	}
+}
+
+func TestVMLaunchStartsTheGuestCaptureService(t *testing.T) {
+	f := fakeVirt(t, &virttest.Fake{
+		State: "running", DisplayHost: "127.0.0.1", DisplayPort: "5900",
+		Agent: virttest.Responder("", "", 0),
+	})
+	argv := captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	code, _, stderr := run(t, "vm", "--root", launchRoot(t, ""), "--vm-name", "win11", "launch")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	want := "Start-Service -Name '" + media.LGHostServiceName + "'"
+	if got := strings.Join(f.Calls, "\n"); !strings.Contains(got, want) {
+		t.Errorf("launch never started the guest capture service:\n%s", got)
+	}
+	if len(*argv) == 0 {
+		t.Error("the client did not run")
+	}
+}
+
+// A domain this launch just started has no agent to answer yet, and the wait
+// would cost the launch libvirt's agent timeout.
+func TestVMLaunchColdStartLeavesTheGuestAlone(t *testing.T) {
+	f := fakeVirt(t, &virttest.Fake{
+		State: "shut off", MaxMemKiB: 8 << 20, DisplayHost: "127.0.0.1", DisplayPort: "5900",
+		Agent: virttest.Responder("", "", 0),
+	})
+	captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	code, _, stderr := run(t, "vm", "--root", launchRoot(t, "16000000"), "--vm-name", "win11", "launch")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if countCalls(f.Calls, "agent ") != 0 {
+		t.Errorf("launch waited on the agent of a domain it just started: %v", f.Calls)
+	}
+}
+
+func TestVMLaunchSurvivesAnUnreachableAgent(t *testing.T) {
+	fakeVirt(t, &virttest.Fake{State: "running", DisplayHost: "127.0.0.1", DisplayPort: "5900"})
+	argv := captureExec(t)
+	fakeBinDir(t, []string{"looking-glass-client"})
+	code, _, stderr := run(t, "vm", "--root", launchRoot(t, ""), "--vm-name", "win11", "launch")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if len(*argv) == 0 {
+		t.Error("an unreachable agent stopped the client from running")
+	}
+	if !strings.Contains(stderr, "orthogonals vm launch:") {
+		t.Errorf("the unreachable agent was swallowed:\n%s", stderr)
 	}
 }
 

@@ -165,6 +165,31 @@ func TestProvisionInstallsGuestAgent(t *testing.T) {
 	}
 }
 
+func TestProvisionOrdersLGServiceBehindIVSHMEM(t *testing.T) {
+	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
+	for _, want := range []string{"DependOnService", "MultiString", "IVSHMEM"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the lg-service stage is missing %q", want)
+		}
+	}
+	// A dependency naming a service that does not exist is refused by the SCM,
+	// and that refusal outlives the reboot that caused it.
+	if throw, write := strings.Index(s, "left out the IVSHMEM driver"),
+		strings.Index(s, "-Name DependOnService"); throw > write {
+		t.Error("the lg-service stage must fail on a missing IVSHMEM driver before it writes the dependency")
+	}
+	if lg, lgHost := strings.Index(s, "Name = 'lg-service'"), strings.Index(s, "Name = 'looking-glass-host'"); lg < lgHost {
+		t.Error("lg-service must run after looking-glass-host installs the service and the IVSHMEM driver")
+	}
+	// Whether frames flow is observable host-side only, so no timer in the
+	// guest can tell a settled capture from a wedged one.
+	for _, banned := range []string{"-AtStartup", "orthogonals-lg-restart"} {
+		if strings.Contains(s, banned) {
+			t.Errorf("provision.ps1 carries a boot timer (%q). The host repairs the service at launch", banned)
+		}
+	}
+}
+
 func TestProvisionInstallsWinFspBeforeGuestTools(t *testing.T) {
 	s := string(mustRender(t, referenceProfile(t))["provision.ps1"])
 	winfsp := strings.Index(s, "Name = 'winfsp'")

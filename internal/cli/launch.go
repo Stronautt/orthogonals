@@ -14,6 +14,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hostcfg"
 	"github.com/stronautt/orthogonals/internal/hw"
+	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/utils"
@@ -46,7 +47,8 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 		}
 		return fail("query %s (is libvirtd running?): %v", name, err)
 	}
-	if !virt.Live(state) {
+	live := virt.Live(state)
+	if !live {
 		// Refuse here so the reason reads as a CLI error rather than reaching the
 		// user wrapped in a libvirt domain-start failure. The hook gate is what
 		// makes it safe; this only makes it legible.
@@ -76,6 +78,14 @@ func vmLaunch(cfg *Config, c virt.Client, name string, stdout, stderr io.Writer)
 	lg, err := exec.LookPath("looking-glass-client")
 	if err != nil {
 		return fail("looking-glass-client not found on PATH — install the looking-glass-client package")
+	}
+	// A domain this call just started is skipped. Its agent does not answer
+	// yet, and the wait would cost the launch libvirt's agent timeout. Repair
+	// is best-effort: an unreachable guest must not cost the user the client.
+	if live {
+		if err := media.StartLGHost(c, name); err != nil {
+			fmt.Fprintf(stderr, "orthogonals vm launch: %v\n", err)
+		}
 	}
 	// port "0" is the client's unix-socket signal, so host is a path.
 	if port == "0" {

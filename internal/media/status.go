@@ -93,6 +93,26 @@ func GuestExec(c virt.Client, vm, path string, args ...string) (out, errOut []by
 	return nil, nil, 0, fmt.Errorf("guest command %s did not exit within %v", path, time.Duration(guestExecTries)*guestExecInterval)
 }
 
+// StartLGHost starts the guest's Looking Glass host service when it is stopped.
+//
+// The service stops itself for good when its host program fails to start, and
+// it reports a clean stop. So the SCM runs no recovery action and nothing in
+// the guest starts it again. A start is enough, and a restart would tear down
+// a healthy capture: the service stays up for as long as it retries, and only
+// the last failure stops it.
+func StartLGHost(c virt.Client, vm string) error {
+	out, errOut, code, err := GuestExec(c, vm, "powershell.exe", "-NoProfile", "-Command",
+		"Start-Service -Name '"+LGHostServiceName+"'")
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("start %q in the guest: exit %d — %s", LGHostServiceName, code,
+			bytes.TrimSpace(append(out, errOut...)))
+	}
+	return nil
+}
+
 func AgentPing(c virt.Client, vm string) error {
 	var resp map[string]any
 	return agentCommand(c, vm, map[string]any{"execute": "guest-ping"}, &resp)

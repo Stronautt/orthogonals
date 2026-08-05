@@ -11,8 +11,9 @@ $vddDir = 'C:\VirtualDisplayDriver'   # fixed path: VDD reads its settings here
 $statusPath = Join-Path $workDir 'provision-status.json'
 $debloatStamp = Join-Path $workDir 'debloat.done'
 $lgService = 'Looking Glass (host)'
+$servicesKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\'
+$ivshmemService = 'IVSHMEM'   # the shared-memory driver the LG host setup installs
 $taskName = 'orthogonals-provision'
-$lgRestartTask = 'orthogonals-lg-restart'
 $stockFsService = 'VirtioFsSvc'
 # one entry per host directory exported over virtiofs, in drive-letter order
 $shares = @(
@@ -65,8 +66,7 @@ function Add-TrustedPublisher([string]$Path) {
 # virtiofs.exe's path comes from the shipped service's ImagePath, never a
 # hardcoded one: unquoted as the MSI registers it, quoted once we rewrite it.
 function Get-VirtioFsExe {
-    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $stockFsService
-    $img = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).ImagePath
+    $img = (Get-ItemProperty -Path ($servicesKey + $stockFsService) -ErrorAction SilentlyContinue).ImagePath
     if (-not $img) { throw "$stockFsService is not installed - the virtio-win guest tools left out the virtiofs component" }
     $img = $img.Trim()
     if ($img.StartsWith('"')) { return $img.Substring(1, $img.IndexOf('"', 1) - 1) }
@@ -85,13 +85,12 @@ function Get-VirtioFsExe {
 # kernel driver, and the service list does not have to enumerate those.
 # Re-runs re-read the union they last wrote.
 function Get-FsServiceDeps {
-    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\'
-    $deps = @((Get-ItemProperty -Path ($key + $stockFsService) -ErrorAction SilentlyContinue).DependOnService)
+    $deps = @((Get-ItemProperty -Path ($servicesKey + $stockFsService) -ErrorAction SilentlyContinue).DependOnService)
     $deps += 'WinFsp.Launcher'
     $deps += 'VirtioFsDrv'
     $out = @()
     foreach ($d in $deps) {
-        if ($d -and $out -notcontains $d -and (Test-Path ($key + $d))) { $out += $d }
+        if ($d -and $out -notcontains $d -and (Test-Path ($servicesKey + $d))) { $out += $d }
     }
     return $out
 }
@@ -101,7 +100,7 @@ function Get-FsServiceDeps {
 function Test-FsService($Share, $Deps) {
     $svc = Get-Service -Name $Share.Service -ErrorAction SilentlyContinue
     if (-not $svc -or $svc.Status -ne 'Running') { return $false }
-    $p = Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $Share.Service) -ErrorAction SilentlyContinue
+    $p = Get-ItemProperty -Path ($servicesKey + $Share.Service) -ErrorAction SilentlyContinue
     if (-not $p -or $p.Start -ne 2 -or $p.DelayedAutostart -eq 1) { return $false }
     foreach ($d in $Deps) { if (@($p.DependOnService) -notcontains $d) { return $false } }
     return $p.ImagePath -like ('* -t ' + $Share.Tag + ' -m ' + $Share.Drive)
@@ -115,15 +114,26 @@ Write-Status -Stage 'start' -Ok $true
 # mid-stage. Provisioning owns the drivers; the driver-search policy stays off
 # afterwards (a WU driver swap would break the VDD/Looking Glass pairing) while
 # the cleanup stage hands the update service back for security updates.
-function Set-RegValue([string]$Path, [string]$Name, [int]$Value) {
+function Set-RegValue([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
     if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
-    Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type DWord
+    Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type
 }
 Set-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 0
 Set-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate' 1
 Set-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'ExcludeWUDriversInQualityUpdate' 1
 Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
 Set-Service wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+
+# Looking Glass dead-reckons the guest cursor from the relative deltas it sends
+# and cannot observe what Windows does with them, so any pointer ballistics
+# desync the two and the client corrects by snapping the cursor. Both halves
+# have to go: the thresholds are the acceleration curve, and 10 of 20 is the
+# unity point of the speed slider. The client's own scaling is exact, so this
+# holds whatever the guest resolution is against the window's.
+Set-RegValue 'HKCU:\Control Panel\Mouse' 'MouseSpeed'       '0'  'String'
+Set-RegValue 'HKCU:\Control Panel\Mouse' 'MouseThreshold1'  '0'  'String'
+Set-RegValue 'HKCU:\Control Panel\Mouse' 'MouseThreshold2'  '0'  'String'
+Set-RegValue 'HKCU:\Control Panel\Mouse' 'MouseSensitivity' '10' 'String'
 
 # re-entry: installs can reboot the guest, so a logon task re-runs this
 # script (autounattend.xml's AutoLogon keeps those logons unattended) until
@@ -256,28 +266,30 @@ $stages = @(
         }
     },
     @{
+        # A host program that fails to start stops the service for good, and one
+        # cause is an IVSHMEM device the guest has not enumerated yet. So the
+        # dependency is the guard: it delays the start until the shared-memory
+        # driver runs. A service that stops later is started by `vm launch`.
+        #
+        # The setup registers no dependency of its own, so the write replaces
+        # nothing and the union Get-FsServiceDeps keeps is not needed here.
         Name = 'lg-service'
         Done = {
             $svc = Get-Service -Name $lgService -ErrorAction SilentlyContinue
             $svc -and $svc.StartType -eq 'Automatic' -and $svc.Status -eq 'Running' -and
-                (Get-ScheduledTask -TaskName $lgRestartTask -ErrorAction SilentlyContinue)
+                (@((Get-ItemProperty -Path ($servicesKey + $lgService) -ErrorAction SilentlyContinue).DependOnService) -contains $ivshmemService)
         }
         Run  = {
+            # A DependOnService naming a service that does not exist is refused
+            # by the SCM, and that refusal outlives the reboot that caused it.
+            # An absent key means the setup shipped no IVSHMEM driver, which
+            # leaves the guest unable to do Looking Glass at all.
+            if (-not (Test-Path ($servicesKey + $ivshmemService))) {
+                throw "$ivshmemService is not installed - the Looking Glass host setup left out the IVSHMEM driver"
+            }
+            Set-ItemProperty -Path ($servicesKey + $lgService) -Name DependOnService -Value @($ivshmemService) -Type MultiString
             Set-Service -Name $lgService -StartupType Automatic
             Start-Service -Name $lgService
-            # the service starts early in boot and can latch its capture onto
-            # a display topology Windows is still settling — the client then
-            # connects but never receives a frame. Whether frames flow is only
-            # observable host-side, so no in-guest check can gate this: one
-            # unconditional restart after boot re-inits capture against the
-            # settled topology (a viewer connected within the delay sees a
-            # sub-second reconnect blip).
-            $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                -Argument ('-NoProfile -Command "Restart-Service ''' + $lgService + '''"')
-            $trigger = New-ScheduledTaskTrigger -AtStartup
-            $trigger.Delay = 'PT30S'
-            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-            Register-ScheduledTask -TaskName $lgRestartTask -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
         }
     },
     @{

@@ -37,91 +37,73 @@ Traps in this tooling, none of which fail loudly:
 
 ## Architecture
 
-Packages: `internal/{cli,hw,preflight,steps,bls,hostcfg,hooks,domain,media,
-orchestrate,artifacts,virt,sysd,utils}`, bounded on the distro/vendor seams.
+Packages under `internal/` are bounded on the distro/vendor seams.
 
 - **Pure Go, no cgo** (`CGO_ENABLED=0`): go-libvirt, go-systemd + godbus,
-  x/sys, iso9660, cobra.
-- **Anything the standard library can do is done in Go, never shelled out
-  to.** exec survives only where the binary IS the vendor API on Fedora:
-  dracut, semanage, restorecon, usermod, modprobe (load side), nvidia-smi,
-  notify-send, `gio`, and lspci/journalctl for the diagnostics bundle. The
-  qemu hook is a Go subcommand behind a two-line shim, not a shell script;
-  libvirtd invokes it, not users, and it journals nothing, so `--yes` does not
-  gate it.
+  x/sys, iso9660, cobra. **Anything the standard library can do is done in Go,
+  never shelled out to** — exec survives only where the binary IS the vendor
+  API on Fedora (dracut, semanage, dkms, modprobe's load side, nvidia-smi) or
+  the desktop's (`gio`, notify-send). The qemu hook is a Go subcommand behind a
+  two-line shim, not a shell script; libvirtd invokes it, not users, and it
+  journals nothing, so `--yes` does not gate it.
 - The command tree is **factory-built** (`newRootCmd`), never a package
   global. Templates render via `embed.FS` beside their package, and **every
   rendered artifact has a golden test**.
-- Dropping to the desktop user is the credential **and** the environment: sudo
-  hands the op root's `HOME` and getenv takes the first match, so
-  `steps.desktopEnv` **replaces** the inherited `HOME`/`XDG_*`/
-  `DBUS_SESSION_BUS_ADDRESS` rather than appending — otherwise gvfs writes its
-  metadata under `/root` as a user who cannot.
 - `internal/utils` is the one package everything may depend on; it **imports
   nothing from this module** and must stay that way. A helper earns a place
   there by having a **second consumer**, not by looking generic — single-caller
-  helpers stay with their caller.
-- **`utils.Exists` returns `(bool, error)`**: absent and unreadable are
-  different answers, and two bugs came from folding EACCES into "not there"
-  (`/etc/libvirt` is 0700). Dropping the error is fine; it must be written at
-  the call site. New code that stats a path and treats every error as absence
-  is a bug.
+  helpers stay with their caller. Its `Exists` returns `(bool, error)` because
+  absent and unreadable are different answers (`/etc/libvirt` is 0700):
+  dropping the error at a call site is fine, folding every error into "not
+  there" is the bug it exists to prevent.
 - `internal/virt` and `internal/sysd` are narrow client surfaces — no
   virsh/systemctl exec, no output parsing. **sysd dials one connection per
   call and hangs up**, where virt caches one: go-systemd ties a connection's
   lifetime to the context it was dialled with, so a cached one is closed by
   the call that opened it and an ordinary restart fails with `context deadline
   exceeded`.
-- `internal/bls` edits `/boot/loader/entries` **and `/etc/kernel/cmdline`** —
-  kernel-install writes a new kernel's entry from that file, so args stopping
-  at the entries are dropped by the next `dnf upgrade kernel` and the host
-  boots with no IOMMU.
-- **SPICE listens on a unix socket, never a TCP port** — an address listen has
-  no password, so any local user could attach to an auto-logon Administrator
-  console. The per-VM directory mode is the access control, not the socket's:
-  QEMU binds it world-readable.
-- **`cgroup_device_acl` replaces libvirt's compiled-in default rather than
-  extending it, and Fedora's commented sample omits `/dev/kvm`** —
-  uncommenting it verbatim, which the Looking Glass docs instruct, leaves the
-  guest with no KVM. hostcfg writes an explicit closed list; `test/tmt/kvmfr.sh`
-  starts a real domain to prove it.
-- The Looking Glass buffer has two backends. `hw.KVMFRAvailable` asks whether
-  the module is *built for the running kernel*, never whether it is loaded —
-  `up` crosses a reboot, so a loaded-state test would downgrade every host on
-  the second leg. Built is not loadable, hence `preflight.KVMFRWillLoad`.
-  The hook loads the module on demand and never unloads it, which is why there
-  is no modprobe.d, modules-load.d, udev rule or semanage entry for it.
+- `internal/bls` writes kernel args to **three** targets: the BLS entries,
+  `/etc/kernel/cmdline`, and `/etc/default/grub`. The first two are regenerated
+  from the third, so args that stop short of it are dropped by the next package
+  update and the host boots with no IOMMU.
+- The kvmfr module is loaded on demand by the qemu hook and never unloaded —
+  hence no modprobe.d, modules-load.d, udev rule or semanage entry for it.
 - **Shared folders cost the domain its private memory**: virtiofsd maps guest
-  RAM out of process, so any share forces `memfd` + `<access mode='shared'/>`
-  on the hugepage backing. Only the dirs are registered — `domain.NewShares`
-  derives tag, drive letter and guest service name from their **order**, so
-  those cannot disagree. virtio-win's `VirtioFsSvc` **mounts exactly one
-  device** (its tag comes from the service command line, not the registry), so
-  provisioning reconfigures it for share one and clones a pinned service per
-  extra share — with `New-Service`, never `sc.exe`, which PowerShell re-quotes
-  into a binPath ending at `C:\Program` (a test bans it from the rendered
-  script). Those services are made during provisioning only: a share added to
-  an installed guest reaches the domain but nothing mounts it.
+  RAM out of process, so any share forces `memfd` on the hugepage backing.
+  virtio-win's `VirtioFsSvc` mounts exactly one device, so provisioning clones
+  a pinned service per extra share — with `New-Service`, never `sc.exe`, which
+  PowerShell re-quotes into a binPath ending at `C:\Program` (a test bans it
+  from the rendered script).
+- **Guest-side state is written during provisioning only**: `provision.ps1`
+  runs from the installer media under a logon task the cleanup stage
+  unregisters, and `final` drops the cdroms, so an installed guest cannot
+  re-run it at all — a share added later reaches the domain but nothing in the
+  guest mounts it. **Editing `provision.ps1` means applying the change to
+  installed guests by hand.**
+- **The Looking Glass host service stops itself for good** when its host
+  program fails to start. The stop is clean, so the SCM runs no recovery action
+  and nothing in the guest starts it again. Provisioning orders its start
+  behind the `IVSHMEM` driver, and `vm launch` starts it through the guest
+  agent. **Nothing restarts it on a timer**: whether frames flow is observable
+  host-side only, so no in-guest check can tell a settled capture from a wedged
+  one.
 
 ### Per-VM settings
 
 **Every `vm define` knob is one field of `domain.Settings`**, marshalled whole
 into the domain metadata and unmarshalled by the next define, so a flag-less
-converge reproduces what was registered. Four rules keep it that way:
+converge reproduces what was registered. Three rules keep it that way:
 
 1. A zero-valued flag means **keep what is registered**, never "use the
    default" — so **no flag may declare a default**. Defaults belong in
    `domain.NewProfile`, or in `resolveSettings` when they come from the host.
-2. `Settings.Over` merges by reflection: a new field is sticky with no call
-   site touched.
-3. `NewProfile` writes every default it fills **back into the record**, so
+2. `NewProfile` writes every default it fills **back into the record**, so
    nothing is re-derived from a host that may have changed.
-4. A credential field carries **`secret:"true"`**; `domain.SecretElements()`
-   is what the diagnostics bundle redacts by. The redactor once kept its own
-   copy of the element names, a rename retired them, and three green tests
-   shipped the guest password into bug reports — their fixtures were
-   hand-written in the retired spelling. **Anything asserting on registry XML
-   builds its fixture with `Profile.SettingsXML()`.**
+3. A credential field carries **`secret:"true"`**, and the diagnostics bundle
+   redacts by `domain.SecretElements()`. **Anything asserting on registry XML
+   builds its fixture with `Profile.SettingsXML()`** — hand-written fixtures in
+   a spelling a rename had retired once kept three tests green while the guest
+   password shipped in bug reports.
 
 `TestVMSettingsAllSticky` walks the struct by reflection and fails on a field
 with no table entry: a knob cannot ship unproven. Two knobs are not plain
@@ -137,19 +119,14 @@ restores byte-identically. Dry-run is the default and never dials a daemon;
 enable_unit, and **op** (a compiled-in registry entry with JSON args, so undo
 works from a fresh process).
 
-- The journal is **write-ahead**: every kind saves its record *before* the
-  mutation and drops it if the mutation fails, so a process killed mid-step
-  never strands an unjournaled change. `test/fault` SIGKILLs a real apply at
-  every progress point.
-- A kill also strands the temp file `utils.WriteAtomic` renames from, so every
-  write sweeps `utils.TempPrefix` leftovers first, and undo paths that *remove*
-  rather than write call `utils.SweepTemps` themselves.
+- The journal is **write-ahead**, and `test/fault` SIGKILLs a real apply at
+  every progress point to keep it that way. A kill also strands the temp file
+  `utils.WriteAtomic` renames from, so every write sweeps `utils.TempPrefix`
+  leftovers first and undo paths that *remove* rather than write call
+  `utils.SweepTemps` themselves.
 - A journaled step whose command/op/path — or **kind**, when a release moves a
   step from run_cmd to op — diverges from current settings is **refused**,
   never silently skipped or rebound.
-- **The journal is not proof the host still carries the change**: a step
-  something else can undo (a kernel update regenerating BLS entries) sets
-  `Recheck` from live state and re-runs, keeping the *journaled* undo.
 - Under `--root` with no injected clients, daemon-touching steps journal and
   print "skipped under --root" — the container tier's contract; `make test-vm`
   covers them live.
@@ -198,5 +175,5 @@ boundaries. Swap with `t.Cleanup` restore, never `t.Parallel` while swapped.
   `internal/virt` and `internal/sysd` need a live daemon, so a coverage number
   quoted without saying which tiers ran is meaningless. A tier directory left
   from an older binary merges cleanly and silently pads the denominator.
-- **Coverage is not why the VFIO tier exists.** `internal/hooks` was at 86.6%
-  before it, and the CWD bug in the holder gate was inside that 86.6%.
+- **Coverage is not why the host tiers exist**: `internal/hooks` was at 86.6%
+  when the VFIO tier found the CWD bug in its holder gate.
