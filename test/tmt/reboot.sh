@@ -125,7 +125,7 @@ case "$COUNT" in
 	# nothing.
 	selinuxenabled || fail "SELinux is disabled on this guest — the label check cannot run"
 	mislabelled=""
-	for path in $(journaled_write_paths) /etc/default/grub /etc/kernel/cmdline \
+	for path in $(journaled_paths) /etc/default/grub /etc/kernel/cmdline \
 		/boot/loader/entries/*.conf; do
 		[ -e "$path" ] || continue
 		matchpathcon -V "$path" >>"$WORK/labels.txt" 2>&1 || mislabelled="$mislabelled $path"

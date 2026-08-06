@@ -130,7 +130,7 @@ test-desk:
 COVER = $(CURDIR)/dist/coverage
 coverage:
 	rm -rf $(COVER) && mkdir -p $(COVER)/unit $(COVER)/tier
-	go test ./... -coverpkg=./internal/... -args -test.gocoverdir=$(COVER)/unit >/dev/null
+	go test ./... -coverpkg=./internal/... -args -test.gocoverdir=$(COVER)/unit
 	@find $(TMT_RUN)-container $(TMT_RUN)-vm $(TMT_RUN)-vfio -type d -name coverage 2>/dev/null \
 		-exec cp -a '{}/.' $(COVER)/tier/ ';' || true
 	@if [ -n "$$(ls -A $(COVER)/tier 2>/dev/null)" ]; then \

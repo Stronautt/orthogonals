@@ -34,7 +34,9 @@ for results in "$run"/plans/*/execute/results.yaml; do
 			echo
 			echo '```'
 			# The test's own narration; its data dir is <name>-<serial>.
-			grep -hE '^(=== |ok: |FAIL|--- SKIP)' \
+			# A tier that drives go test narrates a bare "FAIL": the reason is
+			# in the indented file:line message under it.
+			grep -hE '^(=== |ok: |FAIL|--- (SKIP|FAIL)|[[:space:]]+[^[:space:]]+\.go:[0-9]+:)' \
 				"${results%results.yaml}"data/guest/*/"${name#/}"-*/output.txt 2>/dev/null ||
 				echo "no step output captured"
 			echo '```'

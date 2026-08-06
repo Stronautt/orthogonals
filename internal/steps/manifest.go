@@ -23,14 +23,13 @@ type Record struct {
 	Reboot bool   `json:"reboot,omitempty"`
 
 	// write_file
-	Path       string   `json:"path,omitempty"`
-	Mode       uint32   `json:"mode,omitempty"`
-	Restorecon bool     `json:"restorecon,omitempty"`
-	NewSHA256  string   `json:"new_sha256,omitempty"`
-	Existed    bool     `json:"existed,omitempty"`
-	Backup     string   `json:"backup,omitempty"`
-	OrigMode   uint32   `json:"orig_mode,omitempty"`
-	MadeDirs   []string `json:"made_dirs,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Mode      uint32   `json:"mode,omitempty"`
+	NewSHA256 string   `json:"new_sha256,omitempty"`
+	Existed   bool     `json:"existed,omitempty"`
+	Backup    string   `json:"backup,omitempty"`
+	OrigMode  uint32   `json:"orig_mode,omitempty"`
+	MadeDirs  []string `json:"made_dirs,omitempty"`
 
 	// run_cmd
 	Cmd         []string `json:"cmd,omitempty"`

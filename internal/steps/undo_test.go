@@ -504,7 +504,7 @@ func TestApplyUndoRoundTripByteIdentical(t *testing.T) {
 	before := snapshot(t, root)
 
 	full := []Step{
-		{ID: "dracut-conf", Kind: KindWriteFile, Path: "/etc/dracut.conf.d/vfio.conf", Content: []byte("force_drivers+=\" vfio_pci \"\n"), Mode: 0o644, Restorecon: true},
+		{ID: "dracut-conf", Kind: KindWriteFile, Path: "/etc/dracut.conf.d/vfio.conf", Content: []byte("force_drivers+=\" vfio_pci \"\n"), Mode: 0o644},
 		{ID: "env-pins", Kind: KindWriteFile, Path: "/etc/environment", Content: []byte("LANG=C\nEGL_DEVICE=igpu\n"), Mode: 0o600},
 		{ID: "udev-rule", Kind: KindWriteFile, Path: "/etc/udev/rules.d/61-mutter.rules", Content: []byte("ENV{MUTTER_IGNORE}=\"1\"\n"), Mode: 0o644},
 		{ID: "kernel-args", Kind: KindRunCmd,

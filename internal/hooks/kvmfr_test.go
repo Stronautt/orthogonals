@@ -148,6 +148,8 @@ func TestEnsureKVMFRAgainstTheRealKernel(t *testing.T) {
 	if owner == "" {
 		t.Fatal("ORTHOGONALS_TEST_USER is unset: the node has to be handed to a real user")
 	}
+	// EnsureKVMFR execs modprobe and udevadm, which TestMain's empty PATH hides.
+	t.Setenv("PATH", realPATH)
 	if !hw.KVMFRAvailable("/") {
 		t.Fatal("hw.KVMFRAvailable says no module for this kernel, but the tier just installed one")
 	}

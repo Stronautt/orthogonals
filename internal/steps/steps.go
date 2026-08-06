@@ -36,10 +36,9 @@ type Step struct {
 	Reboot bool
 
 	// KindWriteFile
-	Path       string
-	Content    []byte
-	Mode       fs.FileMode
-	Restorecon bool
+	Path    string
+	Content []byte
+	Mode    fs.FileMode
 
 	// KindRunCmd
 	Cmd     []string
@@ -292,15 +291,12 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 		} else {
 			fmt.Fprint(e.Out, renderDiff(s.Path, exists, cur, curMode, s.Content, s.Mode.Perm()))
 		}
-		if s.Restorecon {
-			fmt.Fprintf(e.Out, "would run: restorecon %s\n", s.Path)
-		}
 		return nil
 	}
 	if rec == nil {
 		r := Record{
 			ID: s.ID, Kind: KindWriteFile, Data: s.Data, Reboot: s.Reboot,
-			Path: s.Path, Restorecon: s.Restorecon, Existed: exists,
+			Path: s.Path, Existed: exists,
 			MadeDirs: missingDirs(e.Root, filepath.Dir(full)),
 		}
 		if exists {
@@ -324,24 +320,36 @@ func (e *Engine) applyWriteFile(m *Manifest, s Step) error {
 	if err := m.save(e.Root); err != nil {
 		return err
 	}
-	if err := e.writeFile(full, s.Content, s.Mode.Perm(), s.Restorecon); err != nil {
+	if err := e.writeFile(full, s.Content, s.Mode.Perm(), rec.MadeDirs); err != nil {
 		return err
 	}
 	fmt.Fprintf(e.Out, "wrote %s\n", s.Path)
 	return nil
 }
 
-// writeFile lands content at full. Atomic: a torn config breaks every GPU
-// handover (a half-written qemu shim) and fails undo's changed-since-apply
-// hash gate.
-func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, restorecon bool) error {
+// writeFile lands content at full, then relabels it and any directory this step
+// created. Atomic: a torn config breaks every GPU handover (a half-written qemu
+// shim) and fails undo's changed-since-apply hash gate.
+//
+// WriteAtomic carries the label of a file it replaces; one it creates has none
+// to carry and takes its parent's type transition, as does a created directory.
+// No package ships /etc/libvirt/hooks, so apply creates it, and both it and the
+// shim would keep virt_etc_t where policy types that path virt_hook_t.
+func (e *Engine) writeFile(full string, content []byte, mode fs.FileMode, madeDirs []string) error {
 	if err := utils.WriteAtomic(full, content, mode); err != nil {
 		return err
 	}
-	if restorecon {
-		return runCmd(e.Out, "restorecon", full)
+	// A tree with no SELinux has no label to fix. That is what keeps a unit
+	// test's bare root from reaching for the restorecon of the machine it runs
+	// on; the fixtures carry the file, so --root tiers still relabel.
+	if selinux, _ := utils.Exists(filepath.Join(e.Root, "/sys/fs/selinux/enforce")); !selinux {
+		return nil
 	}
-	return nil
+	argv := []string{"restorecon", full}
+	for _, d := range madeDirs {
+		argv = append(argv, filepath.Join(e.Root, d))
+	}
+	return runCmd(e.Out, argv...)
 }
 
 func (e *Engine) applyRunCmd(m *Manifest, s Step) error {

@@ -401,7 +401,7 @@ func (e *Engine) undoWriteFile(rec Record, force bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := e.writeFile(full, orig, fs.FileMode(rec.OrigMode), rec.Restorecon); err != nil {
+	if err := e.writeFile(full, orig, fs.FileMode(rec.OrigMode), rec.MadeDirs); err != nil {
 		return false, err
 	}
 	fmt.Fprintf(e.Out, "restored %s\n", rec.Path)

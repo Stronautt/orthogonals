@@ -18,6 +18,10 @@ import (
 	"github.com/stronautt/orthogonals/internal/utils"
 )
 
+// realPATH is read before TestMain empties PATH — package vars initialize
+// first — for the tier tests that drive the machine's own tools.
+var realPATH = os.Getenv("PATH")
+
 func TestMain(m *testing.M) {
 	LogWriter = io.Discard
 	// An empty PATH, so a binary no test faked cannot resolve to the developer's

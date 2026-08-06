@@ -259,18 +259,55 @@ func TestUndoDriftSkipsUnlessForce(t *testing.T) {
 }
 
 func TestWriteFileRestorecon(t *testing.T) {
-	root := t.TempDir()
-	dir := fakePath(t)
-	rcLog := fakeBin(t, dir, "restorecon", "")
-	e, _, _ := eng(root, true)
+	step := Step{ID: "shm", Kind: KindWriteFile, Path: "/etc/tmpfiles.d/lg.conf", Content: []byte("f /dev/shm/looking-glass\n"), Mode: 0o644}
 
-	step := Step{ID: "shm", Kind: KindWriteFile, Path: "/etc/tmpfiles.d/lg.conf", Content: []byte("f /dev/shm/looking-glass\n"), Mode: 0o644, Restorecon: true}
-	if err := e.Apply([]Step{step}); err != nil {
+	t.Run("relabels the file and the directories it created", func(t *testing.T) {
+		root := t.TempDir()
+		writeSELinux(t, root)
+		rcLog := fakeBin(t, fakePath(t), "restorecon", "")
+		e, _, _ := eng(root, true)
+
+		if err := e.Apply([]Step{step}); err != nil {
+			t.Fatal(err)
+		}
+		lines := logLines(t, rcLog)
+		if len(lines) != 1 {
+			t.Fatalf("restorecon invocations = %d, want 1: %v", len(lines), lines)
+		}
+		// The directory too: it takes a type transition of its own when created.
+		for _, want := range []string{"etc/tmpfiles.d/lg.conf", "etc/tmpfiles.d"} {
+			if !strings.Contains(lines[0], filepath.Join(root, want)) {
+				t.Errorf("restorecon %q does not cover %s", lines[0], want)
+			}
+		}
+	})
+
+	// Without this the whole suite depends on the developer's own restorecon,
+	// and a machine without SELinux fails every write.
+	t.Run("a root without SELinux runs nothing", func(t *testing.T) {
+		root := t.TempDir()
+		rcLog := fakeBin(t, fakePath(t), "restorecon", "")
+		e, _, _ := eng(root, true)
+
+		if err := e.Apply([]Step{step}); err != nil {
+			t.Fatal(err)
+		}
+		if lines := logLines(t, rcLog); len(lines) != 0 {
+			t.Errorf("restorecon ran on a tree with no SELinux: %v", lines)
+		}
+	})
+}
+
+// writeSELinux gives a root the file the engine reads to decide that labels
+// exist. The fixture trees carry it; a bare t.TempDir() does not.
+func writeSELinux(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "sys/fs/selinux")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	lines := logLines(t, rcLog)
-	if len(lines) != 1 || !strings.Contains(lines[0], filepath.Join(root, "etc/tmpfiles.d/lg.conf")) {
-		t.Fatalf("restorecon not invoked on the written file: %v", lines)
+	if err := os.WriteFile(filepath.Join(dir, "enforce"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
