@@ -1,10 +1,6 @@
 name: Regression
 
-# The suites too slow or too stateful to gate a push: fuzzing, vendor-pin
-# reachability, and the runs that mutate a real kernel in a throwaway guest.
-# One nightly schedule runs everything (the job ifs match any schedule, so
-# this cron is referenced nowhere else); the dispatch input runs any one
-# suite (or all) on demand without paying for the rest.
+# The suites too slow or too stateful for the push gate in ci.yml.
 on:
   schedule:
     - cron: '17 3 * * *'
@@ -18,6 +14,22 @@ on:
 
 permissions:
   contents: read
+
+# Never cancel: a dispatch queues behind a running nightly instead of killing
+# a tier mid-run and stranding its guest.
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Both tiers run this after their apt install, never before: the install puts
+  # the mode back, and a udev rule did not survive it either. The ioctl opens
+  # the node as this user, which is the view testcloud's qemu:///session gets.
+  KVM_READY: |
+    test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+    sudo chmod 666 /dev/kvm
+    ls -l /dev/kvm
+    python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
 
 jobs:
   fuzz:
@@ -45,18 +57,11 @@ jobs:
             go test ./$pkg -run "$t" -fuzz "$t" -fuzztime=120s 2>&1 | tee fuzz.log
             status=${PIPESTATUS[0]}
             echo "::endgroup::"
-            # Go's fuzz coordinator reports its own -fuzztime deadline as a test
-            # failure whenever it wakes on that deadline before the cancellation
-            # has reached the worker context it compares itself against
-            # (internal/fuzz/fuzz.go, `stop(ctx.Err())`): the parent closes its
-            # done channel before propagating to the child, so the suppression
-            # loses a race it is expected to win. testdeps' own guard cannot
-            # catch it — that one holds the signal context, and the deadline
-            # context is created inside CoordinateFuzzing where it cannot reach.
-            # The crasher tree, not the exit status, is therefore the verdict:
-            # a crasher found in the same window IS written to testdata, but the
-            # deferred writer only replaces the returned error when it is nil,
-            # so a real finding can carry this exact message too.
+            # Go's coordinator reports its own -fuzztime deadline as a test
+            # failure when it wakes before cancellation reaches the worker
+            # context (internal/fuzz, `stop(ctx.Err())`). A real finding writes
+            # to testdata and can carry that same message, so the crasher tree
+            # is the verdict, not the exit status.
             if [ "$status" -ne 0 ] &&
                grep -q '^    context deadline exceeded$' fuzz.log &&
                [ -z "$(ls -A $pkg/testdata/fuzz 2>/dev/null)" ]; then
@@ -75,8 +80,6 @@ jobs:
           retention-days: 90
 
   pins:
-    # a rotted vendor URL should surface here, not in a user's media run;
-    # nightly is fine because this is HEAD requests, not downloads
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","pins"]'), inputs.suite))
@@ -96,8 +99,6 @@ jobs:
           { echo '### Pinned downloads'; echo '```'; cat pins.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit $st
 
-  # The two jobs below mutate a real kernel, so they live in throwaway guests
-  # and are far too slow to gate a push.
   vm-tier:
     if: >-
       github.event_name == 'schedule' ||
@@ -106,14 +107,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      # The node ships /dev/kvm 0660 root:kvm and the runner user is not in
-      # that group, so the chmod is load-bearing; the ioctl proves the
-      # subsystem answers.
-      - name: Require a usable /dev/kvm
-        run: |
-          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
-          sudo chmod 666 /dev/kvm
-          python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
       - uses: actions/checkout@v7
         with:
           submodules: true
@@ -128,6 +121,9 @@ jobs:
           sudo apt-get install -y -qq libvirt-daemon-system libvirt-dev python3-dev qemu-system-x86 genisoimage
           sudo systemctl start libvirtd
           pipx install 'tmt[provision-virtual]'
+      # Stays after the install and immediately before the tier command.
+      - name: Require a usable /dev/kvm
+        run: ${{ env.KVM_READY }}
       - run: make test-vm
       - name: Test summary
         if: always()
@@ -157,27 +153,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Require a usable /dev/kvm
-        run: |
-          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
-          sudo chmod 666 /dev/kvm
-          python3 -c 'import fcntl, os; fcntl.ioctl(os.open("/dev/kvm", os.O_RDWR), 0xAE00)'
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-      # No provision plugin needed: test/vfiohost boots the guest itself,
-      # because testcloud cannot ask for the emulated IOMMU this job exists to have.
+      # Plain tmt: test/vfiohost boots the guest itself, because testcloud
+      # cannot ask for the emulated IOMMU this job exists to have.
       - name: Install libvirt and tmt
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libvirt-daemon-system qemu-system-x86
           sudo systemctl start libvirtd
           sudo virsh net-start default || true
-          # test/vfiohost dials the system socket (0770 root:libvirt); sg in
-          # the next step picks the new group up without a re-login
+          # test/vfiohost dials the system socket (0770 root:libvirt); the sg
+          # below picks the new group up without a re-login.
           sudo usermod -aG libvirt "$USER"
           pipx install tmt
+      # Stays after the install and immediately before the tier command.
+      - name: Require a usable /dev/kvm
+        run: ${{ env.KVM_READY }}
       - run: sg libvirt -c "make test-vfio"
       - name: Test summary
         if: always()
@@ -190,8 +184,6 @@ jobs:
           path: /var/tmp/orthogonals-tmt-vfio/
           retention-days: 14
 
-  # Nobody watches a nightly. Failures land on one accumulating issue
-  # instead of sailing past in the Actions tab.
   report-failure:
     name: Report failure
     needs: [fuzz, pins, vm-tier, vfio-tier]

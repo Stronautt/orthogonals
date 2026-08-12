@@ -24,12 +24,17 @@ func healthyRoot(t *testing.T) string {
 	return root
 }
 
-func failing(cs []Check, prefix string) *Check {
+// A missing check ends the test here rather than at the caller: every caller
+// dereferences the result, and staticcheck does not see that a t.Fatal on nil
+// stops them (SA5011).
+func failing(t *testing.T, cs []Check, prefix, why string) *Check {
+	t.Helper()
 	for i := range cs {
 		if strings.HasPrefix(cs[i].Name, prefix) && !cs[i].OK {
 			return &cs[i]
 		}
 	}
+	t.Fatalf("%s: no failing %q check in %+v", why, prefix, cs)
 	return nil
 }
 
@@ -90,9 +95,7 @@ func TestStatusDetectsDrift(t *testing.T) {
 			if Healthy(cs) {
 				t.Fatalf("drift not detected: %+v", cs)
 			}
-			if failing(cs, tc.check) == nil {
-				t.Errorf("check %q did not fail: %+v", tc.check, cs)
-			}
+			failing(t, cs, tc.check, "check did not fail")
 		})
 	}
 }
@@ -111,10 +114,7 @@ func TestStatusHookUnreadableIsNotMissing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
-	c := failing(Status(root), "libvirt hooks")
-	if c == nil {
-		t.Fatal("an unreadable hook path must not report healthy")
-	}
+	c := failing(t, Status(root), "libvirt hooks", "an unreadable hook path must not report healthy")
 	if !strings.Contains(c.Detail, "run as root") {
 		t.Errorf("detail should say the check could not look, got %q", c.Detail)
 	}
@@ -138,10 +138,7 @@ func TestStatusVFIOBoundIsHealthy(t *testing.T) {
 func TestStatusUnexpectedDriver(t *testing.T) {
 	root := healthyRoot(t)
 	hwtest.AddPCI(t, root, hwtest.Dev{Addr: "0000:02:00.0", Vendor: "0x10de", Device: "0x2216", Class: "0x030000", Driver: "pci-stub", Group: 2})
-	c := failing(Status(root), "gpu binding 0000:02:00.0")
-	if c == nil {
-		t.Fatal("pci-stub-bound GPU must not report healthy")
-	}
+	c := failing(t, Status(root), "gpu binding 0000:02:00.0", "pci-stub-bound GPU must not report healthy")
 	if !strings.Contains(c.Detail, "pci-stub") {
 		t.Errorf("check should name the unexpected driver, got %q", c.Detail)
 	}
@@ -151,10 +148,7 @@ func TestStatusMissingKernelArgsRecord(t *testing.T) {
 	root := healthyRoot(t)
 	m := `{"records":[{"id":"hook-qemu-dispatcher","kind":"write_file","path":"/etc/libvirt/hooks/qemu"}]}`
 	write(t, root, "var/lib/orthogonals/manifest.json", m)
-	c := failing(Status(root), "kernel arguments")
-	if c == nil {
-		t.Fatal("missing kernel-args record must surface as a failing check")
-	}
+	c := failing(t, Status(root), "kernel arguments", "missing kernel-args record must surface as a failing check")
 	if !strings.Contains(c.Detail, "kernel-args") {
 		t.Errorf("detail should point at the missing step, got %q", c.Detail)
 	}
@@ -177,10 +171,7 @@ func TestStatusKVMFRModuleMissingAfterKernelUpdate(t *testing.T) {
 	root := healthyRoot(t)
 	writeKVMFRDomain(t, root, "win11")
 
-	c := failing(Status(root), "looking glass")
-	if c == nil {
-		t.Fatal("a kvmfr domain without the module must not report healthy")
-	}
+	c := failing(t, Status(root), "looking glass", "a kvmfr domain without the module must not report healthy")
 	for _, want := range []string{"orthogonals up", steps.LookingGlassSHM} {
 		if !strings.Contains(c.Detail, want) {
 			t.Errorf("detail does not mention %q: %s", want, c.Detail)
