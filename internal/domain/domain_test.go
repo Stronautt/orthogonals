@@ -442,6 +442,7 @@ func TestQuirkFixes(t *testing.T) {
 		"<hyperv mode='custom'>",
 		"<target dev='vda' bus='virtio'/>",
 		"iothread='1'",
+		"cache='writeback'",
 		"<backend type='emulator' version='2.0'/>",
 		"<shmem name='looking-glass'>",
 		"org.qemu.guest_agent.0",

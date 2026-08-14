@@ -82,7 +82,7 @@
   </pm>
   <devices>
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none' io='io_uring' discard='unmap' iothread='1'/>
+      <driver name='qemu' type='qcow2' cache='writeback' io='io_uring' discard='unmap' iothread='1'/>
       <source file='{{.DiskPath}}'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>
