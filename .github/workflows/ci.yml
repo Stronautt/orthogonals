@@ -80,7 +80,7 @@ jobs:
       # exclusive: -format sarif always exits 0.
       - name: govulncheck report (Security tab)
         run: go run golang.org/x/vuln/cmd/govulncheck@latest -format sarif ./... > govulncheck.sarif
-      - uses: github/codeql-action/upload-sarif@v4.37.6
+      - uses: github/codeql-action/upload-sarif@v4.37.7
         with:
           sarif_file: govulncheck.sarif
       - name: govulncheck gate
