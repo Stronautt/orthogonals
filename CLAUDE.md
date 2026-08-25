@@ -178,7 +178,8 @@ boundaries. Swap with `t.Cleanup` restore, never `t.Parallel` while swapped.
   numerator, so `make coverage` **fails** when merging adds an `internal/`
   block — the tier's only honest addition is `main.go`. Its two causes are a
   stale `/var/tmp/orthogonals-tmt-*` and a tier binary built by another Go than
-  the one merging, which is why the coverage-merging CI jobs pin `go-version`
-  to Fedora 44's series instead of `stable`.
+  the one merging — so **no CI job names a Go version**: every `setup-go` reads
+  `go-version-file: go.mod`, and the workflow-lint job fails on one that does
+  not.
 - **Coverage is not why the host tiers exist**: `internal/hooks` was at 86.6%
   when the VFIO tier found the CWD bug in its holder gate.

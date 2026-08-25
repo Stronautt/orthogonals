@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       - run: go vet ./...
       # test/desk is behind the desk build tag, so a plain `go vet ./...` never compiles it.
       - run: go vet -tags desk ./test/desk
@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       # Two runs because SARIF output and exit-code gating are mutually
       # exclusive: -format sarif always exits 0.
       - name: govulncheck report (Security tab)
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       # -test so the *test helper packages (hwtest, virttest, …) count as
       # reachable; they are only ever called from tests. The tool itself
       # always exits 0, so the gate is on its output being empty.
@@ -115,8 +115,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       - run: go run github.com/rhysd/actionlint/cmd/actionlint@latest
+      - name: Every setup-go reads go.mod
+        run: |
+          if grep -rnE '^[[:space:]]+go-version:' .github/workflows/; then
+            echo 'name no Go version; use go-version-file: go.mod'
+            exit 1
+          fi
 
   rpm:
     name: RPM
@@ -154,13 +160,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          # Not `stable`: this job merges the unit profile with one from a
-          # binary the container built using Fedora 44's golang. Two toolchains
-          # disagree on block layout, and covdata keeps both rather than
-          # summing counters, so the tier's blocks land in the denominator
-          # only — worth 20 points, and `stable` moves on Go's schedule, not
-          # Fedora's. `make coverage` refuses the merge if the two drift.
-          go-version: '1.26'
+          go-version-file: go.mod
       # tmt's container provisioner shells out to podman specifically.
       - name: Install tmt and podman
         run: |

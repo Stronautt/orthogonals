@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       - name: Fuzz every target in internal/${{ matrix.package }}
         run: |
           pkg=internal/${{ matrix.package }}
@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       - name: Check every pinned download
         run: |
           st=0
@@ -112,13 +112,7 @@ jobs:
           submodules: true
       - uses: actions/setup-go@v7
         with:
-          # Not `stable`: this job merges the unit profile with one from a
-          # binary the guest built using Fedora 44's golang. Two toolchains
-          # disagree on block layout, and covdata keeps both rather than
-          # summing counters, so the tier's blocks land in the denominator
-          # only — worth 20 points, and `stable` moves on Go's schedule, not
-          # Fedora's. `make coverage` refuses the merge if the two drift.
-          go-version: '1.26'
+          go-version-file: go.mod
       # libvirt-dev because the provision-virtual extra builds libvirt-python
       # from source — there is no binary wheel.
       - name: Install libvirt and tmt
@@ -162,7 +156,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
       # Plain tmt: test/vfiohost boots the guest itself, because testcloud
       # cannot ask for the emulated IOMMU this job exists to have.
       - name: Install libvirt and tmt
