@@ -173,7 +173,12 @@ boundaries. Swap with `t.Cleanup` restore, never `t.Parallel` while swapped.
   `go tool cover -func | tail -1`, which misses every `var x = func(…)` seam
   from its listing *and* its total. Unit tests alone cap around 83%;
   `internal/virt` and `internal/sysd` need a live daemon, so a coverage number
-  quoted without saying which tiers ran is meaningless. A tier directory left
-  from an older binary merges cleanly and silently pads the denominator.
+  quoted without saying which tiers ran is meaningless. Tier data from another
+  build merges cleanly and pads the denominator rather than raising the
+  numerator, so `make coverage` **fails** when merging adds an `internal/`
+  block — the tier's only honest addition is `main.go`. Its two causes are a
+  stale `/var/tmp/orthogonals-tmt-*` and a tier binary built by another Go than
+  the one merging, which is why the coverage-merging CI jobs pin `go-version`
+  to Fedora 44's series instead of `stable`.
 - **Coverage is not why the host tiers exist**: `internal/hooks` was at 86.6%
   when the VFIO tier found the CWD bug in its holder gate.

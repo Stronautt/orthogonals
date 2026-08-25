@@ -133,24 +133,30 @@ coverage:
 	go test ./... -coverpkg=./internal/... -args -test.gocoverdir=$(COVER)/unit
 	@find $(TMT_RUN)-container $(TMT_RUN)-vm $(TMT_RUN)-vfio -type d -name coverage 2>/dev/null \
 		-exec cp -a '{}/.' $(COVER)/tier/ ';' || true
+	go tool covdata textfmt -i=$(COVER)/unit -o=$(COVER)/unit.txt
 	@if [ -n "$$(ls -A $(COVER)/tier 2>/dev/null)" ]; then \
 		go tool covdata textfmt -i=$(COVER)/unit,$(COVER)/tier -o=$(COVER)/merged.txt; \
 	else \
 		echo "note: no tier coverage found — run make test-integration first"; \
-		go tool covdata textfmt -i=$(COVER)/unit -o=$(COVER)/merged.txt; \
+		cp $(COVER)/unit.txt $(COVER)/merged.txt; \
 	fi
-	@# Tier data from another build merges cleanly, but its blocks describe
-	@# source this tree no longer has and land in the denominator only — several
-	@# points, silently. Two shapes: more than one build, or one that predates
-	@# the sources (a comment is enough, it moves every block after it).
-	@meta=$$(find $(COVER)/tier -name 'covmeta.*' 2>/dev/null | head -1); \
-	if [ -n "$$meta" ]; then \
-		builds=$$(find $(COVER)/tier -name 'covmeta.*' | wc -l); \
-		newer=$$(find main.go internal test -name '*.go' -newer "$$meta" -print -quit); \
-		if [ "$$builds" -gt 1 ] || [ -n "$$newer" ]; then \
-			echo "warning: tier coverage was built from different sources ($$builds build(s)$${newer:+, $$newer is newer})."; \
-			echo "         rm -rf $(TMT_RUN)-* and re-run the tiers for a meaningful number."; \
-		fi; \
+	@# covdata merges two builds of the same package without complaint and keeps
+	@# BOTH block layouts, so the stranger's blocks land in the denominator only
+	@# and the figure drops several points with nothing said. Identical sources
+	@# built by an identical toolchain give identical blocks, so a merge that
+	@# adds an internal/ block proves one of the two drifted: the tier's only
+	@# honest addition is main.go, which -coverpkg leaves out. Both shapes are
+	@# silent otherwise — a stale $(TMT_RUN)-* from older sources (one moved
+	@# comment is enough), or a tier binary built by another Go than this one.
+	@u=$$(grep -c '/internal/' $(COVER)/unit.txt); \
+	m=$$(grep -c '/internal/' $(COVER)/merged.txt); \
+	if [ "$$m" -ne "$$u" ]; then \
+		echo "error: tier coverage does not line up with this build:"; \
+		echo "       merging it adds $$((m - u)) internal/ blocks to the unit profile's $$u."; \
+		echo "       Either it ran on other sources — rm -rf $(TMT_RUN)-* and re-run the"; \
+		echo "       tiers — or another Go built it: the tiers use Fedora's golang, so"; \
+		echo "       whatever runs this target has to match it ($$(go env GOVERSION) here)."; \
+		exit 1; \
 	fi
 	@printf 'total: (statements) %s%%\n' "$$($(MAKE) --no-print-directory coverage-pct)"
 
