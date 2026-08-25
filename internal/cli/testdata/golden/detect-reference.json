@@ -120,11 +120,13 @@
       "fbdev": "N"
     },
     "tools": {
+      "dkms": true,
       "dracut": true,
       "nvidia-smi": true,
       "restorecon": true,
       "semanage": true,
-      "systemd-tmpfiles": true
+      "systemd-tmpfiles": true,
+      "usermod": true
     }
   }
 }

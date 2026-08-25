@@ -1,0 +1,10 @@
++      "address": "0000:00:01.0",
++      "vendor": "0x8086",
++      "device": "0xa70d",
++      "class": "0x060400",
++      "driver": "pcieport",
++      "iommu_group": 1,
++      "has_reset": false,
++      "boot_vga": false
++    },
++    {

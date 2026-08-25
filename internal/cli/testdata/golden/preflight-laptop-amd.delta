@@ -1,0 +1,15 @@
+-      "message": "IOMMU active, host address width 39 bits",
++      "message": "IOMMU active, host address width 48 bits",
+-      "message": "Intel iGPU 0000:00:02.0 + NVIDIA dGPU 0000:01:00.0",
++      "message": "AMD iGPU 0000:05:00.0 + NVIDIA dGPU 0000:01:00.0",
+-      "message": "all connected displays are on the iGPU (DP-1)",
++      "message": "all connected displays are on the iGPU (eDP-1)",
+-      "message": "chassis: desktop",
++      "message": "laptop chassis (notebook): hybrid-graphics passthrough — the panel stays on the iGPU while the dGPU is handed to the guest",
+-      "message": "skipped (not a laptop)",
++      "message": "MUXed laptop: the NVIDIA dGPU 0000:01:00.0 drives display outputs",
+-      "message": "host IOMMU address width is 39 bits: 64-bit GPU BARs can map above the DMA limit and stall the guest",
++      "message": "host IOMMU address width 48 bits",
+-      "remedy": "no action needed — VM definition applies the maxphysaddr + OVMF PciMmio64 fix automatically",
+-      "status": "warn"
++      "status": "pass"

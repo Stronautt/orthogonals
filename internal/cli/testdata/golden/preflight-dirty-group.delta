@@ -1,0 +1,7 @@
+-      "message": "IOMMU group 1 contains only the GPU, its audio function, and bridges",
++      "message": "dGPU IOMMU group 1 also contains 0000:02:00.0 (class 0x020000) — the whole group must be handed to the guest",
+-      "status": "pass"
++      "remedy": "orthogonals never enables the ACS override patch: it fakes isolation and lets the guest DMA into those devices. Instead: move the GPU to a CPU-attached PCIe slot, look for a BIOS update, or try a newer kernel with better ACS support",
++      "status": "fail"
+-  "status": "warn"
++  "status": "fail"

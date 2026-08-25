@@ -28,7 +28,7 @@ const stateDir = "var/lib" + string(os.PathSeparator) + "orthogonals"
 // applyTools are the binaries apply shells out to under --root. A missing stub
 // fails the clean run loudly, rather than silently running the developer's real
 // dracut.
-var applyTools = append([]string{"systemctl", "usermod", "bash"}, hw.RequiredTools...)
+var applyTools = append([]string{"systemctl", "bash"}, hw.RequiredTools...)
 
 // orthogonals is the binary under test: the RPM-installed one when
 // ORTHOGONALS_BIN is set (under tmt), otherwise one built from this tree.

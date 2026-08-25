@@ -1,0 +1,7 @@
+-      "message": "no pre-existing vfio configuration",
++      "message": "pre-existing vfio configuration found: /etc/modprobe.d/vfio-preexisting.conf: options vfio-pci ids=10de:2206,10de:1aef",
+-      "status": "pass"
++      "remedy": "remove or let orthogonals adopt it: delete these entries and reboot so apply starts from a clean slate; if they are leftovers from an orthogonals install whose /var/lib/orthogonals state was deleted, restore that state (or remove the leftovers) before re-running apply",
++      "status": "fail"
+-  "status": "warn"
++  "status": "fail"

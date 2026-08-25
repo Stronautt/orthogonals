@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -17,10 +16,9 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/utils"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
 
 func reference(t *testing.T) *hw.Result {
 	t.Helper()
@@ -137,36 +135,6 @@ func TestSettingsOver(t *testing.T) {
 	merged.Shares[0] = "/mutated"
 	if prev.Shares[0] != "/srv/docs" {
 		t.Errorf("Over aliased the registered slice: prev.Shares = %v", prev.Shares)
-	}
-}
-
-func TestReadMemoryMiB(t *testing.T) {
-	root := t.TempDir()
-	p := mustProfile(t, reference(t), Options{})
-	path := filepath.Join(root, xmlPath(p.Name))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, mustRender(t, p), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ReadMemoryMiB(root, p.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 20480 {
-		t.Errorf("ReadMemoryMiB = %d, want 20480", got)
-	}
-
-	badPath := filepath.Join(root, xmlPath("bad"))
-	if err := os.WriteFile(badPath, []byte(`<domain><memory unit='KiB'>25165824</memory></domain>`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadMemoryMiB(root, "bad"); err == nil {
-		t.Error("ReadMemoryMiB must reject a non-MiB unit")
-	}
-	if _, err := ReadMemoryMiB(root, "missing"); err == nil {
-		t.Error("ReadMemoryMiB must error on a missing domain")
 	}
 }
 
@@ -316,38 +284,45 @@ func TestRenderGolden(t *testing.T) {
 			ProvisionISO: "/var/lib/orthogonals/win11-provision.iso",
 		}, false},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := mustProfile(t, tc.res, tc.opts)
-			if tc.provisioned {
-				p.ApplyStage(StageFinal)
+	// render is the per-case work: build the profile, apply the stage, render,
+	// and prove the XML parses before anything compares it.
+	render := func(t *testing.T, res *hw.Result, opts Options, provisioned bool) []byte {
+		t.Helper()
+		p := mustProfile(t, res, opts)
+		if provisioned {
+			p.ApplyStage(StageFinal)
+		}
+		got := mustRender(t, p)
+		d := xml.NewDecoder(bytes.NewReader(got))
+		for {
+			_, err := d.Token()
+			if errors.Is(err, io.EOF) {
+				break
 			}
-			got := mustRender(t, p)
-
-			d := xml.NewDecoder(bytes.NewReader(got))
-			for {
-				_, err := d.Token()
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				if err != nil {
-					t.Fatalf("rendered XML does not parse: %v\n%s", err, got)
-				}
-			}
-
-			golden := filepath.Join("testdata", "golden", tc.name)
-			if *update {
-				if err := os.WriteFile(golden, got, 0o644); err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			want, err := os.ReadFile(golden)
 			if err != nil {
-				t.Fatalf("%s: %v (run go test -update)", golden, err)
+				t.Fatalf("rendered XML does not parse: %v\n%s", err, got)
 			}
-			if !bytes.Equal(got, want) {
-				t.Errorf("rendered XML differs from %s:\n%s", golden, got)
+		}
+		return got
+	}
+
+	// The reference domain is goldened in full and every other case as its
+	// departure from it. The cases are the reference with one option changed,
+	// so a full golden apiece rewrites all seven whenever the template moves —
+	// `Switch the guest disk to writeback caching` was 7 files for one line.
+	if cases[0].name != "reference.xml" {
+		t.Fatal("cases[0] is the baseline every other case departs from")
+	}
+	baseline := render(t, cases[0].res, cases[0].opts, cases[0].provisioned)
+	testsupport.Golden(t, cases[0].name, baseline)
+
+	for _, tc := range cases[1:] {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render(t, tc.res, tc.opts, tc.provisioned)
+			name := strings.TrimSuffix(tc.name, ".xml") + ".delta"
+			if testsupport.GoldenDelta(t, name, baseline, got) {
+				t.Errorf("%s renders byte-identically to reference.xml, so it "+
+					"proves nothing; give it an option the reference lacks", tc.name)
 			}
 		})
 	}

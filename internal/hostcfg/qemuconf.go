@@ -3,6 +3,7 @@ package hostcfg
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
@@ -78,28 +79,32 @@ const DKMSDropInPath = "/etc/dkms/framework.conf.d/orthogonals-kvmfr.conf"
 // DKMSSigningSteps make kvmfr sign with a key Secure Boot already trusts. The
 // rebuild is not optional: the RPM's module was signed with dkms's own
 // unenrolled key, and only a forced rebuild re-signs it for the running kernel.
-// The version is not a parameter: dkms addresses the tree kvmfr-dkms
-// registered, which the spec names for the RPM version.
+// The version is not a step parameter. dkms addresses the tree that kvmfr-dkms
+// registered, and the spec names that tree for the RPM version. A version in
+// the identity of the step makes every `make lg-bump` refuse instead of
+// rebuild.
 func DKMSSigningSteps(cert, key string) []steps.Step {
 	content := []byte("# Written by orthogonals: sign kvmfr with the key this host has already\n" +
 		"# enrolled, so Secure Boot needs no new MOK.\n" +
 		"mok_signing_key=" + key + "\n" +
 		"mok_certificate=" + cert + "\n")
-	module := "kvmfr/" + artifacts.LookingGlassRPMVersion
+	// Input re-runs these steps after a key change, so a rotation converges and
+	// no stale signature stays. Input also re-runs them after a version bump,
+	// which the identity of the op does not carry.
+	input := append(slices.Clone(content), "\n"+artifacts.LookingGlassRPMVersion...)
+	module := map[string]string{"module": "kvmfr"}
 	return []steps.Step{
 		{
 			ID: "dkms-signing-key", Kind: steps.KindWriteFile,
 			Path: DKMSDropInPath, Content: content, Mode: 0o644,
 		},
-		// Input re-runs these on a key change, so a rotation converges instead of
-		// leaving a stale signature.
 		{
-			ID: "kvmfr-rebuild", Kind: steps.KindRunCmd, Input: content,
-			Cmd: []string{"dkms", "build", "-m", module, "--force"},
+			ID: "kvmfr-rebuild", Kind: steps.KindOp, Input: input,
+			Op: steps.OpDKMSBuild, Args: module,
 		},
 		{
-			ID: "kvmfr-reinstall", Kind: steps.KindRunCmd, Input: content,
-			Cmd: []string{"dkms", "install", "-m", module, "--force"},
+			ID: "kvmfr-reinstall", Kind: steps.KindOp, Input: input,
+			Op: steps.OpDKMSInstall, Args: module,
 		},
 	}
 }

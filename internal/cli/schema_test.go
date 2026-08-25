@@ -3,68 +3,101 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
-	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
 
 // volatileMessages are check names whose message embeds a value read from the
 // live host, so the golden pins the check's presence but not its wording.
 var volatileMessages = map[string]bool{"disk-space": true}
 
-type contractCase struct {
-	name    string
-	fixture string
-	args    []string
-	schema  string
+// jsonCommands are the JSON-emitting read commands, each named for the schema
+// it must satisfy. Every fixture in hwtest.Roots is crossed with all of them,
+// so a new topology extends the contract without touching this table.
+var jsonCommands = []struct {
+	name string
+	args []string
+}{
+	{"detect", []string{"detect", "--json"}},
+	{"preflight", []string{"preflight", "--json"}},
 }
 
-// contractCases pairs every fixture in hwtest.Roots with both JSON-emitting
-// read commands, so a new topology extends the contract without touching this
-// table.
-func contractCases() []contractCase {
-	var cases []contractCase
-	for _, fx := range hwtest.RootNames() {
-		cases = append(cases,
-			contractCase{"detect-" + fx, fx, []string{"detect", "--json"}, "detect"},
-			contractCase{"preflight-" + fx, fx, []string{"preflight", "--json"}, "preflight"},
-		)
-	}
-	return append(cases,
-		contractCase{"status-unapplied", "reference", []string{"status", "--json"}, "status"})
+// blindTo names the fixture/command pairs whose report is byte-identical to
+// the reference host's, with the reason it is. A fixture varies something the
+// command cannot see: detect reads hardware, so a stray modprobe.d file leaves
+// it unmoved. That is a contract rather than an accident, and stating it here
+// makes the assertion two-directional — a command that starts seeing a fixture
+// fails, and so does one that quietly goes blind to it.
+var blindTo = map[string]string{
+	"detect-foreign-vfio": "detect reads hardware; modprobe.d is preflight's business",
+	"preflight-bridge":    "no preflight check inspects PCIe bridges",
+	"preflight-no-audio":  "preflight has no HDMI-audio-function check (a gap, not a decision)",
 }
 
+// TestJSONContract goldens each command's reference report in full and every
+// other fixture as its departure from that reference. The fixtures are the
+// reference host with one or two facts changed, so a full golden apiece buries
+// those facts in a copy of the reference and rewrites all eleven whenever the
+// shared part moves.
 func TestJSONContract(t *testing.T) {
-	for _, tt := range contractCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			// Every required tool present, so platform.tools does not depend on
-			// whatever the developer or runner happens to have installed.
-			t.Setenv("PATH", hwtest.FakeTools(t, hw.RequiredTools...))
-			root := t.TempDir()
-			if err := fixtureBuilders[tt.fixture](root); err != nil {
-				t.Fatal(err)
-			}
-
-			var out, errBuf bytes.Buffer
-			Run(append(tt.args, "--root", root), &out, &errBuf)
-			if out.Len() == 0 {
-				t.Fatalf("no JSON on stdout (stderr: %q)", errBuf.String())
-			}
-
-			validateSchema(t, tt.schema, out.Bytes())
-			checkGolden(t, tt.name+".json", normalizeJSON(t, out.Bytes()))
-		})
+	baseline := make(map[string][]byte, len(jsonCommands))
+	for _, c := range jsonCommands {
+		baseline[c.name] = runJSON(t, c.name, c.args, "reference")
+		testsupport.Golden(t, c.name+"-reference.json", baseline[c.name])
 	}
+	for _, c := range jsonCommands {
+		for _, fx := range hwtest.RootNames() {
+			if fx == "reference" {
+				continue
+			}
+			name := c.name + "-" + fx
+			t.Run(name, func(t *testing.T) {
+				got := runJSON(t, c.name, c.args, fx)
+				blind := testsupport.GoldenDelta(t, name+".delta", baseline[c.name], got)
+				if reason, declared := blindTo[name]; blind != declared {
+					if blind {
+						t.Errorf("%s is now byte-identical to the reference report: "+
+							"%s no longer sees anything this fixture varies", name, c.name)
+					} else {
+						t.Errorf("%s now differs from the reference report, so it is no "+
+							"longer blind (%s); drop it from blindTo", name, reason)
+					}
+				}
+			})
+		}
+	}
+	t.Run("status-unapplied", func(t *testing.T) {
+		testsupport.Golden(t, "status-unapplied.json",
+			runJSON(t, "status", []string{"status", "--json"}, "reference"))
+	})
+}
+
+// runJSON builds one fixture, runs one command against it, and returns the
+// schema-validated, normalized report.
+func runJSON(t *testing.T, schema string, args []string, fixture string) []byte {
+	t.Helper()
+	// Every required tool present, so platform.tools does not depend on
+	// whatever the developer or runner happens to have installed.
+	t.Setenv("PATH", hwtest.FakeTools(t, hw.RequiredTools...))
+	root := t.TempDir()
+	if err := fixtureBuilders[fixture](root); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errBuf bytes.Buffer
+	Run(append(slices.Clone(args), "--root", root), &out, &errBuf)
+	if out.Len() == 0 {
+		t.Fatalf("no JSON on stdout (stderr: %q)", errBuf.String())
+	}
+	validateSchema(t, schema, out.Bytes())
+	return normalizeJSON(t, out.Bytes())
 }
 
 func validateSchema(t *testing.T, name string, doc []byte) {
@@ -114,42 +147,4 @@ func normalizeJSON(t *testing.T, doc []byte) []byte {
 		t.Fatal(err)
 	}
 	return append(b, '\n')
-}
-
-func checkGolden(t *testing.T, name string, got []byte) {
-	t.Helper()
-	path := filepath.Join("testdata", "golden", name)
-	if *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("%s: %v (run go test ./internal/cli -update)", path, err)
-	}
-	if !bytes.Equal(want, got) {
-		t.Errorf("%s differs from the golden file:\n%s", name, diffLines(string(want), string(got)))
-	}
-}
-
-func diffLines(want, got string) string {
-	w, g := strings.Split(want, "\n"), strings.Split(got, "\n")
-	for i := 0; i < len(w) || i < len(g); i++ {
-		var wl, gl string
-		if i < len(w) {
-			wl = w[i]
-		}
-		if i < len(g) {
-			gl = g[i]
-		}
-		if wl != gl {
-			return "line " + strconv.Itoa(i+1) + ":\n  want: " + wl + "\n  got:  " + gl
-		}
-	}
-	return "(no line differs)"
 }

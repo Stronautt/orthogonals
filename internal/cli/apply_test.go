@@ -46,32 +46,21 @@ func bootConfigCarries(t *testing.T, root, tok string) bool {
 }
 
 // applyFakeBins lists every binary apply shells out to, plus hw.RequiredTools.
-var applyFakeBins = append([]string{
-	"systemctl", "usermod",
-}, hw.RequiredTools...)
+var applyFakeBins = append([]string{"systemctl"}, hw.RequiredTools...)
 
 // fakeBinDir installs argv-logging stubs on PATH and returns the log dir.
 func fakeBinDir(t *testing.T, names []string) string {
 	t.Helper()
-	dir := t.TempDir()
-	for _, name := range names {
-		script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, name+".log") + "\"\nexit 0\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return dir
+	return hwtest.LoggingTools(t, names...)
 }
+
+// enabledSystemctl answers is-enabled as well as recording its argv.
+const enabledSystemctl = "if [ \"$1\" = \"is-enabled\" ]; then echo enabled; fi"
 
 func fakeApplyPath(t *testing.T) string {
 	t.Helper()
 	dir := fakeBinDir(t, applyFakeBins)
-	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "systemctl.log") +
-		"\"\nif [ \"$1\" = \"is-enabled\" ]; then echo enabled; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	hwtest.FakeTool(t, dir, "systemctl", enabledSystemctl)
 	return dir
 }
 

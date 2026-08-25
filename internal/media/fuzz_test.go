@@ -1,6 +1,7 @@
 package media
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -29,6 +30,9 @@ func FuzzRender(f *testing.F) {
 			return // refusal is the validator's job; nothing to render
 		}
 		arts, err := Render(p)
+		if errors.Is(err, errNotASCII) {
+			return // a refusal the guest needs; nothing to assert about
+		}
 		if err != nil {
 			t.Fatalf("Render(%+v): %v", p, err)
 		}

@@ -11,11 +11,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
-	"github.com/stronautt/orthogonals/internal/utils"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 // realPATH is read before TestMain empties PATH — package vars initialize
@@ -76,16 +75,12 @@ func driverFromOverride(root, addr string) string {
 
 func stubDeviceDriver(t *testing.T, fn func(root, addr string) string) {
 	t.Helper()
-	old := deviceDriver
-	deviceDriver = fn
-	t.Cleanup(func() { deviceDriver = old })
+	testsupport.Swap(t, &deviceDriver, fn)
 }
 
 func stubRuntimeStatus(t *testing.T, fn func(root, addr string) string) {
 	t.Helper()
-	old := runtimeStatus
-	runtimeStatus = fn
-	t.Cleanup(func() { runtimeStatus = old })
+	testsupport.Swap(t, &runtimeStatus, fn)
 }
 
 // stubRuntimeStatusFromControl reports suspended until power/control is pinned
@@ -111,50 +106,29 @@ func stubDeleteModule(t *testing.T, err error) *[]string {
 func stubDeleteModuleFunc(t *testing.T, fn func(name string) error) *[]string {
 	t.Helper()
 	var got []string
-	old := DeleteModule
-	DeleteModule = func(name string) error {
+	testsupport.Swap(t, &DeleteModule, func(name string) error {
 		got = append(got, name)
 		return fn(name)
-	}
-	t.Cleanup(func() { DeleteModule = old })
+	})
 	return &got
 }
 
 func stubNotify(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
-	old := notify.Send
-	notify.Send = func(n notify.Notification) {
+	testsupport.Swap(t, &notify.Send, func(n notify.Notification) {
 		urgency := "normal"
 		if n.Urgent {
 			urgency = "critical"
 		}
 		got = append(got, urgency+": "+n.Body)
-	}
-	t.Cleanup(func() { notify.Send = old })
+	})
 	return &got
-}
-
-// stubSync counts syncs so a unit test never flushes the developer's disks.
-func stubSync(t *testing.T) *int {
-	t.Helper()
-	n := 0
-	old := syncFS
-	syncFS = func() { n++ }
-	t.Cleanup(func() { syncFS = old })
-	return &n
 }
 
 func fakeBin(t *testing.T, name, extra string) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	log := filepath.Join(dir, name+".log")
-	script := "#!/bin/sh\necho \"$*\" >> \"" + log + "\"\n" + extra + "\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return log
+	return hwtest.FakeTool(t, hwtest.FakePath(t), name, extra)
 }
 
 func read(t *testing.T, path string) string {
@@ -329,11 +303,6 @@ func TestAbortNotificationsAreUrgent(t *testing.T) {
 		_ = Detach(root, "tester", &sysdtest.Fake{})
 		assertUrgent(t, notes)
 	})
-	t.Run("hugepages", func(t *testing.T) {
-		notes := stubNotify(t)
-		_ = hugepageAbort("tester", func(string, ...any) {}, "fragmented")
-		assertUrgent(t, notes)
-	})
 }
 
 // assertUrgent checks the last notification, the one left on screen.
@@ -430,9 +399,8 @@ func TestDetachWakeTimeoutAborts(t *testing.T) {
 	unloaded := stubDeleteModule(t, nil)
 	stubNotify(t)
 	fakeBin(t, "modprobe", "")
-	oldSettle, oldTimeout := WakeSettle, WakeTimeout
-	WakeSettle, WakeTimeout = time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { WakeSettle, WakeTimeout = oldSettle, oldTimeout })
+	testsupport.Swap(t, &WakeSettle, time.Millisecond)
+	testsupport.Swap(t, &WakeTimeout, 5*time.Millisecond)
 
 	err := Detach(root, "tester", &sysdtest.Fake{})
 	if err == nil || !strings.Contains(err.Error(), "resume from runtime suspend") {
@@ -657,207 +625,13 @@ func TestGovernorRoundTrip(t *testing.T) {
 	}
 }
 
-func seedHugepages(t *testing.T, root, nr string) {
-	t.Helper()
-	hwtest.WriteFile(t, root, "sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", nr+"\n")
-	hwtest.WriteFile(t, root, "proc/sys/vm/compact_memory", "0\n")
-}
-
-func TestReserveHugepagesRoundTrip(t *testing.T) {
-	cases := []struct {
-		name       string
-		prior      string
-		ramMiB     uint64
-		wantTarget string
-	}{
-		{"empty pool", "0", 24576, "12288"},
-		{"additive over existing pool", "100", 24576, "12388"},
-		{"odd RAM rounds up", "0", 8193, "4097"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			seedHugepages(t, root, tc.prior)
-			nrPath := filepath.Join(root, nrHugepages2MPath)
-
-			if err := reserveHugepages(root, "user", tc.ramMiB); err != nil {
-				t.Fatalf("reserveHugepages: %v", err)
-			}
-			if got := strings.TrimSpace(read(t, nrPath)); got != tc.wantTarget {
-				t.Errorf("nr_hugepages = %q, want %q", got, tc.wantTarget)
-			}
-			if got := strings.TrimSpace(read(t, filepath.Join(root, hugepageSaveFile))); got != tc.prior {
-				t.Errorf("saved prior = %q, want %q", got, tc.prior)
-			}
-
-			freeHugepages(root)
-			if got := strings.TrimSpace(read(t, nrPath)); got != tc.prior {
-				t.Errorf("nr_hugepages after free = %q, want restored %q", got, tc.prior)
-			}
-			if _, err := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(err) {
-				t.Error("hugepage marker must be removed after free")
-			}
-		})
-	}
-}
-
-func TestReserveHugepagesShortfall(t *testing.T) {
-	root := t.TempDir()
-	seedHugepages(t, root, "0")
-	nrPath := filepath.Join(root, nrHugepages2MPath)
-	// A pool that never grows: make nr_hugepages unwritable so every write is
-	// dropped and the readback stays at 0 — the kernel-fragmented case.
-	if err := os.Chmod(nrPath, 0o400); err != nil {
-		t.Fatal(err)
-	}
-	notes := stubNotify(t)
-	syncs := stubSync(t)
-
-	err := reserveHugepages(root, "user", 24576)
-	if err == nil {
-		t.Fatal("reserveHugepages must fail when the pool cannot grow")
-	}
-	if len(*notes) != 1 {
-		t.Errorf("want one desktop notification, got %v", *notes)
-	}
-	// Each retry after the first short compaction escalates to a cache drop.
-	if *syncs != hugepageAllocTries-1 {
-		t.Errorf("escalated sync count = %d, want %d", *syncs, hugepageAllocTries-1)
-	}
-	if _, statErr := os.Stat(filepath.Join(root, dropCachesPath)); statErr != nil {
-		t.Errorf("retry must drop the page cache: %v", statErr)
-	}
-	if _, statErr := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(statErr) {
-		t.Error("a failed reservation must roll back its marker")
-	}
-	if got := strings.TrimSpace(read(t, nrPath)); got != "0" {
-		t.Errorf("nr_hugepages = %q, want rolled back to 0", got)
-	}
-}
-
-func TestReserveHugepagesReadError(t *testing.T) {
-	root := t.TempDir() // no nr_hugepages file at all
-	notes := stubNotify(t)
-	if err := reserveHugepages(root, "user", 24576); err == nil {
-		t.Fatal("reserveHugepages must fail when the pool size is unreadable")
-	}
-	if len(*notes) != 1 {
-		t.Errorf("want one desktop notification, got %v", *notes)
-	}
-}
-
-// requireRealHugepages skips unless this process can move the running kernel's
-// 2M pool, and guarantees the pool goes back however the test ends.
-func requireRealHugepages(t *testing.T) uint64 {
-	t.Helper()
-	if os.Geteuid() != 0 {
-		t.Skip("moving the real hugepage pool needs root — covered by the VM tier (make test-vm)")
-	}
-	prior, err := utils.ReadUint(nrHugepages2MPath)
-	if err != nil {
-		t.Skipf("no 2M hugepage pool on this kernel: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.WriteFile(nrHugepages2MPath, []byte(strconv.FormatUint(prior, 10)+"\n"), 0o644)
-		_ = os.Remove(hugepageSaveFile)
-	})
-	return prior
-}
-
-// Exercises what a --root prefix cannot: nr_hugepages does not store what is
-// written to it. The kernel allocates what it can and reads back the total it
-// reached, which is why reserveHugepages loops on the readback.
-func TestReserveHugepagesAgainstTheRealPool(t *testing.T) {
-	prior := requireRealHugepages(t)
-	const ramMiB = 128
-	const want = ramMiB / hugepageSizeMiB
-
-	if err := reserveHugepages("/", "user", ramMiB); err != nil {
-		t.Fatalf("reserve %d MiB from the live pool: %v", ramMiB, err)
-	}
-	got, err := utils.ReadUint(nrHugepages2MPath)
-	if err != nil {
-		t.Fatalf("read the live pool: %v", err)
-	}
-	if got != prior+want {
-		t.Errorf("nr_hugepages = %d, want %d (prior %d + %d)", got, prior+want, prior, want)
-	}
-	if saved := strings.TrimSpace(read(t, hugepageSaveFile)); saved != strconv.FormatUint(prior, 10) {
-		t.Errorf("saved prior = %q, want %d", saved, prior)
-	}
-
-	freeHugepages("/")
-	if got, err = utils.ReadUint(nrHugepages2MPath); err != nil || got != prior {
-		t.Errorf("nr_hugepages after free = %d (err %v), want restored %d", got, err, prior)
-	}
-	if _, err := os.Stat(hugepageSaveFile); !os.IsNotExist(err) {
-		t.Error("the marker must be removed after free")
-	}
-}
-
-// Reaches the rollback path by letting the kernel refuse; the synthetic version
-// has to chmod the file unwritable to get there.
-func TestReserveHugepagesShortfallAgainstTheRealPool(t *testing.T) {
-	prior := requireRealHugepages(t)
-	notes := stubNotify(t)
-	// Twice the host's total RAM cannot be satisfied. The pool allocator gives
-	// up when a page cannot be had rather than reclaiming to death, and the
-	// rollback releases whatever it did take.
-	ramMiB := hw.MeminfoKiB("/", "MemTotal:") / 1024 * 2
-	if ramMiB == 0 {
-		t.Fatal("cannot read MemTotal from the live /proc/meminfo")
-	}
-
-	err := reserveHugepages("/", "user", ramMiB)
-	if err == nil {
-		t.Fatalf("reserving %d MiB of hugepages must fail on a host with half that RAM", ramMiB)
-	}
-	if !strings.Contains(err.Error(), "fragmented") {
-		t.Errorf("error must explain the cause to a user, got: %v", err)
-	}
-	if len(*notes) != 1 {
-		t.Errorf("want one desktop notification, got %v", *notes)
-	}
-	got, readErr := utils.ReadUint(nrHugepages2MPath)
-	if readErr != nil || got != prior {
-		t.Errorf("nr_hugepages = %d (err %v), want rolled back to %d", got, readErr, prior)
-	}
-	if _, statErr := os.Stat(hugepageSaveFile); !os.IsNotExist(statErr) {
-		t.Error("a failed reservation must roll back its marker")
-	}
-}
-
-func TestFreeHugepagesNoMarker(t *testing.T) {
-	root := t.TempDir()
-	seedHugepages(t, root, "5")
-	freeHugepages(root) // marker absent — must be a silent no-op
-	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "5" {
-		t.Errorf("nr_hugepages = %q, want untouched 5", got)
-	}
-}
-
-func TestFreeHugepagesCorruptMarker(t *testing.T) {
-	root := t.TempDir()
-	seedHugepages(t, root, "5")
-	hwtest.WriteFile(t, root, "run/orthogonals-hugepages", "garbage")
-	freeHugepages(root)
-	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "5" {
-		t.Errorf("a corrupt marker must leave nr_hugepages untouched, got %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(root, hugepageSaveFile)); !os.IsNotExist(err) {
-		t.Error("a corrupt hugepage marker must still be cleared")
-	}
-}
-
 func TestResetTransientState(t *testing.T) {
 	root := t.TempDir()
-	// governor boosted, hugepages reserved, and cpuset isolated — a crashed start.
+	// governor boosted and cpuset isolated — a crashed start.
 	for _, cpu := range []string{"cpu0", "cpu1"} {
 		hwtest.WriteFile(t, root, "sys/devices/system/cpu/"+cpu+"/cpufreq/scaling_governor", "performance\n")
 	}
 	hwtest.WriteFile(t, root, "run/orthogonals-governor", "schedutil")
-	hwtest.WriteFile(t, root, "sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "12288\n")
-	hwtest.WriteFile(t, root, "run/orthogonals-hugepages", "0")
 	hwtest.WriteFile(t, root, "run/orthogonals-cpuset", "0-19")
 	sd := &sysdtest.Fake{}
 
@@ -866,13 +640,10 @@ func TestResetTransientState(t *testing.T) {
 	if got := strings.TrimSpace(read(t, filepath.Join(root, "sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"))); got != "schedutil" {
 		t.Errorf("governor = %q, want restored schedutil", got)
 	}
-	if got := strings.TrimSpace(read(t, filepath.Join(root, nrHugepages2MPath))); got != "0" {
-		t.Errorf("nr_hugepages = %q, want restored 0", got)
-	}
 	if len(sd.AllowedCPUs) == 0 {
 		t.Error("cpuset isolation was not lifted")
 	}
-	for _, marker := range []string{govSaveFile, hugepageSaveFile, cpusetSaveFile} {
+	for _, marker := range []string{govSaveFile, cpusetSaveFile} {
 		if _, err := os.Stat(filepath.Join(root, marker)); !os.IsNotExist(err) {
 			t.Errorf("marker %s must be removed", marker)
 		}

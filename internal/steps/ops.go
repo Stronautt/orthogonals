@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/bls"
 	"github.com/stronautt/orthogonals/internal/sysd"
 	"github.com/stronautt/orthogonals/internal/virt"
@@ -31,6 +33,8 @@ const (
 	OpKernelArgsAdd  = "kernel-args-add"
 	OpKernelArgsRem  = "kernel-args-remove"
 	OpDesktopLink    = "desktop-link"
+	OpDKMSBuild      = "dkms-build"
+	OpDKMSInstall    = "dkms-install"
 )
 
 // DesktopTrustNote is printed when the shortcut could not be marked trusted.
@@ -89,6 +93,28 @@ var ops = map[string]opEntry{
 	OpKernelArgsAdd:  {opKernelArgsAdd, false},
 	OpKernelArgsRem:  {opKernelArgsRem, false},
 	OpDesktopLink:    {opDesktopLink, false},
+	OpDKMSBuild:      {opDKMSBuild, false},
+	OpDKMSInstall:    {opDKMSInstall, false},
+}
+
+// opDKMSBuild and opDKMSInstall sign a module again with the key that the
+// drop-in names. The version comes from the compiled-in pin and never from
+// Args. hostcfg.DKMSSigningSteps gives the reason it stays out of the identity
+// of the op.
+func opDKMSBuild(_ *OpClients, _ string, out io.Writer, args map[string]string) error {
+	return dkmsForce(out, "build", args)
+}
+
+func opDKMSInstall(_ *OpClients, _ string, out io.Writer, args map[string]string) error {
+	return dkmsForce(out, "install", args)
+}
+
+func dkmsForce(out io.Writer, verb string, args map[string]string) error {
+	module := args["module"]
+	if module == "" {
+		return fmt.Errorf("dkms %s needs a module", verb)
+	}
+	return runCmd(out, "dkms", verb, "-m", module+"/"+artifacts.LookingGlassRPMVersion, "--force")
 }
 
 // opDesktopLink puts the VM shortcut on the desktop user's ~/Desktop and then,
@@ -248,12 +274,7 @@ func stepLine(s Step) string {
 // depend on map order.
 func opLine(op string, args map[string]string) string {
 	parts := []string{op}
-	keys := make([]string, 0, len(args))
-	for k := range args {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(args)) {
 		parts = append(parts, k+"="+args[k])
 	}
 	return strings.Join(parts, " ")

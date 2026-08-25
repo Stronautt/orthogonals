@@ -12,24 +12,22 @@ import (
 	"github.com/stronautt/orthogonals/internal/hooks"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 func fastRecover(t *testing.T) {
 	t.Helper()
-	sr, sx := hooks.RemoveSettle, hooks.RescanSettle
-	hooks.RemoveSettle, hooks.RescanSettle = time.Millisecond, time.Millisecond
-	t.Cleanup(func() { hooks.RemoveSettle, hooks.RescanSettle = sr, sx })
+	testsupport.Swap(t, &hooks.RemoveSettle, time.Millisecond)
+	testsupport.Swap(t, &hooks.RescanSettle, time.Millisecond)
 }
 
 func recordUnloads(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
-	old := hooks.DeleteModule
-	hooks.DeleteModule = func(name string) error {
+	testsupport.Swap(t, &hooks.DeleteModule, func(name string) error {
 		got = append(got, name)
 		return nil
-	}
-	t.Cleanup(func() { hooks.DeleteModule = old })
+	})
 	return &got
 }
 

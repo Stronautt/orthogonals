@@ -2,10 +2,12 @@
 package hwtest
 
 import (
+	"encoding/binary"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -33,6 +35,11 @@ func sharedHostFiles(cpuVendorID string) []file {
 		{"sys/module/nvidia_drm/parameters/fbdev", "N\n"},
 		{"sys/fs/selinux/enforce", "1"},
 		{"sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", "\x06\x00\x00\x00\x01"},
+		// A dkms key that is already enrolled. A Secure Boot fixture then reads
+		// as ready and not as a host that has built nothing.
+		{"var/lib/dkms/mok.pub", FixtureMOKCert},
+		{"var/lib/dkms/mok.key", "fixture module-signing key\n"},
+		{MokListRTPath, MOKListRT(FixtureMOKCert)},
 		{"boot/loader/entries/fedora-6.15.0.conf",
 			"title Fedora Linux (6.15.0) 44\nversion 6.15.0\nlinux /vmlinuz-6.15.0\ninitrd /initramfs-6.15.0.img\noptions root=UUID=aaaa ro rhgb quiet\n"},
 		{"boot/loader/entries/fedora-6.14.0.conf",
@@ -77,6 +84,26 @@ const (
 
 // secureBootOff is the SecureBoot efivar with the flag byte cleared.
 const secureBootOff = "\x06\x00\x00\x00\x00"
+
+// MokListRTPath is the MOK list of shim. FixtureMOKCert is the certificate that
+// the fixtures enroll in it. The enrollment test compares bytes, so this value
+// stands in for a DER certificate and is not one.
+const (
+	MokListRTPath  = "sys/firmware/efi/efivars/MokListRT-605dab50-e046-4300-abb6-3dd810dd8b23"
+	FixtureMOKCert = "orthogonals fixture MOK certificate"
+)
+
+// MOKListRT renders the EFI_SIGNATURE_LIST of one entry that enrolls cert. The
+// attribute mask that efivarfs puts before every variable comes first.
+func MOKListRT(cert string) string {
+	const headerLen, ownerLen = 28, 16
+	b := append([]byte{0x06, 0, 0, 0}, make([]byte, headerLen)...)
+	h := b[4:]
+	binary.LittleEndian.PutUint32(h[16:], uint32(headerLen+ownerLen+len(cert))) // SignatureListSize
+	binary.LittleEndian.PutUint32(h[24:], uint32(ownerLen+len(cert)))           // SignatureSize
+	b = append(b, make([]byte, ownerLen)...)                                    // SignatureOwner
+	return string(append(b, cert...))
+}
 
 func intelDesktop(cap string) []file {
 	return []file{
@@ -266,14 +293,7 @@ var Roots = map[string]func(string) error{
 }
 
 // RootNames is sorted.
-func RootNames() []string {
-	names := make([]string, 0, len(Roots))
-	for n := range Roots {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
+func RootNames() []string { return slices.Sorted(maps.Keys(Roots)) }
 
 func ReferenceRoot(t testing.TB) string {
 	t.Helper()
@@ -305,6 +325,8 @@ func AddPCI(t testing.TB, root string, d Dev) {
 	}
 }
 
+// FakeTools writes silent stubs for names into a fresh dir and returns it, for
+// a caller that replaces PATH outright so only the stubs are reachable.
 func FakeTools(t testing.TB, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -312,6 +334,52 @@ func FakeTools(t testing.TB, names ...string) string {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	return dir
+}
+
+// FakePath prepends a fresh directory to PATH and returns it, leaving the real
+// PATH reachable behind it.
+func FakePath(t testing.TB) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+// FakeTool writes a stub for name into dir that appends its argv to
+// <name>.log, and returns that log's path. extra is shell spliced in after the
+// log line, for a stub that has to answer as well as record.
+//
+// FakeTools cannot do this: its stubs are silent, so every package that wanted
+// to assert on argv wrote this script out again — nine times, twice
+// byte-for-byte across packages.
+func FakeTool(t testing.TB, dir, name, extra string) string {
+	t.Helper()
+	if err := WriteFakeTool(dir, name, extra); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, name+".log")
+}
+
+// WriteFakeTool is FakeTool's error-returning tier, for the testscript
+// commands that are handed no testing.TB.
+func WriteFakeTool(dir, name, extra string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	log := filepath.Join(dir, name+".log")
+	script := "#!/bin/sh\necho \"$*\" >> \"" + log + "\"\n" + extra + "\nexit 0\n"
+	return os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755)
+}
+
+// LoggingTools is FakePath plus a silent-but-logging FakeTool per name,
+// returning the directory that holds both the stubs and their logs.
+func LoggingTools(t testing.TB, names ...string) string {
+	t.Helper()
+	dir := FakePath(t)
+	for _, n := range names {
+		FakeTool(t, dir, n, "")
 	}
 	return dir
 }

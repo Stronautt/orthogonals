@@ -124,8 +124,7 @@ func writeFakeTools(dir string, names []string) error {
 		return err
 	}
 	for _, name := range names {
-		script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, name+".log") + "\"\nexit 0\n"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		if err := hwtest.WriteFakeTool(dir, name, ""); err != nil {
 			return err
 		}
 	}

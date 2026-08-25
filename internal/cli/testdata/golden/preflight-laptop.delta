@@ -1,0 +1,15 @@
+-      "message": "all connected displays are on the iGPU (DP-1)",
++      "message": "all connected displays are on the iGPU (eDP-1)",
+-      "message": "chassis: desktop",
++      "message": "laptop chassis (notebook): hybrid-graphics passthrough — the panel stays on the iGPU while the dGPU is handed to the guest",
+-      "message": "skipped (not a laptop)",
++      "message": "MUXless laptop: the NVIDIA dGPU 0000:01:00.0 is a 3D controller with no display outputs",
+-      "status": "pass"
+-    },
+-    {
+-      "message": "skipped (no ASUS gpu_mux_mode knob)",
++      "remedy": "if the guest shows no image once the NVIDIA driver installs, extract the dGPU vBIOS and pass it with --gpu-rom",
++      "status": "warn"
++    },
++    {
++      "message": "ASUS display MUX is in hybrid/Optimus mode (the iGPU drives the panel)",

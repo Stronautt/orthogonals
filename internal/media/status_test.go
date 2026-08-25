@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
@@ -19,9 +20,8 @@ func TestGuestExecSendsEmptyArgArray(t *testing.T) {
 }
 
 func TestGuestExecTimeout(t *testing.T) {
-	oldTries, oldInterval := guestExecTries, guestExecInterval
-	guestExecTries, guestExecInterval = 2, time.Millisecond
-	t.Cleanup(func() { guestExecTries, guestExecInterval = oldTries, oldInterval })
+	testsupport.Swap(t, &guestExecTries, 2)
+	testsupport.Swap(t, &guestExecInterval, time.Millisecond)
 	f := &virttest.Fake{State: "running", Agent: func(cmd string) (string, error) {
 		if strings.Contains(cmd, "guest-exec-status") {
 			return `{"return":{"exited":false}}`, nil

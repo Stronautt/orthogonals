@@ -793,8 +793,14 @@ func TestVMSettingsFlagOverridesRegistered(t *testing.T) {
 	if s.RAMGiB != 10 || s.Locale != "uk-UA" {
 		t.Errorf("second define = ram %d locale %q, want ram 10 locale uk-UA", s.RAMGiB, s.Locale)
 	}
-	if got, err := domain.ReadMemoryMiB(root, "win11"); err != nil || got != 10*1024 {
-		t.Errorf("the domain still renders %d MiB (err %v), want %d", got, err, 10*1024)
+	// The registered settings and the rendered domain must agree. A flag that
+	// stays in the record but not in the XML boots the guest at the old size.
+	xml, err := os.ReadFile(filepath.Join(steps.VMsDir(root), "win11.xml"))
+	if err != nil {
+		t.Fatalf("read the rendered domain: %v", err)
+	}
+	if want := "<memory unit='MiB'>10240</memory>"; !strings.Contains(string(xml), want) {
+		t.Errorf("the domain does not render %q", want)
 	}
 }
 

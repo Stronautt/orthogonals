@@ -30,7 +30,6 @@ require_root "the VFIO tier"
 attr() { cat "/sys/bus/pci/devices/$1/$2" 2>/dev/null; }
 driver_of() { basename "$(readlink -f "/sys/bus/pci/devices/$1/driver" 2>/dev/null)" 2>/dev/null; }
 group_of() { basename "$(readlink -f "/sys/bus/pci/devices/$1/iommu_group" 2>/dev/null)" 2>/dev/null; }
-nr_hugepages() { cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages; }
 
 # iommu_group_count is how many groups the kernel currently publishes. find
 # rather than ls: this script runs under pipefail, where `ls dir | wc -l` turns
@@ -178,16 +177,12 @@ case "$COUNT" in
 	pass "boot verification passed against a real IOMMU; VM defined"
 
 	step "the qemu hook evicts a real device to vfio-pci"
-	pool_before=$(nr_hugepages)
 	run 0 hook --user "$USER_NAME" qemu "$VM_NAME" prepare begin -
 	for dev in "$GPU" "$AUDIO"; do
 		[ "$(driver_of "$dev")" = vfio-pci ] ||
 			fail "$dev is on '$(driver_of "$dev")', not vfio-pci"
 	done
 	[ -e "/dev/vfio/$gpu_group" ] || fail "/dev/vfio/$gpu_group did not appear"
-	pool_held=$(nr_hugepages)
-	[ "$pool_held" -gt "$pool_before" ] ||
-		fail "the hook did not reserve hugepages (pool still $pool_held)"
 	# CPU isolation must be skipped here. This guest has uniform cores, so the
 	# domain profile pins every CPU it has — vCPUs plus the emulator and
 	# iothread — leaving no housekeeping core to confine the host to. Only a
@@ -197,7 +192,7 @@ case "$COUNT" in
 		fail "the hook isolated CPUs on a host whose pinning leaves none spare"
 	grep -q 'no cores reserved for the host' /var/log/orthogonals/hooks.log ||
 		fail "the hook skipped CPU isolation without saying why"
-	pass "both functions on vfio-pci, /dev/vfio/$gpu_group open, pool $pool_before→$pool_held"
+	pass "both functions on vfio-pci, /dev/vfio/$gpu_group open"
 
 	step "release returns the device to the host"
 	# Reattach cannot succeed here: there is no NVIDIA driver to reload, so it
@@ -210,9 +205,7 @@ case "$COUNT" in
 		fail "$GPU did not come back after the PCI remove + rescan"
 	[ "$(driver_of "$GPU")" != vfio-pci ] || fail "$GPU is still bound to vfio-pci"
 	[ ! -e "/dev/vfio/$gpu_group" ] || fail "/dev/vfio/$gpu_group outlived the release"
-	[ "$(nr_hugepages)" = "$pool_before" ] ||
-		fail "the hugepage pool was left at $(nr_hugepages), not the $pool_before it started at"
-	pass "device re-enumerated, vfio node gone, hugepage pool restored"
+	pass "device re-enumerated, vfio node gone"
 
 	# remove + rescan unlinked the sysfs directories, and the bind mounts with
 	# them. Nothing below sees the dGPU identity until they are back.

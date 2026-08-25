@@ -399,7 +399,7 @@ func TestAnalyzers(t *testing.T) {
 			name: "secure boot with no enrolled key warns and names the import",
 			mutate: func(r *hw.Result, f *Facts) {
 				r.Platform.SecureBoot = true
-				f.Signing = ModuleSigning{Checked: true, DKMS: SigningKey{Cert: DKMSCert, Key: DKMSKey}}
+				f.Signing = ModuleSigning{DKMS: SigningKey{Cert: DKMSCert, Key: DKMSKey}}
 			},
 			check: "secure-boot", want: Warn, has: []string{"mokutil --import", DKMSCert},
 		},
@@ -407,7 +407,7 @@ func TestAnalyzers(t *testing.T) {
 			name: "secure boot with the dkms key enrolled passes",
 			mutate: func(r *hw.Result, f *Facts) {
 				r.Platform.SecureBoot = true
-				f.Signing = ModuleSigning{Checked: true,
+				f.Signing = ModuleSigning{
 					DKMS: SigningKey{Cert: DKMSCert, Key: DKMSKey, Enrolled: true}}
 			},
 			check: "secure-boot", want: Pass, has: []string{"kvmfr will load"},
@@ -416,7 +416,7 @@ func TestAnalyzers(t *testing.T) {
 			name: "an enrolled akmods key is reused instead of enrolling a new one",
 			mutate: func(r *hw.Result, f *Facts) {
 				r.Platform.SecureBoot = true
-				f.Signing = ModuleSigning{Checked: true,
+				f.Signing = ModuleSigning{
 					DKMS:   SigningKey{Cert: DKMSCert, Key: DKMSKey},
 					Akmods: []SigningKey{{Cert: "/etc/pki/akmods/certs/public_key.der", Key: "/etc/pki/akmods/private/public_key.priv", Enrolled: true}},
 				}

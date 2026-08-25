@@ -60,18 +60,6 @@ summary: Host-mutation tests, shared by every plan
     duration: 15m
     tier: 4
 
-/hugepages:
-    summary: the hook's hugepage pool, against a real kernel
-    description: |
-        Under a --root prefix nr_hugepages is an ordinary file that reads back
-        what was written, so the retry-on-readback loop and the shortfall
-        rollback are unreachable. Here the kernel allocates physical pages and
-        reports what it actually managed — the difference between a user
-        getting an explanation and getting an opaque QEMU out-of-memory.
-    test: ./hugepages.sh
-    duration: 10m
-    tier: 4
-
 /media:
     summary: real loop ioctls against a real ISO
     description: |

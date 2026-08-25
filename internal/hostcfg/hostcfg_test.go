@@ -1,7 +1,6 @@
 package hostcfg
 
 import (
-	"flag"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,9 +11,8 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
 
 func referenceProfile(t *testing.T, binding string) Profile {
 	t.Helper()
@@ -68,20 +66,7 @@ func TestArtifactsGolden(t *testing.T) {
 		if a.Path != wantPaths[i] {
 			t.Errorf("artifact %d path = %s, want %s", i, a.Path, wantPaths[i])
 		}
-		golden := filepath.Join("testdata", "golden", filepath.Base(a.Path))
-		if *update {
-			if err := os.WriteFile(golden, a.Content, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			continue
-		}
-		want, err := os.ReadFile(golden)
-		if err != nil {
-			t.Fatalf("%s: %v (run go test -update)", golden, err)
-		}
-		if string(a.Content) != string(want) {
-			t.Errorf("%s: rendered content differs from %s:\n%s", a.Path, golden, a.Content)
-		}
+		testsupport.GoldenAs(t, filepath.Base(a.Path), a.Path, a.Content)
 	}
 	byPath := map[string]Artifact{}
 	for _, a := range arts {
@@ -113,20 +98,7 @@ func TestLaptopArtifactsGolden(t *testing.T) {
 		if !ok {
 			t.Fatalf("laptop profile missing artifact %s", path)
 		}
-		golden := filepath.Join("testdata", "golden", filepath.Base(path))
-		if *update {
-			if err := os.WriteFile(golden, a.Content, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			continue
-		}
-		want, err := os.ReadFile(golden)
-		if err != nil {
-			t.Fatalf("%s: %v (run go test -update)", golden, err)
-		}
-		if string(a.Content) != string(want) {
-			t.Errorf("%s: rendered content differs from %s:\n%s", path, golden, a.Content)
-		}
+		testsupport.GoldenAs(t, filepath.Base(path), path, a.Content)
 	}
 }
 
@@ -202,20 +174,7 @@ func TestVMStepsGolden(t *testing.T) {
 	if link.CreatesPath != linkPath {
 		t.Errorf("link CreatesPath = %q, want %q", link.CreatesPath, linkPath)
 	}
-	golden := filepath.Join("testdata", "golden", filepath.Base(entry.Path))
-	if *update {
-		if err := os.WriteFile(golden, entry.Content, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		wantB, err := os.ReadFile(golden)
-		if err != nil {
-			t.Fatalf("%s: %v (run go test -update)", golden, err)
-		}
-		if string(entry.Content) != string(wantB) {
-			t.Errorf("%s: rendered content differs from %s:\n%s", entry.Path, golden, entry.Content)
-		}
-	}
+	testsupport.GoldenAs(t, filepath.Base(entry.Path), entry.Path, entry.Content)
 	if !strings.Contains(string(entry.Content), "Exec=/usr/bin/orthogonals vm launch --vm-name win11") {
 		t.Errorf("desktop entry Exec wrong:\n%s", entry.Content)
 	}
@@ -495,6 +454,11 @@ func TestSteps(t *testing.T) {
 	}
 	if order["lg-shm-restorecon"] < order["selinux-lg-fcontext"] {
 		t.Error("restorecon must follow the semanage rule")
+	}
+	// `restorecon -i` is a silent no-op on a file that does not exist. The
+	// relabel must come after the step that creates the file.
+	if order["lg-shm-restorecon"] < order["tmpfiles-create"] {
+		t.Error("restorecon must follow the tmpfiles step that creates the file")
 	}
 }
 

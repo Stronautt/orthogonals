@@ -12,35 +12,31 @@ import (
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
 func stubNotify(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
-	old := notify.Send
-	notify.Send = func(n notify.Notification) { got = append(got, n.Body) }
-	t.Cleanup(func() { notify.Send = old })
+	testsupport.Swap(t, &notify.Send, func(n notify.Notification) { got = append(got, n.Body) })
 	return &got
 }
 
 func captureExec(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
-	old := execProcess
-	execProcess = func(_ string, argv []string, _ []string) error {
+	testsupport.Swap(t, &execProcess, func(_ string, argv []string, _ []string) error {
 		got = argv
 		return nil
-	}
-	t.Cleanup(func() { execProcess = old })
+	})
 	return &got
 }
 
 func fastPoll(t *testing.T) {
 	t.Helper()
-	oldT, oldI := launchTimeout, launchPollInterval
-	launchTimeout, launchPollInterval = 20*time.Millisecond, time.Millisecond
-	t.Cleanup(func() { launchTimeout, launchPollInterval = oldT, oldI })
+	testsupport.Swap(t, &launchTimeout, 20*time.Millisecond)
+	testsupport.Swap(t, &launchPollInterval, time.Millisecond)
 }
 
 func launchRoot(t *testing.T, memAvailableKiB string) string {

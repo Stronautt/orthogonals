@@ -2,12 +2,14 @@ package hostcfg
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stronautt/orthogonals/internal/artifacts"
+	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
 )
 
@@ -141,21 +143,45 @@ func TestDKMSSigningSteps(t *testing.T) {
 		}
 	}
 
-	// The spec names the dkms tree for the RPM version, so the bare upstream
-	// release addresses a version dkms has never heard of.
-	module := "kvmfr/" + artifacts.LookingGlassRPMVersion
 	for _, step := range list[1:] {
-		if step.Kind != steps.KindRunCmd {
-			t.Errorf("%s is a %s, want run_cmd", step.ID, step.Kind)
+		if step.Kind != steps.KindOp {
+			t.Errorf("%s is a %s, want op", step.ID, step.Kind)
 			continue
 		}
-		if !slices.Contains(step.Cmd, module) {
-			t.Errorf("%s addresses %v, want the module as %q", step.ID, step.Cmd, module)
+		// The version stays out of the identity of the op. In Args the engine
+		// compares it for drift, and `make lg-bump` then refuses to rebuild.
+		if slices.Contains(slices.Collect(maps.Values(step.Args)), artifacts.LookingGlassRPMVersion) {
+			t.Errorf("%s pins the version in Args %v, which a bump would refuse", step.ID, step.Args)
 		}
-		// Without Input the rebuild is journaled once and never re-runs, leaving
-		// a later key change unapplied.
-		if !bytes.Equal(step.Input, dropIn.Content) {
+		// Input is what re-runs the build. Without it the engine journals a key
+		// change or a version bump once and never applies it.
+		if !bytes.Contains(step.Input, dropIn.Content) {
 			t.Errorf("%s does not re-run when the key changes", step.ID)
+		}
+		if !bytes.Contains(step.Input, []byte(artifacts.LookingGlassRPMVersion)) {
+			t.Errorf("%s does not re-run when the pinned version changes", step.ID)
+		}
+	}
+}
+
+// The op must address the version that dkms registered, and the spec names that
+// version for the RPM. The bare upstream release is a tree that dkms does not
+// know.
+func TestDKMSOpAddressesTheRegisteredVersion(t *testing.T) {
+	log := hwtest.FakeTool(t, hwtest.FakePath(t), "dkms", "")
+
+	e := propEngine(t.TempDir(), true)
+	if err := e.Apply(DKMSSigningSteps("/c.der", "/k.priv")); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("dkms was never run: %v", err)
+	}
+	module := "kvmfr/" + artifacts.LookingGlassRPMVersion
+	for _, verb := range []string{"build", "install"} {
+		if want := verb + " -m " + module + " --force"; !strings.Contains(string(got), want) {
+			t.Errorf("dkms was run as %q, want a line %q", strings.TrimSpace(string(got)), want)
 		}
 	}
 }

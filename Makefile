@@ -1,7 +1,7 @@
 VERSION ?= $(shell cat VERSION)
 LDFLAGS = -X github.com/stronautt/orthogonals/internal/cli.Version=$(VERSION)
 
-.PHONY: build test lint test-integration test-vm test-vfio test-desk coverage coverage-pct rpm srpm srpm-lg lg-bump lg-checkout lg-lock
+.PHONY: build test goldens lint test-integration test-vm test-vfio test-desk coverage coverage-pct rpm srpm srpm-lg lg-bump lg-checkout lg-lock
 
 # LG_VERSION is the single Looking Glass toggle (the looking-glass.version
 # lockfile, embedded by artifacts.go); LG_RPMVER is its RPM form (0~ sorts the
@@ -87,6 +87,11 @@ test:
 	# test/desk is behind the desk build tag, so a plain `go vet ./...` never compiles it.
 	go vet -tags desk ./test/desk
 	go test ./...
+
+# Only testsupport's importers accept -update, so `go test ./... -update` fails
+# on every package that does not render an artifact. This list is that set.
+goldens:
+	go test ./internal/cli ./internal/domain ./internal/hostcfg ./internal/media -update
 
 lint:
 	golangci-lint run

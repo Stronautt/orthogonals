@@ -9,6 +9,7 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/hw"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 // Every failure must carry the prefix: `vm launch` matches on it to print the
@@ -31,9 +32,7 @@ func TestEnsureKVMFRRefusesUnusableSizes(t *testing.T) {
 }
 
 func TestWaitForDevice(t *testing.T) {
-	old := KVMFRTimeout
-	KVMFRTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { KVMFRTimeout = old })
+	testsupport.Swap(t, &KVMFRTimeout, 100*time.Millisecond)
 
 	t.Run("a regular file is refused, not mapped", func(t *testing.T) {
 		dev := filepath.Join(t.TempDir(), "kvmfr0")
@@ -89,9 +88,7 @@ func TestLoadKVMFRBusyModuleFails(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "sys/module/kvmfr"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := DeleteModule
-	DeleteModule = func(string) error { return os.ErrPermission }
-	t.Cleanup(func() { DeleteModule = old })
+	testsupport.Swap(t, &DeleteModule, func(string) error { return os.ErrPermission })
 
 	err := loadKVMFR(root, hookLog(root, "kvmfr"), 128)
 	requireKVMFRPrefix(t, err)
@@ -114,12 +111,10 @@ func TestLoadKVMFRKeepsABigEnoughModule(t *testing.T) {
 	if err := os.WriteFile(path, []byte("256"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := DeleteModule
-	DeleteModule = func(string) error {
+	testsupport.Swap(t, &DeleteModule, func(string) error {
 		t.Error("unloaded a module that was already large enough")
 		return nil
-	}
-	t.Cleanup(func() { DeleteModule = old })
+	})
 	if err := loadKVMFR(root, hookLog(root, "kvmfr"), 128); err != nil {
 		t.Fatalf("loadKVMFR: %v", err)
 	}

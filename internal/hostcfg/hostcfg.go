@@ -347,11 +347,20 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 		return nil, err
 	}
 	var list []steps.Step
+	var lgTmpfiles []byte
 	for _, a := range arts {
+		if a.Path == tmpfilesLookingGlass {
+			lgTmpfiles = a.Content
+		}
 		list = append(list, steps.Step{
 			ID: a.ID, Kind: steps.KindWriteFile,
 			Path: a.Path, Content: a.Content, Mode: a.Mode,
 		})
+	}
+	if len(lgTmpfiles) == 0 {
+		// An empty value leaves tmpfiles-create with no Input. The step is then
+		// journaled once and never runs again after a change of the profile.
+		return nil, fmt.Errorf("no artifact renders %s", tmpfilesLookingGlass)
 	}
 	// Before libvirt-socket-reload below, which restarts virtqemud and so makes
 	// the new ACL live.
@@ -377,10 +386,6 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 			Cmd:     []string{"semanage", "fcontext", "-a", "-t", "svirt_tmpfs_t", steps.LookingGlassSHM},
 			UndoCmd: []string{"semanage", "fcontext", "-d", steps.LookingGlassSHM},
 		},
-		steps.Step{
-			ID: "lg-shm-restorecon", Kind: steps.KindRunCmd,
-			Cmd: []string{"restorecon", "-i", steps.LookingGlassSHM},
-		},
 		// qemu_var_run_t is the policy's type for /var/lib/libvirt/qemu, where
 		// libvirt drops its own SPICE sockets; svirt_var_run_t does not exist.
 		// The rule, not a restorecon, is what survives /run being volatile.
@@ -390,9 +395,19 @@ func Steps(p Profile, boot bls.Args, qemuConf string) ([]steps.Step, error) {
 			UndoCmd: []string{"semanage", "fcontext", "-d", steps.RunDirPath + "(/.*)?"},
 		},
 		// tmpfiles.d owns these from the next boot; this covers the install run.
+		// Input and CreatesPath for the same reasons as the per-VM twin. The
+		// profile derives the fragment, and /dev/shm is as volatile as /run.
 		steps.Step{
 			ID: "tmpfiles-create", Kind: steps.KindRunCmd,
-			Cmd: []string{"systemd-tmpfiles", "--create", tmpfilesLookingGlass},
+			Cmd:         []string{"systemd-tmpfiles", "--create", tmpfilesLookingGlass},
+			Input:       lgTmpfiles,
+			CreatesPath: steps.LookingGlassSHM,
+		},
+		// This step comes after tmpfiles-create, which creates the file.
+		// restorecon carries -i, so an earlier relabel is a silent no-op.
+		steps.Step{
+			ID: "lg-shm-restorecon", Kind: steps.KindRunCmd,
+			Cmd: []string{"restorecon", "-i", steps.LookingGlassSHM},
 		},
 		steps.Step{
 			ID: "spice-rundir-restorecon", Kind: steps.KindRunCmd,

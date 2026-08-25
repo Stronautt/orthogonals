@@ -214,11 +214,7 @@ func TestUpNewVMRestartsPipeline(t *testing.T) {
 func TestUpCompletedInstallConverges(t *testing.T) {
 	t.Setenv("SUDO_USER", "testuser")
 	dir := fakeBinDir(t, append(append([]string{}, vmFakeBins...), applyFakeBins...))
-	script := "#!/bin/sh\necho \"$*\" >> \"" + filepath.Join(dir, "systemctl.log") +
-		"\"\nif [ \"$1\" = \"is-enabled\" ]; then echo enabled; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	hwtest.FakeTool(t, dir, "systemctl", enabledSystemctl)
 	f := fakeVirt(t, &virttest.Fake{})
 	root := hwtest.ReferenceRoot(t)
 	if code, _, stderr := run(t, "vm", "--root", root, "--vm-name", "gamer",

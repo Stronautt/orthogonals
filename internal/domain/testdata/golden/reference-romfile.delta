@@ -1,0 +1,3 @@
++      <gpu-rom>/var/lib/orthogonals/vbios/win11.rom</gpu-rom>
+-      <rom bar='off'/>
++      <rom file='/var/lib/orthogonals/vbios/win11.rom'/>

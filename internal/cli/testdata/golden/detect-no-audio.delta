@@ -1,0 +1,22 @@
+-    },
+-    {
+-      "address": "0000:01:00.1",
+-      "vendor": "0x10de",
+-      "device": "0x1aef",
+-      "class": "0x040300",
+-      "driver": "snd_hda_intel",
+-      "iommu_group": 1,
+-      "has_reset": false,
+-      "boot_vga": false
+-        "drm_card": "card1",
+-        "audio": {
+-          "address": "0000:01:00.1",
+-          "vendor": "0x10de",
+-          "device": "0x1aef",
+-          "class": "0x040300",
+-          "driver": "snd_hda_intel",
+-          "iommu_group": 1,
+-          "has_reset": false,
+-          "boot_vga": false
+-        }
++        "drm_card": "card1"

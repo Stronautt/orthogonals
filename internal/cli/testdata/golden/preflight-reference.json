@@ -82,7 +82,7 @@
       "status": "warn"
     },
     {
-      "message": "Secure Boot signing not checked (no mokutil, or --root)",
+      "message": "Secure Boot is enabled and the key dkms signs with is enrolled: kvmfr will load",
       "name": "secure-boot",
       "status": "pass"
     },

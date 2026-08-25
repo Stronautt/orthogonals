@@ -8,13 +8,12 @@ import (
 
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 func fakeSwitcheroo(t *testing.T, listsNVIDIA bool) {
 	t.Helper()
-	old := switcherooListsNVIDIA
-	switcherooListsNVIDIA = func(string) bool { return listsNVIDIA }
-	t.Cleanup(func() { switcherooListsNVIDIA = old })
+	testsupport.Swap(t, &switcherooListsNVIDIA, func(string) bool { return listsNVIDIA })
 }
 
 func TestGatherFacts(t *testing.T) {

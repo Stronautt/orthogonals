@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,6 +170,9 @@ var hostConditional = map[string]string{
 	"proc/driver/nvidia/version":                                               "the NVIDIA driver is not loaded",
 	"sys/module/nvidia_drm/parameters/modeset":                                 "nvidia_drm is not loaded",
 	"sys/module/nvidia_drm/parameters/fbdev":                                   "nvidia_drm is not loaded",
+	hwtest.MokListRTPath:                                                       "BIOS boot, or a kernel signed into db with no shim",
+	"var/lib/dkms/mok.pub":                                                     "dkms has built nothing on this host",
+	"var/lib/dkms/mok.key":                                                     "dkms has built nothing on this host",
 }
 
 // TestFixtureAttributesExistOnRealHardware requires every file the reference
@@ -358,5 +362,25 @@ func validateSchema(t *testing.T, name string, doc []byte) {
 	}
 	if err := sch.Validate(inst); err != nil {
 		t.Fatalf("real-hardware output violates %s:\n%v", path, err)
+	}
+}
+
+// TestMOKListAgreesWithMokutil is where this code proves the EFI_SIGNATURE_LIST
+// layout. Every other signing test builds its own bytes, so all of them agree
+// with the same misreading of UEFI 2.10 §32.4.1.
+func TestMOKListAgreesWithMokutil(t *testing.T) {
+	if _, err := exec.LookPath("mokutil"); err != nil {
+		t.Skipf("mokutil not installed: %v", err)
+	}
+	f := preflight.GatherFacts(realRoot)
+	if f.Signing.DKMS.Cert == "" {
+		t.Skip("dkms has built nothing on this host, so there is no key to compare")
+	}
+	// mokutil exits 1 when the key IS enrolled, so only the output can be read.
+	out, _ := exec.Command("mokutil", "--test-key", f.Signing.DKMS.Cert).Output()
+	want := strings.Contains(string(out), "is already enrolled")
+	if f.Signing.DKMS.Enrolled != want {
+		t.Errorf("MokListRT parse says enrolled=%v for %s; mokutil says %v",
+			f.Signing.DKMS.Enrolled, f.Signing.DKMS.Cert, want)
 	}
 }

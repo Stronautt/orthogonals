@@ -63,18 +63,7 @@ func genStepList(t *rapid.T) []Step {
 // backup-and-restore is exercised rather than only file creation.
 func propStepRoot(t *rapid.T) string {
 	t.Helper()
-	root, err := os.MkdirTemp("", "orthogonals-steps-prop")
-	if err != nil {
-		t.Fatalf("temp root: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	// Base dirs every real host already has. Without them the manifest's own
-	// MkdirAll would look like a leak undo failed to clean up.
-	for _, d := range []string{"etc", "var/lib"} {
-		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
-			t.Fatalf("%v", err)
-		}
-	}
+	root := stepstest.RapidRoot(t, "etc", "var/lib")
 	for _, p := range propPaths {
 		if !rapid.Bool().Draw(t, "preexisting") {
 			continue
@@ -90,15 +79,6 @@ func propStepRoot(t *rapid.T) string {
 	return root
 }
 
-func snap(t *rapid.T, root string) string {
-	t.Helper()
-	s, err := stepstest.Snapshot(root)
-	if err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
-	return s
-}
-
 // A list Apply refuses must leave the tree untouched; a list it accepts must
 // undo byte for byte.
 func TestApplyUndoRestoresAnyStepList(t *testing.T) {
@@ -106,11 +86,11 @@ func TestApplyUndoRestoresAnyStepList(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		root := propStepRoot(rt)
 		list := genStepList(rt)
-		before := snap(rt, root)
+		before := stepstest.MustSnapshot(rt, root)
 
 		e, _, _ := eng(root, true)
 		if err := e.Apply(list); err != nil {
-			if d := stepstest.Diff(before, snap(rt, root)); d != "" {
+			if d := stepstest.Diff(before, stepstest.MustSnapshot(rt, root)); d != "" {
 				rt.Fatalf("Apply refused (%v) but still mutated the tree:\n%s", err, d)
 			}
 			return
@@ -120,7 +100,7 @@ func TestApplyUndoRestoresAnyStepList(t *testing.T) {
 		if err := u.Undo(false, false, nil); err != nil {
 			rt.Fatalf("undo: %v", err)
 		}
-		if d := stepstest.Diff(before, snap(rt, root)); d != "" {
+		if d := stepstest.Diff(before, stepstest.MustSnapshot(rt, root)); d != "" {
 			rt.Fatalf("undo did not restore the tree:\n%s\nsteps: %+v", d, list)
 		}
 	})

@@ -1,0 +1,15 @@
+-        "DP-1"
++        "eDP-1"
+-      "class": "0x030000",
++      "class": "0x030200",
+-      "boot_vga": false,
+-      "drm_card": "card1"
++      "boot_vga": false
+-        "DP-1"
++        "eDP-1"
+-        "class": "0x030000",
++        "class": "0x030200",
+-        "drm_card": "card1",
+-    "chassis_type": 3,
++    "chassis_type": 10,
++    "gpu_mux": "hybrid",

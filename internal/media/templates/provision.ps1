@@ -111,6 +111,17 @@ function Test-FsService($Share, $Deps) {
 
 Write-Status -Stage 'start' -Ok $true
 
+# Only the stage body below runs inside a try/catch. A Done probe, this prologue
+# and the epilogue can also throw. Such a throw ends the script with the last
+# status still ok, and the host then polls a dead guest until the install
+# timeout. $currentStage holds the name of the last stage entered.
+$script:currentStage = 'start'
+trap {
+    Write-Status -Stage $script:currentStage -Ok $false -Err $_.Exception.Message
+    Stop-Transcript | Out-Null
+    exit 1
+}
+
 # Windows Update ships its own NVIDIA driver and races the pinned one: the
 # guest lands on an unpinned version, the concurrent device install throws a
 # modal trust prompt no silent installer can answer, and the box reboots
@@ -173,7 +184,7 @@ $stages = @(
     },
     @{
         # the guest-tools bundle chains the driver MSI, QEMU-GA and the SPICE
-        # vdagent; the bare virtio-win-gt MSI is drivers only — no vdagent, no
+        # vdagent; the bare virtio-win-gt MSI is drivers only - no vdagent, no
         # clipboard. QEMU-GA is the only channel the host polls provisioning
         # through; spice-agent is what moves the clipboard over SPICE.
         Name = 'virtio-guest-tools'
@@ -367,7 +378,7 @@ $stages = @(
         SkipVerify = $true   # Done is false by design, so it always re-runs
         Run  = {
             # Windows Setup caches the answer file WITH the admin password and
-            # it persists after install (research §B2, known 24H2 issue)
+            # it persists after install (research B2, known 24H2 issue)
             Remove-Item -Force -ErrorAction SilentlyContinue `
                 'C:\Windows\Panther\unattend.xml', 'C:\Windows\System32\Sysprep\unattend.xml'
             # autologon has served its purpose - it too stores the password
@@ -384,6 +395,7 @@ $stages = @(
 )
 
 foreach ($s in $stages) {
+    $script:currentStage = $s.Name
     if (& $s.Done) {
         Write-Output "stage $($s.Name): already done"
         continue

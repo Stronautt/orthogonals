@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -11,15 +12,13 @@ import (
 // fakePasswd covers ids no test machine is guaranteed to have.
 func fakePasswd(t *testing.T, users map[string]*user.User) {
 	t.Helper()
-	old := lookupUser
-	lookupUser = func(name string) (*user.User, error) {
+	testsupport.Swap(t, &lookupUser, func(name string) (*user.User, error) {
 		u, ok := users[name]
 		if !ok {
 			return nil, user.UnknownUserError(name)
 		}
 		return u, nil
-	}
-	t.Cleanup(func() { lookupUser = old })
+	})
 }
 
 // The privilege drop itself: the hook calls Send as root, so this decides

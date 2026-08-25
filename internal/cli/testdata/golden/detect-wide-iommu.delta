@@ -1,0 +1,4 @@
+-    "iommu_address_width": 39,
++    "iommu_address_width": 48,
+-    "secure_boot": true,
++    "secure_boot": false,

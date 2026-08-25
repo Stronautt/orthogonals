@@ -15,6 +15,9 @@ import (
 // RequiredTools are host binaries later stages shell out to.
 var RequiredTools = []string{
 	"dracut", "semanage", "restorecon", "nvidia-smi", "systemd-tmpfiles",
+	// dkms builds and installs kvmfr on a Secure Boot host. usermod puts the
+	// desktop user in the libvirt group. Both are apply steps and not options.
+	"dkms", "usermod",
 }
 
 type Platform struct {
@@ -200,9 +203,9 @@ func selinuxMode(root string) string {
 func secureBootEnabled(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root,
 		"/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"))
-	// efivars prefixes every variable with its 4-byte attribute mask, so the
-	// flag is byte 4 and the whole read is 5 bytes, not 1.
-	return err == nil && len(b) == 5 && b[4] == 1
+	// The flag comes after the attribute mask of efivarfs, so the whole read is
+	// five bytes and not one.
+	return err == nil && len(b) == utils.EFIVarAttrLen+1 && b[utils.EFIVarAttrLen] == 1
 }
 
 // ChassisType reads the SMBIOS chassis type from sysfs, 0 when absent.

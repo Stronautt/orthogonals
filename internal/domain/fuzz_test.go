@@ -23,36 +23,6 @@ func fuzzDomainXML(f *testing.F) (root, path string) {
 	return root, path
 }
 
-// FuzzReadMemoryMiB asserts no domain XML yields a memory size the caller could
-// mis-scale a hugepage pool from.
-func FuzzReadMemoryMiB(f *testing.F) {
-	f.Add(`<domain><memory unit='MiB'>8192</memory></domain>`)
-	f.Add(`<domain><memory unit='KiB'>8192</memory></domain>`)
-	f.Add(`<domain><memory>8192</memory></domain>`)
-	f.Add(`<domain><memory unit='MiB'>0</memory></domain>`)
-	f.Add(`<domain><memory unit='MiB'>-1</memory></domain>`)
-	f.Add(`<domain><memory unit='MiB'>99999999999999999999</memory></domain>`)
-	f.Add(`not xml at all`)
-	f.Add(``)
-
-	root, path := fuzzDomainXML(f)
-	f.Fuzz(func(t *testing.T, content string) {
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		mib, err := ReadMemoryMiB(root, "win11")
-		if err != nil {
-			if mib != 0 {
-				t.Fatalf("ReadMemoryMiB returned %d alongside error %v", mib, err)
-			}
-			return
-		}
-		if mib == 0 {
-			t.Fatalf("ReadMemoryMiB accepted zero memory from %q", content)
-		}
-	})
-}
-
 // FuzzKVMFRSizeMiB asserts arbitrary domain XML never yields a buffer size the
 // hook would hand modprobe. qemu maps the declared bytes regardless, so a
 // module sized below them leaves the guest writing past the end of the buffer.

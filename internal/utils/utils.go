@@ -13,11 +13,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
 )
+
+// EFIVarAttrLen is the attribute mask efivarfs prefixes to every variable's
+// contents, so a variable's own bytes start at this offset.
+const EFIVarAttrLen = 4
 
 // Exists reports whether path exists. A stat error other than fs.ErrNotExist —
 // most often a parent directory that is not searchable — is returned rather
@@ -42,14 +45,6 @@ func ReadTrim(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
-}
-
-func ReadUint(path string) (uint64, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 }
 
 // LinkBase is the last element of a symlink's target, "" for any error. Sized
@@ -109,14 +104,18 @@ func WriteSync(path string, content []byte, mode fs.FileMode) error {
 	return f.Close()
 }
 
-// TempPrefix marks WriteAtomic's temporary files, so SweepTemps can tell them
-// from anything else sharing the directory.
+// TempPrefix marks the temporary files and staging directories of this module,
+// so SweepTemps can tell them from anything else in the same directory.
 const TempPrefix = ".orthogonals-tmp-"
 
-// SweepTemps deletes WriteAtomic temporaries stranded in dir by a process
-// SIGKILLed between creating one and renaming it into place. Best-effort and
-// silent — these are litter, never state. WriteAtomic calls it itself; it is
-// exported for the paths that remove rather than write.
+// SweepTemps deletes the temporaries that a SIGKILL stranded in dir: a file that
+// WriteAtomic did not rename into place, or a staging directory that its owner
+// did not remove. The operation is best-effort and silent, because these are
+// litter and never state. WriteAtomic calls SweepTemps itself. It is exported
+// for the paths that remove rather than write.
+//
+// Directories are removed with their contents. A staging area can hold a secret,
+// so a sweep that stops at the directory leaves the secret on disk.
 //
 // ponytail: unconditional, so it assumes no second orthogonals process is
 // mid-write in the same directory. Apply is sequential and single-process today;
@@ -127,8 +126,8 @@ func SweepTemps(dir string) {
 		return
 	}
 	for _, e := range ents {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), TempPrefix) {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+		if strings.HasPrefix(e.Name(), TempPrefix) {
+			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
 		}
 	}
 }

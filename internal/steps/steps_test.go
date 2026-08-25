@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/sysd"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
@@ -59,23 +61,10 @@ func assertFile(t *testing.T, root, rel, want string, mode fs.FileMode) {
 	}
 }
 
-// fakePath prepends a fresh dir to PATH, keeping the real one reachable.
-func fakePath(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return dir
-}
+func fakePath(t *testing.T) string { return hwtest.FakePath(t) }
 
-// fakeBin installs an executable stub that logs its argv, returning the log path.
 func fakeBin(t *testing.T, dir, name, extra string) string {
-	t.Helper()
-	log := filepath.Join(dir, name+".log")
-	script := "#!/bin/sh\necho \"$*\" >> \"" + log + "\"\n" + extra + "\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return log
+	return hwtest.FakeTool(t, dir, name, extra)
 }
 
 func logLines(t *testing.T, path string) []string {
@@ -387,6 +376,45 @@ func TestRunCmdReappliesWhenProductGone(t *testing.T) {
 	}
 	if m := mustLoad(t, root); len(m.Records) != 1 {
 		t.Fatalf("re-runs must not duplicate the journal record, got %+v", m.Records)
+	}
+}
+
+// An op re-runs after Input drift, exactly as run_cmd does. The dkms steps
+// depend on this. They keep the pinned version out of Args, where the engine
+// refuses a change as drift. They carry it in Input, where a bump rebuilds.
+func TestOpInputRerunsOnDrift(t *testing.T) {
+	root := t.TempDir()
+	dir := fakePath(t)
+	dkmsLog := fakeBin(t, dir, "dkms", "")
+	e, _, _ := eng(root, true)
+
+	step := func(input string) Step {
+		return Step{
+			ID: "kvmfr-rebuild", Kind: KindOp,
+			Op: OpDKMSBuild, Args: map[string]string{"module": "kvmfr"},
+			Input: []byte(input),
+		}
+	}
+	if err := e.Apply([]Step{step("key-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Apply([]Step{step("key-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logLines(t, dkmsLog); len(lines) != 1 {
+		t.Fatalf("unchanged input re-ran the op: %v", lines)
+	}
+
+	// A version bump reaches the step in this way. It must rebuild and not
+	// refuse, because the Args do not change and no drift exists to refuse.
+	if err := e.Apply([]Step{step("key-v2")}); err != nil {
+		t.Fatalf("changed input must re-run, not refuse: %v", err)
+	}
+	if lines := logLines(t, dkmsLog); len(lines) != 2 {
+		t.Fatalf("changed input did not re-run the op: %v", lines)
+	}
+	if m := mustLoad(t, root); len(m.Records) != 1 {
+		t.Fatalf("a re-run must not duplicate the journal record, got %+v", m.Records)
 	}
 }
 
@@ -792,15 +820,13 @@ func TestCheckExecTrusted(t *testing.T) {
 			if tt.path != "" {
 				tree[tt.path] = ownedPath{tt.uid, tt.mode}
 			}
-			old := pathOwner
-			pathOwner = func(p string) (uint32, fs.FileMode, error) {
+			testsupport.Swap(t, &pathOwner, func(p string) (uint32, fs.FileMode, error) {
 				e, ok := tree[p]
 				if !ok {
 					return 0, 0, fs.ErrNotExist
 				}
 				return e.uid, e.mode, nil
-			}
-			t.Cleanup(func() { pathOwner = old })
+			})
 
 			err := CheckExecTrusted(exe)
 			if tt.wantErr && err == nil {
@@ -815,9 +841,7 @@ func TestCheckExecTrusted(t *testing.T) {
 
 // A path the walk cannot read is not a path it may assume is fine.
 func TestCheckExecTrustedSurfacesAStatError(t *testing.T) {
-	old := pathOwner
-	pathOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, fs.ErrNotExist }
-	t.Cleanup(func() { pathOwner = old })
+	testsupport.Swap(t, &pathOwner, func(string) (uint32, fs.FileMode, error) { return 0, 0, fs.ErrNotExist })
 
 	if err := CheckExecTrusted("/usr/bin/orthogonals"); err == nil {
 		t.Error("an unreadable path was treated as trusted")

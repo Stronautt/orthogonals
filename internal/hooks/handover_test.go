@@ -14,6 +14,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps/stepstest"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 // Writing to these is a command, not a setting: a real kernel keeps no record
@@ -62,9 +63,7 @@ func TestDetachRollsBackEveryMutation(t *testing.T) {
 					hwtest.WriteFile(t, root, "sys/bus/pci/devices/"+d+"/power/control", "auto\n")
 				}
 				stubRuntimeStatus(t, func(_, _ string) string { return "suspended" })
-				old := WakeTimeout
-				WakeTimeout = time.Millisecond
-				t.Cleanup(func() { WakeTimeout = old })
+				testsupport.Swap(t, &WakeTimeout, time.Millisecond)
 			},
 		},
 		{

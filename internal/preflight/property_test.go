@@ -77,6 +77,23 @@ func genFacts(t *rapid.T) Facts {
 		SwitcherooEnabled:   rapid.Bool().Draw(t, "switcheroo"),
 		LibvirtReachable:    rapid.Bool().Draw(t, "libvirt"),
 		BLSError:            rapid.SampledFrom([]string{"", "no entries"}).Draw(t, "bls_error"),
+		// Without this field every run lands on one signing plan, and the three
+		// plans that carry a remedy never reach the invariant below.
+		Signing: ModuleSigning{
+			DKMS: SigningKey{
+				Cert:     rapid.SampledFrom([]string{"", DKMSCert}).Draw(t, "dkms_cert"),
+				Key:      DKMSKey,
+				Enrolled: rapid.Bool().Draw(t, "dkms_enrolled"),
+			},
+			Akmods: rapid.SliceOfN(rapid.Custom(func(t *rapid.T) SigningKey {
+				return SigningKey{
+					Cert:     "/etc/pki/akmods/certs/public_key.der",
+					Key:      rapid.SampledFrom([]string{"", "/etc/pki/akmods/private/public_key.priv"}).Draw(t, "akmods_key"),
+					Enrolled: rapid.Bool().Draw(t, "akmods_enrolled"),
+				}
+			}), 0, 2).Draw(t, "akmods"),
+			OtherDKMSModules: rapid.Bool().Draw(t, "other_dkms"),
+		},
 	}
 }
 

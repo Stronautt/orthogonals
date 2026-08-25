@@ -94,7 +94,9 @@ func loadKVMFR(root string, log logFunc, sizeMiB uint64) error {
 // loadedSizeMiB is 0 on any doubt, which forces a reload rather than trusting a
 // possibly undersized buffer.
 func loadedSizeMiB(root string) uint64 {
-	n, _ := utils.ReadUint(filepath.Join(root, kvmfrSizeFile))
+	// ReadTrim gives "" on any read error, and ParseUint("") then fails. Both
+	// doubts land on the documented 0.
+	n, _ := strconv.ParseUint(utils.ReadTrim(filepath.Join(root, kvmfrSizeFile)), 10, 64)
 	return n
 }
 

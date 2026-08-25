@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,10 +22,10 @@ import (
 	"github.com/stronautt/orthogonals/internal/artifacts"
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/media/mediatest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
+	"github.com/stronautt/orthogonals/internal/utils"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
-
-var update = flag.Bool("update", false, "rewrite golden files")
 
 func referenceProfile(t *testing.T) Profile {
 	t.Helper()
@@ -50,26 +49,6 @@ func mustRender(t *testing.T, p Profile) map[string][]byte {
 	return out
 }
 
-func checkGolden(t *testing.T, name string, got []byte) {
-	t.Helper()
-	path := filepath.Join("testdata", "golden", name)
-	if *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(want) {
-		t.Errorf("%s does not match golden file (run go test ./internal/media -update):\n%s", name, got)
-	}
-}
-
 func wellFormedXML(t *testing.T, b []byte) {
 	t.Helper()
 	dec := xml.NewDecoder(strings.NewReader(string(b)))
@@ -90,10 +69,8 @@ func TestRenderGolden(t *testing.T) {
 		if _, ok := arts[name]; !ok {
 			t.Fatalf("Render is missing %s", name)
 		}
+		testsupport.Golden(t, name, arts[name])
 	}
-	checkGolden(t, "autounattend.xml", arts["autounattend.xml"])
-	checkGolden(t, "vdd_settings.xml", arts["vdd_settings.xml"])
-	checkGolden(t, "provision.ps1", arts["provision.ps1"])
 }
 
 func TestProvisionTrustsTheVDDPublisher(t *testing.T) {
@@ -279,6 +256,27 @@ func TestAutounattendEscaping(t *testing.T) {
 	wellFormedXML(t, b)
 	if !strings.Contains(string(b), "p&lt;&amp;&gt;&#34;pass") {
 		t.Errorf("password not XML-escaped:\n%s", b)
+	}
+}
+
+// The script ships without a BOM, and Windows PowerShell 5.1 reads a BOM-less
+// .ps1 as the ANSI codepage. One byte above ASCII mis-parses the whole
+// provisioning run, so Render refuses the file rather than ship it. The template
+// is one source of such a byte. A value that the caller supplied is the other.
+func TestProvisionMustBeASCII(t *testing.T) {
+	if _, err := Render(referenceProfile(t)); err != nil {
+		t.Fatalf("the template itself is not ASCII: %v", err)
+	}
+	p, err := NewProfile("Ольга", "s3cretPassw0rd16", "", 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Render(p)
+	if err == nil {
+		t.Fatal("a non-ASCII guest user must be refused, not rendered into the script")
+	}
+	if !errors.Is(err, errNotASCII) {
+		t.Errorf("the refusal must be errNotASCII, got: %v", err)
 	}
 }
 
@@ -553,9 +551,7 @@ func TestFetchStalledConnectionFails(t *testing.T) {
 // An endless body must be named as such: left to the checksum, a truncation of
 // ours reads as a tampered download.
 func TestFetchOversizedResponseFails(t *testing.T) {
-	old := maxDownloadBytes
-	maxDownloadBytes = 64
-	t.Cleanup(func() { maxDownloadBytes = old })
+	testsupport.Swap(t, &maxDownloadBytes, 64)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		for range 100 {
@@ -729,15 +725,13 @@ const wimXMLHomeOnly = `<WIM><IMAGE INDEX="1"><NAME>Windows 11 Home</NAME></IMAG
 
 func fakeMountISO(t *testing.T, populate func(dir string)) {
 	t.Helper()
-	old := MountISO
-	MountISO = func(string) (string, func(), error) {
+	testsupport.Swap(t, &MountISO, func(string) (string, func(), error) {
 		dir := t.TempDir()
 		if populate != nil {
 			populate(dir)
 		}
 		return dir, func() {}, nil
-	}
-	t.Cleanup(func() { MountISO = old })
+	})
 }
 
 func TestValidateWin11ISO(t *testing.T) {
@@ -807,4 +801,54 @@ func TestValidateWin11ISO(t *testing.T) {
 			t.Fatal("want error for missing ISO path")
 		}
 	})
+}
+
+// The provision ISO and the files staged into it hold the guest password as
+// cleartext. A build that a kill interrupts must leave only names that the next
+// run collects. Undo finds a finished ISO by its *-provision.iso name and never
+// sees a temporary.
+func TestBuildISOTempIsSweepable(t *testing.T) {
+	arts, err := Render(referenceProfile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// iso9660 stages under $TMPDIR, which is tmpfs on Fedora, and the hardlink
+	// fast path cannot cross a filesystem. A TMPDIR that does not exist fails
+	// every build that still honours it.
+	t.Setenv("TMPDIR", filepath.Join(dir, "absent"))
+	// A leftover of a different VM, so only the sweep can remove it. The build
+	// truncates its own temporary over the top of one it made itself.
+	stranded := filepath.Join(dir, utils.TempPrefix+"other-provision.iso")
+	if err := os.WriteFile(stranded, []byte("a killed build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The staging area of an interrupted build. iso9660 copies the rendered
+	// files into it, so it holds the password that the ISO holds.
+	strandedStaging := filepath.Join(dir, utils.TempPrefix+"staging", "42")
+	if err := os.MkdirAll(strandedStaging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(strandedStaging, "autounattend.xml"), []byte("<pw/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "win11-provision.iso")
+	if err := BuildISO(arts, nil, out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(stranded); !os.IsNotExist(err) {
+		t.Error("a stranded temporary from an earlier build was not swept")
+	}
+	if _, err := os.Stat(filepath.Join(dir, utils.TempPrefix+"staging")); !os.IsNotExist(err) {
+		t.Error("a stranded staging area from an earlier build was not swept")
+	}
+	left, err := filepath.Glob(filepath.Join(dir, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(left, []string{out}) {
+		t.Errorf("build left %v, want only %s", left, out)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"golang.org/x/sys/unix"
 )
 
@@ -80,9 +81,7 @@ func TestWriteAtomicAppliesModeDespiteUmask(t *testing.T) {
 // the real label with matchpathcon on a host that has one.
 func TestWriteAtomicCarriesTheSecurityLabel(t *testing.T) {
 	const label = "system_u:object_r:bootloader_etc_t:s0"
-	old := SecurityXattr
-	SecurityXattr = "user.orthogonals-test-label"
-	t.Cleanup(func() { SecurityXattr = old })
+	testsupport.Swap(t, &SecurityXattr, "user.orthogonals-test-label")
 
 	path := filepath.Join(t.TempDir(), "grub")
 	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
@@ -107,9 +106,7 @@ func TestWriteAtomicCarriesTheSecurityLabel(t *testing.T) {
 // A file being created has no label to carry, and a filesystem without xattrs
 // has none to read: neither may fail the write.
 func TestWriteAtomicWithNoLabelToCarry(t *testing.T) {
-	old := SecurityXattr
-	SecurityXattr = "user.orthogonals-test-label"
-	t.Cleanup(func() { SecurityXattr = old })
+	testsupport.Swap(t, &SecurityXattr, "user.orthogonals-test-label")
 
 	dir := t.TempDir()
 	if err := WriteAtomic(filepath.Join(dir, "new"), []byte("x\n"), 0o644); err != nil {
@@ -160,7 +157,7 @@ func TestWriteAtomicReportsAnUnwritableParent(t *testing.T) {
 	}
 }
 
-func TestReadTrimAndReadUint(t *testing.T) {
+func TestReadTrim(t *testing.T) {
 	dir := t.TempDir()
 	num := filepath.Join(dir, "nr")
 	if err := os.WriteFile(num, []byte(" 128\n"), 0o644); err != nil {
@@ -172,20 +169,6 @@ func TestReadTrimAndReadUint(t *testing.T) {
 	}
 	if got := ReadTrim(filepath.Join(dir, "absent")); got != "" {
 		t.Errorf("ReadTrim of an absent file = %q, want %q", got, "")
-	}
-	if got, err := ReadUint(num); err != nil || got != 128 {
-		t.Errorf("ReadUint = (%d, %v), want (128, nil)", got, err)
-	}
-	if _, err := ReadUint(filepath.Join(dir, "absent")); err == nil {
-		t.Error("ReadUint of an absent file: want an error, got nil")
-	}
-
-	text := filepath.Join(dir, "text")
-	if err := os.WriteFile(text, []byte("not a number\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadUint(text); err == nil {
-		t.Error("ReadUint of a non-numeric file: want an error, got nil")
 	}
 }
 
@@ -266,6 +249,33 @@ func TestWriteAtomicSweepsAStrandedTemp(t *testing.T) {
 
 func TestSweepTempsToleratesAMissingDirectory(t *testing.T) {
 	SweepTemps(filepath.Join(t.TempDir(), "absent")) // must not panic
+}
+
+// A staging directory can hold a secret, so the sweep must take its contents
+// with it. media.BuildISO stages the provision files, which carry the guest
+// password, under a name with this prefix.
+func TestSweepTempsRemovesADirectoryWithItsContents(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, TempPrefix+"staging", "inner")
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "secret"), []byte("password"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(dir, "other-tool-staging")
+	if err := os.Mkdir(keep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	SweepTemps(dir)
+
+	if _, err := os.Stat(filepath.Join(dir, TempPrefix+"staging")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stranded staging directory survived: stat = %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("swept a directory it does not own: %v", err)
+	}
 }
 
 func TestSyncDirRejectsAMissingDirectory(t *testing.T) {

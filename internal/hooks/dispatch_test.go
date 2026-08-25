@@ -12,6 +12,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/hw/hwtest"
 	"github.com/stronautt/orthogonals/internal/steps"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 // currentUser is the one account these tests can chown to without privileges.
@@ -24,12 +25,11 @@ func currentUser(t *testing.T) string {
 	return u.Username
 }
 
-// registerVM writes the minimal XML the hook reads back: the <memory> element
-// the hugepage reservation sizes from.
+// registerVM writes the registry entry. The hook answers for a domain only
+// when this entry is present.
 func registerVM(t *testing.T, root, vm string) {
 	t.Helper()
-	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml",
-		"<domain><memory unit='MiB'>24576</memory></domain>")
+	hwtest.WriteFile(t, root, "etc/orthogonals/vms/"+vm+".xml", "<domain/>")
 }
 
 func TestDispatchUnmanagedPassesThrough(t *testing.T) {
@@ -57,9 +57,8 @@ func TestDispatchOneVMAtATime(t *testing.T) {
 
 func shortSpiceWait(t *testing.T) {
 	t.Helper()
-	oldSettle, oldTimeout := SpiceSettle, SpiceTimeout
-	SpiceSettle, SpiceTimeout = time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { SpiceSettle, SpiceTimeout = oldSettle, oldTimeout })
+	testsupport.Swap(t, &SpiceSettle, time.Millisecond)
+	testsupport.Swap(t, &SpiceTimeout, 20*time.Millisecond)
 }
 
 func spiceSocket(t *testing.T, root, vm string) string {
@@ -143,7 +142,6 @@ func TestDispatchStartedLeavesANonSocketAlone(t *testing.T) {
 func TestDispatchPrepareStartsInhibitor(t *testing.T) {
 	root := hookRoot(t)
 	registerVM(t, root, "win11")
-	seedHugepages(t, root, "0")
 	stubDeviceDriver(t, driverFromOverride)
 	stubDeleteModule(t, nil)
 	stubNotify(t)
@@ -172,24 +170,6 @@ func TestDispatchPrepareFailureWraps(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "GPU handover to vfio-pci failed") ||
 		!strings.Contains(err.Error(), LogPath) {
 		t.Fatalf("err = %v, want a wrapped handover failure naming the log", err)
-	}
-}
-
-// This arm fires after Detach has already pulled the GPU off the host driver, so
-// it has to name the cause rather than let QEMU surface an opaque out-of-memory.
-func TestDispatchPrepareFailsOnUnreadableGuestRAM(t *testing.T) {
-	root := hookRoot(t)
-	// Registered, so the hook answers for it — but with no <memory> to size the
-	// hugepage pool from.
-	hwtest.WriteFile(t, root, "etc/orthogonals/vms/win11.xml", "<domain/>")
-	stubNotify(t)
-	stubDeleteModule(t, nil)
-	stubDeviceDriver(t, driverFromOverride)
-	fakeBin(t, "modprobe", "")
-
-	err := Dispatch(root, &sysdtest.Fake{}, "win11", "prepare", "begin", "tester", "/usr/bin/orthogonals")
-	if err == nil || !strings.Contains(err.Error(), "hugepage reservation") {
-		t.Fatalf("err = %v, want a guest-RAM read failure naming the hugepage reservation", err)
 	}
 }
 

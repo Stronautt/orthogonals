@@ -1,0 +1,10 @@
++    },
++    {
++      "address": "0000:02:00.0",
++      "vendor": "0x8086",
++      "device": "0x15f3",
++      "class": "0x020000",
++      "driver": "igc",
++      "iommu_group": 1,
++      "has_reset": false,
++      "boot_vga": false

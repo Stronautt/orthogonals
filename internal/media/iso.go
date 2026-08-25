@@ -12,6 +12,7 @@ import (
 	"github.com/kdomanski/iso9660"
 
 	"github.com/stronautt/orthogonals/internal/steps"
+	"github.com/stronautt/orthogonals/internal/utils"
 )
 
 // VolumeLabel is how the guest locates the provision CD.
@@ -31,6 +32,36 @@ func ProvisionISOs(root string) []string {
 	return paths
 }
 
+// newWriterStagingIn keeps the staging area of iso9660 on the same filesystem
+// as the payloads and the image. NewWriter stages under $TMPDIR. On Fedora that
+// is tmpfs, and the os.Link fast path of AddLocalFile cannot cross a
+// filesystem. Every payload is then copied into the RAM that the guest needs.
+//
+// The staging area carries TempPrefix in its name because the staged copies
+// hold the guest password. A build that is killed before Cleanup must leave
+// something that SweepTemps collects.
+//
+// ponytail: TMPDIR is process-global; a per-writer staging directory if BuildISO
+// ever runs concurrently.
+func newWriterStagingIn(dir string) (*iso9660.ImageWriter, error) {
+	staging := filepath.Join(dir, utils.TempPrefix+"staging")
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		return nil, err
+	}
+	prior, had := os.LookupEnv("TMPDIR")
+	if err := os.Setenv("TMPDIR", staging); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if had {
+			_ = os.Setenv("TMPDIR", prior)
+			return
+		}
+		_ = os.Unsetenv("TMPDIR")
+	}()
+	return iso9660.NewWriter()
+}
+
 func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Writer) error {
 	names := make([]string, 0, len(rendered)+len(payloads))
 	for _, a := range rendered {
@@ -44,11 +75,19 @@ func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Wri
 			return err
 		}
 	}
-	w, err := iso9660.NewWriter()
+	dir := filepath.Dir(outPath)
+	// The sweep runs before the writer, so a staging area that an earlier kill
+	// stranded goes first. It runs again at the end, because Cleanup removes
+	// only what iso9660 made inside that area and not the area itself.
+	utils.SweepTemps(dir)
+	w, err := newWriterStagingIn(dir)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = w.Cleanup() }()
+	defer func() {
+		_ = w.Cleanup()
+		utils.SweepTemps(dir)
+	}()
 	for _, a := range rendered {
 		if err := w.AddFile(bytes.NewReader(a.Content), a.Name); err != nil {
 			return fmt.Errorf("add %s: %w", a.Name, err)
@@ -59,9 +98,13 @@ func BuildISO(rendered []Artifact, payloads []string, outPath string, out io.Wri
 			return fmt.Errorf("add %s: %w", src, err)
 		}
 	}
-	// Build beside the target and rename: the domain XML mounts outPath, and a
-	// crash mid-write must not leave a torn ISO there for the next vm launch.
-	tmp := outPath + ".tmp"
+	// Build beside the target and rename. The domain XML mounts outPath, and a
+	// crash during the write must not leave a torn ISO there for the next
+	// `vm launch`. The name carries TempPrefix because this file holds the guest
+	// password as cleartext. A kill between the create and the rename must leave
+	// something that SweepTemps collects. A ".tmp" suffix matches neither that
+	// sweep nor the *-provision.iso glob of undo.
+	tmp := filepath.Join(dir, utils.TempPrefix+filepath.Base(outPath))
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err

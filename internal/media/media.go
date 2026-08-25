@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/utils"
@@ -125,7 +126,32 @@ func Render(p Profile) ([]Artifact, error) {
 		if err := templates.ExecuteTemplate(&buf, name, data); err != nil {
 			return nil, fmt.Errorf("render %s: %w", name, err)
 		}
+		if err := checkASCII(name, buf.Bytes()); err != nil {
+			return nil, err
+		}
 		out = append(out, Artifact{Name: name, Content: buf.Bytes()})
 	}
 	return out, nil
+}
+
+// errNotASCII is the refusal of a provisioning script that is not ASCII. The
+// script ships without a byte order mark, and Windows PowerShell 5.1 reads a
+// .ps1 without one as the ANSI codepage. One byte above ASCII mis-parses the
+// whole provisioning run.
+var errNotASCII = errors.New("the guest reads the script as the ANSI codepage and cannot parse it")
+
+// checkASCII holds the rendered script to ASCII, and the rendered text is what
+// it reads. A golden test holds the template to ASCII. But --guest-user and the
+// tag of a share reach the same file. This function is the one point that every
+// field passes through.
+func checkASCII(name string, content []byte) error {
+	if !strings.HasSuffix(name, ".ps1") {
+		return nil
+	}
+	i := bytes.IndexFunc(content, func(r rune) bool { return r > unicode.MaxASCII })
+	if i < 0 {
+		return nil
+	}
+	return fmt.Errorf("%s is not ASCII at byte %d (%q): %w",
+		name, i, content[i:min(i+20, len(content))], errNotASCII)
 }

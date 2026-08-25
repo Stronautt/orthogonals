@@ -2,6 +2,7 @@ package steps
 
 import (
 	"errors"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"io"
 	"io/fs"
 	"os"
@@ -26,11 +27,9 @@ func currentUserName(t *testing.T) string {
 // has never logged in, without depending on the developer's own session.
 func noSessionBus(t *testing.T) {
 	t.Helper()
-	old := markTrusted
-	markTrusted = func(out io.Writer, _, _ string, _, _ int) {
+	testsupport.Swap(t, &markTrusted, func(out io.Writer, _, _ string, _, _ int) {
 		_, _ = io.WriteString(out, DesktopTrustNote+"\n")
-	}
-	t.Cleanup(func() { markTrusted = old })
+	})
 }
 
 // The step must succeed when only the trust flag is unavailable: a defined

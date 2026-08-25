@@ -1,0 +1,7 @@
+-      "message": "dGPU exposes a sysfs reset file",
++      "message": "dGPU 0000:01:00.0 has no sysfs reset file — the device cannot be reset between host and guest",
+-      "status": "pass"
++      "remedy": "check for a BIOS update; a GPU without function-level reset cannot be passed through reliably",
++      "status": "fail"
+-  "status": "warn"
++  "status": "fail"

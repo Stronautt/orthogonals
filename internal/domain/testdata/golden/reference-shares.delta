@@ -1,0 +1,22 @@
++      <share>/home/user/Windows Shared</share>
++      <share>/srv/media</share>
++  <!-- virtiofsd maps guest RAM out of process. If the access is not shared,
++       libvirt refuses the domain. -->
++  <memoryBacking>
++    <source type='memfd'/>
++    <access mode='shared'/>
++  </memoryBacking>
++    <!-- passthrough: virtiofsd runs as root, so host ownership reaches the guest
++         as-is and new files take the share root's uid/gid, not root's. -->
++    <filesystem type='mount' accessmode='passthrough'>
++      <driver type='virtiofs'/>
++      <source dir='/home/user/Windows Shared'/>
++      <target dir='Windows-Shared'/>
++    </filesystem>
++    <!-- passthrough: virtiofsd runs as root, so host ownership reaches the guest
++         as-is and new files take the share root's uid/gid, not root's. -->
++    <filesystem type='mount' accessmode='passthrough'>
++      <driver type='virtiofs'/>
++      <source dir='/srv/media'/>
++      <target dir='media'/>
++    </filesystem>

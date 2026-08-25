@@ -1,0 +1,24 @@
+-      <resolution>3840x2160</resolution>
+-      <win11-iso>/home/user/Win11.iso</win11-iso>
++      <resolution>1920x1080</resolution>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/home/user/Win11.iso' startupPolicy='optional'/>
+-      <target dev='sda' bus='sata'/>
+-      <readonly/>
+-      <boot order='2'/>
+-    </disk>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/var/lib/orthogonals/cache/virtio-win.iso' startupPolicy='optional'/>
+-      <target dev='sdb' bus='sata'/>
+-      <readonly/>
+-    </disk>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/var/lib/orthogonals/win11-provision.iso' startupPolicy='optional'/>
+-      <target dev='sdc' bus='sata'/>
+-      <readonly/>
+-    </disk>
+-      <size unit='M'>128</size>
++      <size unit='M'>32</size>

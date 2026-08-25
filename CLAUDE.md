@@ -14,7 +14,9 @@ warnings against the obvious-but-wrong.
 - `make test-integration` — T3, container. `make test-vm` — T4, throwaway
   Fedora Cloud VM. `make test-vfio` — T5, guest with an emulated IOMMU.
   `make test-desk` — T5b, read-only against your hardware.
-- `make coverage` / `make coverage-pct`. Goldens: `go test ./internal/<pkg> -update`.
+- `make coverage` / `make coverage-pct`. Goldens: `make goldens` — the one
+  `-update` flag lives in `internal/testsupport`, so `go test ./... -update`
+  fails on every package that renders nothing.
 
 The host-mutation tiers are **one set of tests, many machines**: the fmf tests
 in `test/tmt/` are shared and a plan in `plans.fmf` only chooses `provision:`.
@@ -42,10 +44,12 @@ Packages under `internal/` are bounded on the distro/vendor seams.
 - **Pure Go, no cgo** (`CGO_ENABLED=0`): go-libvirt, go-systemd + godbus,
   x/sys, iso9660, cobra. **Anything the standard library can do is done in Go,
   never shelled out to** — exec survives only where the binary IS the vendor
-  API on Fedora (dracut, semanage, dkms, modprobe's load side, nvidia-smi) or
-  the desktop's (`gio`, notify-send). The qemu hook is a Go subcommand behind a
-  two-line shim, not a shell script; libvirtd invokes it, not users, and it
-  journals nothing, so `--yes` does not gate it.
+  API on Fedora (dracut, semanage, restorecon, systemd-tmpfiles, usermod,
+  udevadm, lspci, journalctl, **dkms's build side**, modprobe's load side,
+  nvidia-smi) or the desktop's (`gio`, notify-send). Where only a *reading* of
+  that tool was wanted, the file it reads is read instead: `mokutil --test-key`
+  is a MokListRT parse and `dkms status` a walk of `/var/lib/dkms`, so neither
+  binary is a dependency.
 - The command tree is **factory-built** (`newRootCmd`), never a package
   global. Templates render via `embed.FS` beside their package, and **every
   rendered artifact has a golden test**.
@@ -66,14 +70,16 @@ Packages under `internal/` are bounded on the distro/vendor seams.
   `/etc/kernel/cmdline`, and `/etc/default/grub`. The first two are regenerated
   from the third, so args that stop short of it are dropped by the next package
   update and the host boots with no IOMMU.
-- The kvmfr module is loaded on demand by the qemu hook and never unloaded —
-  hence no modprobe.d, modules-load.d, udev rule or semanage entry for it.
-- **Shared folders cost the domain its private memory**: virtiofsd maps guest
-  RAM out of process, so any share forces `memfd` on the hugepage backing.
-  virtio-win's `VirtioFsSvc` mounts exactly one device, so provisioning clones
-  a pinned service per extra share — with `New-Service`, never `sc.exe`, which
-  PowerShell re-quotes into a binPath ending at `C:\Program` (a test bans it
-  from the rendered script).
+- The qemu hook is a Go subcommand behind a two-line shim, not a shell script.
+  libvirtd invokes it, not users, and it journals nothing, so `--yes` does not
+  gate it. It loads the kvmfr module on demand and never unloads it — hence no
+  modprobe.d, modules-load.d, udev rule or semanage entry for kvmfr.
+- **Shared folders force shared memory backing**: virtiofsd maps guest RAM out
+  of process, so any share renders a `memfd` `<memoryBacking>` the domain
+  otherwise does without. virtio-win's `VirtioFsSvc` mounts exactly one device,
+  so provisioning clones a pinned service per extra share — with `New-Service`,
+  never `sc.exe`, which PowerShell re-quotes into a binPath ending at
+  `C:\Program` (a test bans it from the rendered script).
 - **Guest-side state is written during provisioning only**: `provision.ps1`
   runs from the installer media under a logon task the cleanup stage
   unregisters, and `final` drops the cdroms, so an installed guest cannot
@@ -139,6 +145,8 @@ and stops cleanly at the reboot boundary. Post-install stage transitions are
 `vm define --stage` re-renders converging through the define op's Input drift;
 no device surgery. On a completed install it runs a converge pass instead.
 
+### Pins and packaging
+
 All download pins live in `internal/artifacts/artifacts.go` — the single bump
 place. Host packages are RPM `Requires:`, never installed at apply time. The
 Looking Glass client is its own RPM built on COPR from a pinned submodule;
@@ -159,6 +167,16 @@ boundaries. Swap with `t.Cleanup` restore, never `t.Parallel` while swapped.
 - **`hwtest.Roots` is the fixture registry** — the single source of every
   synthetic topology. Adding an entry there extends `internal/cli`'s
   detect/preflight golden set automatically.
+- **A fixture that varies one fact goldens one fact.** `internal/cli` and
+  `internal/domain` golden the reference host in full and every other case as
+  its departure from it (`testsupport.GoldenDelta`), because a full golden
+  apiece rewrote the same hunk into 7–11 files for every shared change. The
+  stored departure carries no line numbers, so a change to what the cases share
+  moves the baseline alone; failure messages are rendered with full context
+  separately. A case indistinguishable from the reference stores **no file**
+  and must be declared in `blindTo` with the reason — that assertion fails in
+  both directions, so a command that starts seeing a fixture, or quietly goes
+  blind to one, is a test failure rather than a silent golden reshuffle.
 - The fixtures are hand-written, so **the desk tier keeps them honest**: it
   requires every attribute they synthesize to exist on the machine they claim
   to model.
@@ -173,13 +191,13 @@ boundaries. Swap with `t.Cleanup` restore, never `t.Parallel` while swapped.
   `go tool cover -func | tail -1`, which misses every `var x = func(…)` seam
   from its listing *and* its total. Unit tests alone cap around 83%;
   `internal/virt` and `internal/sysd` need a live daemon, so a coverage number
-  quoted without saying which tiers ran is meaningless. Tier data from another
-  build merges cleanly and pads the denominator rather than raising the
-  numerator, so `make coverage` **fails** when merging adds an `internal/`
-  block — the tier's only honest addition is `main.go`. Its two causes are a
-  stale `/var/tmp/orthogonals-tmt-*` and a tier binary built by another Go than
-  the one merging — so **no CI job names a Go version**: every `setup-go` reads
-  `go-version-file: go.mod`, and the workflow-lint job fails on one that does
-  not.
+  quoted without saying which tiers ran is meaningless.
+- Tier data from another build merges cleanly and pads the denominator rather
+  than raising the numerator, so `make coverage` **fails** when merging adds an
+  `internal/` block — the tier's only honest addition is `main.go`. Its two
+  causes are a stale `/var/tmp/orthogonals-tmt-*` and a tier binary built by
+  another Go than the one merging, so **no CI job names a Go version**: every
+  `setup-go` reads `go-version-file: go.mod`, and the workflow-lint job fails
+  on one that does not.
 - **Coverage is not why the host tiers exist**: `internal/hooks` was at 86.6%
   when the VFIO tier found the CWD bug in its holder gate.

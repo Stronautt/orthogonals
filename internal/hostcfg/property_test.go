@@ -21,7 +21,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
-var propTools = append([]string{"systemctl", "usermod"}, hw.RequiredTools...)
+var propTools = append([]string{"systemctl"}, hw.RequiredTools...)
 
 // genProfile draws the whole space NewProfile can produce: the charset
 // CheckUser accepts, both bindings, every CPU vendor including the unknown one.
@@ -39,20 +39,9 @@ func genProfile(t *rapid.T) Profile {
 
 func propRoot(t *rapid.T) string {
 	t.Helper()
-	root, err := os.MkdirTemp("", "orthogonals-prop")
-	if err != nil {
-		t.Fatalf("temp root: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root := stepstest.RapidRoot(t, "etc", "var/lib", "usr/local/bin", "usr/share/applications")
 	if err := hwtest.BuildReferenceRoot(root); err != nil {
 		t.Fatalf("build fixture: %v", err)
-	}
-	// Base dirs every real host already has; undo only removes directories
-	// apply itself created, so their absence would mask a leak.
-	for _, d := range []string{"etc", "var/lib", "usr/local/bin", "usr/share/applications"} {
-		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
-			t.Fatalf("%v", err)
-		}
 	}
 	return root
 }
@@ -64,15 +53,6 @@ func propEngine(root string, yes bool) *steps.Engine {
 		Virt: func() virt.Client { return &virttest.Fake{} },
 		Sysd: func() sysd.Client { return &sysdtest.Fake{} },
 	}
-}
-
-func snapshot(t *rapid.T, root string) string {
-	t.Helper()
-	s, err := stepstest.Snapshot(root)
-	if err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
-	return s
 }
 
 // seedPreexisting adds a subset of the profile's kernel args to each boot-config
@@ -124,7 +104,7 @@ func TestApplyUndoRestoresTree(t *testing.T) {
 		p := genProfile(rt)
 		root := propRoot(rt)
 		seedPreexisting(rt, root, p)
-		before := snapshot(rt, root)
+		before := stepstest.MustSnapshot(rt, root)
 
 		boot, err := bls.Wanted(root, KernelArgs(p))
 		if err != nil {
@@ -141,7 +121,7 @@ func TestApplyUndoRestoresTree(t *testing.T) {
 			rt.Fatalf("undo: %v", err)
 		}
 
-		if d := stepstest.Diff(before, snapshot(rt, root)); d != "" {
+		if d := stepstest.Diff(before, stepstest.MustSnapshot(rt, root)); d != "" {
 			rt.Fatalf("undo did not restore the tree for %+v:\n%s", p, d)
 		}
 	})
@@ -160,7 +140,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		if err := propEngine(root, true).Apply(list); err != nil {
 			rt.Fatalf("first apply: %v", err)
 		}
-		once := snapshot(rt, root)
+		once := stepstest.MustSnapshot(rt, root)
 		first, err := steps.Load(root)
 		if err != nil {
 			rt.Fatalf("load: %v", err)
@@ -177,7 +157,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 			rt.Fatalf("re-apply grew the manifest: %d → %d records for %+v",
 				len(first.Records), len(second.Records), p)
 		}
-		if d := stepstest.Diff(once, snapshot(rt, root)); d != "" {
+		if d := stepstest.Diff(once, stepstest.MustSnapshot(rt, root)); d != "" {
 			rt.Fatalf("re-apply changed the tree for %+v:\n%s", p, d)
 		}
 	})
@@ -188,7 +168,7 @@ func TestDryRunIsInert(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		p := genProfile(rt)
 		root := propRoot(rt)
-		before := snapshot(rt, root)
+		before := stepstest.MustSnapshot(rt, root)
 
 		list, err := Steps(p, bls.Args{}, fedoraQemuConf)
 		if err != nil {
@@ -197,7 +177,7 @@ func TestDryRunIsInert(t *testing.T) {
 		if err := propEngine(root, false).Apply(list); err != nil {
 			rt.Fatalf("dry-run apply: %v", err)
 		}
-		if d := stepstest.Diff(before, snapshot(rt, root)); d != "" {
+		if d := stepstest.Diff(before, stepstest.MustSnapshot(rt, root)); d != "" {
 			rt.Fatalf("dry run mutated the tree for %+v:\n%s", p, d)
 		}
 	})

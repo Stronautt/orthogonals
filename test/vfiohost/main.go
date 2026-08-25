@@ -50,7 +50,7 @@ func main() {
 	fs.IntVar(&o.awBits, "aw-bits", 39, "IOMMU address width; 39 exercises the maxphysaddr path, 48 does not")
 	// 14 GiB is the smallest guest whose own /proc/meminfo clears preflight's
 	// memory floor without faking it: the 5/8 default lands on exactly 8 GiB.
-	fs.IntVar(&o.memGiB, "memory", 14, "guest RAM in GiB — the hook reserves 8 GiB of hugepages inside it")
+	fs.IntVar(&o.memGiB, "memory", 14, "guest RAM in GiB")
 	fs.IntVar(&o.vcpus, "vcpus", 8, "guest vCPUs, even and at least 6; two threads per core")
 	fs.IntVar(&o.diskGiB, "disk", 20, "guest disk in GiB")
 	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "how long to wait for ssh")

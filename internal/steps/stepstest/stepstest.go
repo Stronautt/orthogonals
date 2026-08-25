@@ -84,3 +84,43 @@ func Diff(before, after string) string {
 	}
 	return out.String()
 }
+
+// rapidTB is the part of testing.TB that pgregory.net/rapid's T also provides.
+// testing.TB cannot be named here: it carries an unexported method, so nothing
+// outside package testing satisfies it and *rapid.T never will.
+type rapidTB interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Cleanup(func())
+}
+
+// MustSnapshot is Snapshot for a test that has nothing to do but fail.
+func MustSnapshot(t rapidTB, root string) string {
+	t.Helper()
+	s, err := Snapshot(root)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	return s
+}
+
+// RapidRoot is t.TempDir for a *rapid.T, which has no TempDir of its own,
+// pre-seeded with dirs.
+//
+// Those base directories are load-bearing rather than tidiness: undo removes
+// only the directories apply created, so a root missing the ones every real
+// host already has reports apply's own MkdirAll as a leak.
+func RapidRoot(t rapidTB, dirs ...string) string {
+	t.Helper()
+	root, err := os.MkdirTemp("", "orthogonals-prop")
+	if err != nil {
+		t.Fatalf("temp root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
+	return root
+}

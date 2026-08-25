@@ -1,0 +1,49 @@
+-<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
++<domain type='kvm'>
+-      <ram-gib>20</ram-gib>
++      <ram-gib>40</ram-gib>
+-      <win11-iso>/home/user/Win11.iso</win11-iso>
+-  <memory unit='MiB'>20480</memory>
+-  <currentMemory unit='MiB'>20480</currentMemory>
+-  <vcpu placement='static'>10</vcpu>
++  <memory unit='MiB'>40960</memory>
++  <currentMemory unit='MiB'>40960</currentMemory>
++  <vcpu placement='static'>14</vcpu>
+-    <emulatorpin cpuset='12,13,14,15'/>
+-    <iothreadpin iothread='1' cpuset='16,17,18,19'/>
++    <vcpupin vcpu='10' cpuset='12'/>
++    <vcpupin vcpu='11' cpuset='13'/>
++    <vcpupin vcpu='12' cpuset='14'/>
++    <vcpupin vcpu='13' cpuset='15'/>
++    <emulatorpin cpuset='0,1'/>
++    <iothreadpin iothread='1' cpuset='0,1'/>
+-    <topology sockets='1' cores='5' threads='2'/>
++    <topology sockets='1' cores='7' threads='2'/>
+-    <maxphysaddr mode='emulate' bits='39'/>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/home/user/Win11.iso' startupPolicy='optional'/>
+-      <target dev='sda' bus='sata'/>
+-      <readonly/>
+-      <boot order='2'/>
+-    </disk>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/var/lib/orthogonals/cache/virtio-win.iso' startupPolicy='optional'/>
+-      <target dev='sdb' bus='sata'/>
+-      <readonly/>
+-    </disk>
+-    <disk type='file' device='cdrom'>
+-      <driver name='qemu' type='raw'/>
+-      <source file='/var/lib/orthogonals/win11-provision.iso' startupPolicy='optional'/>
+-      <target dev='sdc' bus='sata'/>
+-      <readonly/>
+-    </disk>
+-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
++        <address domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
+-        <address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
++        <address domain='0x0000' bus='0x03' slot='0x00' function='0x1'/>
+-  <qemu:commandline>
+-    <qemu:arg value='-fw_cfg'/>
+-    <qemu:arg value='opt/ovmf/X-PciMmio64Mb,string=65536'/>
+-  </qemu:commandline>

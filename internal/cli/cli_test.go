@@ -16,6 +16,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/notify"
 	"github.com/stronautt/orthogonals/internal/sysd"
 	"github.com/stronautt/orthogonals/internal/sysd/sysdtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/virt"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
@@ -35,17 +36,13 @@ func TestMain(m *testing.M) {
 
 func fakeVirt(t *testing.T, f *virttest.Fake) *virttest.Fake {
 	t.Helper()
-	old := newVirt
-	newVirt = func() virt.Client { return f }
-	t.Cleanup(func() { newVirt = old })
+	testsupport.Swap(t, &newVirt, func() virt.Client { return f })
 	return f
 }
 
 func fakeSysd(t *testing.T, f *sysdtest.Fake) *sysdtest.Fake {
 	t.Helper()
-	old := newSysd
-	newSysd = func() sysd.Client { return f }
-	t.Cleanup(func() { newSysd = old })
+	testsupport.Swap(t, &newSysd, func() sysd.Client { return f })
 	return f
 }
 
@@ -133,9 +130,7 @@ func TestNoCommand(t *testing.T) {
 // asking for "no arguments" would dispatch on whatever the process was started
 // with.
 func TestNoCommandIgnoresTheProcessArguments(t *testing.T) {
-	old := os.Args
-	os.Args = []string{"orthogonals", "--definitely-not-a-flag"}
-	t.Cleanup(func() { os.Args = old })
+	testsupport.Swap(t, &os.Args, []string{"orthogonals", "--definitely-not-a-flag"})
 
 	code, _, stderr := run(t)
 	if code != 2 || !strings.Contains(stderr, "Usage:") {

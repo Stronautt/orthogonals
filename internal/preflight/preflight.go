@@ -492,9 +492,6 @@ func checkSecureBoot(r *hw.Result, f Facts) Check {
 	plan, key := PlanSigning(r.Platform.SecureBoot, f.Signing)
 	switch plan {
 	case SigningReady:
-		if !f.Signing.Checked {
-			return Check{name, Pass, "Secure Boot signing not checked (no mokutil, or --root)", ""}
-		}
 		return Check{name, Pass,
 			"Secure Boot is enabled and the key dkms signs with is enrolled: kvmfr will load", ""}
 	case SigningReuseAkmods:

@@ -1,0 +1,18 @@
+-      "message": "IOMMU active, host address width 39 bits",
++      "message": "IOMMU active, host address width 48 bits",
+-      "message": "host IOMMU address width is 39 bits: 64-bit GPU BARs can map above the DMA limit and stall the guest",
++      "message": "host IOMMU address width 48 bits",
+-      "remedy": "no action needed — VM definition applies the maxphysaddr + OVMF PciMmio64 fix automatically",
+-      "status": "warn"
+-    },
+-    {
+-      "message": "Secure Boot is enabled and the key dkms signs with is enrolled: kvmfr will load",
++      "status": "pass"
++    },
++    {
++      "message": "no Secure Boot signing concern",
+-      "message": "libvirt default NAT network is inactive",
++      "message": "libvirt default network active",
+-      "remedy": "apply activates it and marks it autostart",
+-      "status": "warn"
++      "status": "pass"

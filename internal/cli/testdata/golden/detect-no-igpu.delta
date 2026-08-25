@@ -1,0 +1,42 @@
+-      "address": "0000:00:02.0",
+-      "vendor": "0x8086",
+-      "device": "0xa780",
+-      "class": "0x030000",
+-      "driver": "i915",
+-      "iommu_group": 0,
+-      "has_reset": true,
+-      "boot_vga": true,
+-      "drm_card": "card0",
+-      "connectors": [
+-        "DP-1"
+-      ]
+-    },
+-    {
+-      "boot_vga": false,
+-      "drm_card": "card1"
++      "boot_vga": true,
++      "drm_card": "card0",
++      "connectors": [
++        "DP-1"
++      ]
+-    "igpu": {
+-      "address": "0000:00:02.0",
+-      "vendor": "0x8086",
+-      "device": "0xa780",
+-      "class": "0x030000",
+-      "driver": "i915",
+-      "iommu_group": 0,
+-      "has_reset": true,
+-      "boot_vga": true,
+-      "drm_card": "card0",
+-      "connectors": [
+-        "DP-1"
+-      ]
+-    },
+-        "boot_vga": false,
+-        "drm_card": "card1",
++        "boot_vga": true,
++        "drm_card": "card0",
++        "connectors": [
++          "DP-1"
++        ],

@@ -64,9 +64,8 @@ execute:
     provision:
         how: virtual
         image: fedora-44
-        # Headroom for the hugepage test: its shortfall arm deliberately asks
-        # for more of the pool than exists, so the kernel pins everything it
-        # can find before giving up. What is left over has to carry the test.
+        # Above tmt's default: the tier-4 set compiles the kvmfr module from the
+        # submodule and loop-mounts ISOs, and the /vfio plan reuses this guest.
         memory: 6144
         disk: 20
     # Anchored, because the /vfio plan needs the same guest set up the same

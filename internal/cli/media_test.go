@@ -14,6 +14,7 @@ import (
 	"github.com/stronautt/orthogonals/internal/domain"
 	"github.com/stronautt/orthogonals/internal/media"
 	"github.com/stronautt/orthogonals/internal/media/mediatest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 )
 
 func TestMediaRequiresISO(t *testing.T) {
@@ -58,11 +59,9 @@ func TestMediaDryRun(t *testing.T) {
 // here, not in mediatest, so that package stays free of a media import.
 func installFixture(t *testing.T, wimXML string) {
 	t.Helper()
-	old := media.MountISO
-	media.MountISO = func(string) (string, func(), error) {
+	testsupport.Swap(t, &media.MountISO, func(string) (string, func(), error) {
 		return mediatest.ISORoot(t, wimXML), func() {}, nil
-	}
-	t.Cleanup(func() { media.MountISO = old })
+	})
 }
 
 func writeGuestMeta(t *testing.T, root, vm string, s domain.Settings) {
@@ -121,9 +120,7 @@ func fakeDownloads(t *testing.T) []artifacts.Download {
 
 func TestMediaYesEndToEnd(t *testing.T) {
 	fakes := fakeDownloads(t)
-	prev := downloads
-	downloads = func() []artifacts.Download { return fakes }
-	t.Cleanup(func() { downloads = prev })
+	testsupport.Swap(t, &downloads, func() []artifacts.Download { return fakes })
 
 	installFixture(t, mediatest.WimXMLProUkrainian)
 	root := t.TempDir()

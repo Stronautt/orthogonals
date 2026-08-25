@@ -1,0 +1,20 @@
+-      "message": "Intel iGPU 0000:00:02.0 + NVIDIA dGPU 0000:01:00.0",
++      "message": "found 2 NVIDIA dGPUs; exactly one is supported",
+-      "status": "pass"
++      "remedy": "remove or disable the extra GPU",
++      "status": "fail"
+-      "message": "no duplicate NVIDIA vendor:device IDs",
++      "message": "NVIDIA GPUs 0000:01:00.0 and 0000:02:00.0 share vendor:device 10de:2206 — static vfio-pci.ids binding cannot tell them apart",
+-      "status": "pass"
+-    },
+-    {
+-      "message": "IOMMU group 1 contains only the GPU, its audio function, and bridges",
++      "remedy": "remove one of the identical GPUs",
++      "status": "fail"
++    },
++    {
++      "message": "skipped (needs exactly one NVIDIA dGPU in an IOMMU group)",
+-      "message": "dGPU exposes a sysfs reset file",
++      "message": "skipped (needs exactly one NVIDIA dGPU)",
+-  "status": "warn"
++  "status": "fail"

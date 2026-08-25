@@ -3,45 +3,33 @@ package orchestrate
 import (
 	"bytes"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stronautt/orthogonals/internal/hw/hwtest"
+	"github.com/stronautt/orthogonals/internal/testsupport"
 	"github.com/stronautt/orthogonals/internal/virt/virttest"
 )
 
 func fastPolling(t *testing.T) {
 	t.Helper()
-	saved := []any{installTimeout, installInterval, pingTries, pingInterval, shutdownTries, shutdownInterval, idleTries, idleInterval, cdPromptWindow, cdPromptInterval, provisionFailGrace}
-	installTimeout, installInterval = 200*time.Millisecond, time.Millisecond
-	provisionFailGrace = 10 * time.Millisecond
-	pingTries, pingInterval = 3, time.Millisecond
-	shutdownTries, shutdownInterval = 5, time.Millisecond
-	idleTries, idleInterval = 2, time.Millisecond
-	cdPromptWindow, cdPromptInterval = 20*time.Millisecond, time.Millisecond
-	t.Cleanup(func() {
-		installTimeout = saved[0].(time.Duration)
-		installInterval = saved[1].(time.Duration)
-		pingTries, pingInterval = saved[2].(int), saved[3].(time.Duration)
-		shutdownTries, shutdownInterval = saved[4].(int), saved[5].(time.Duration)
-		idleTries, idleInterval = saved[6].(int), saved[7].(time.Duration)
-		cdPromptWindow, cdPromptInterval = saved[8].(time.Duration), saved[9].(time.Duration)
-		provisionFailGrace = saved[10].(time.Duration)
-	})
+	testsupport.Swap(t, &installTimeout, 200*time.Millisecond)
+	testsupport.Swap(t, &installInterval, time.Millisecond)
+	testsupport.Swap(t, &provisionFailGrace, 10*time.Millisecond)
+	testsupport.Swap(t, &pingTries, 3)
+	testsupport.Swap(t, &pingInterval, time.Millisecond)
+	testsupport.Swap(t, &shutdownTries, 5)
+	testsupport.Swap(t, &shutdownInterval, time.Millisecond)
+	testsupport.Swap(t, &idleTries, 2)
+	testsupport.Swap(t, &idleInterval, time.Millisecond)
+	testsupport.Swap(t, &cdPromptWindow, 20*time.Millisecond)
+	testsupport.Swap(t, &cdPromptInterval, time.Millisecond)
 }
 
 func fakeBin(t *testing.T, name, extra string) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	log := filepath.Join(dir, name+".log")
-	script := "#!/bin/sh\necho \"$*\" >> \"" + log + "\"\n" + extra + "\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return log
+	return hwtest.FakeTool(t, hwtest.FakePath(t), name, extra)
 }
 
 // writingDisk is a physical allocation past setupWritingBytes.
@@ -117,9 +105,7 @@ func TestInstallRestartsPoweredOffVM(t *testing.T) {
 
 func TestInstallHeartbeat(t *testing.T) {
 	fastPolling(t)
-	saved := heartbeatInterval
-	heartbeatInterval = time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = saved })
+	testsupport.Swap(t, &heartbeatInterval, time.Millisecond)
 	f := &virttest.Fake{State: "running", Phys: 8724152320}
 	var out bytes.Buffer
 	err := Install(f, "win11", &out)
@@ -163,9 +149,7 @@ func TestInstallLeavesWritingVMRunning(t *testing.T) {
 
 func TestInstallStopsKeysOnceSetupWrites(t *testing.T) {
 	fastPolling(t)
-	saved := cdPromptInterval
-	cdPromptInterval = time.Millisecond
-	t.Cleanup(func() { cdPromptInterval = saved })
+	testsupport.Swap(t, &cdPromptInterval, time.Millisecond)
 	f := &virttest.Fake{State: "running", Phys: writingDisk, Agent: virttest.Responder("", "", 1)}
 	var out bytes.Buffer
 	_ = Install(f, "win11", &out)

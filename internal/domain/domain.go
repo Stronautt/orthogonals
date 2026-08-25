@@ -4,13 +4,13 @@ package domain
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,8 +26,8 @@ var templateFS embed.FS
 
 const (
 	MinRAMGiB = 8
-	// DefaultRAMNum/DefaultRAMDen size guest RAM as a fraction of host RAM,
-	// leaving the rest free so the hook's 2M hugepage pool reserves cleanly.
+	// DefaultRAMNum/DefaultRAMDen size guest RAM as a fraction of host RAM. The
+	// rest stays free for the host desktop and for the overhead of QEMU.
 	DefaultRAMNum = 5
 	DefaultRAMDen = 8
 	// MinHostRAMGiB is the smallest host DefaultGuestRAMGiB clears MinRAMGiB on.
@@ -429,33 +429,6 @@ func render(p Profile) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ReadMemoryMiB returns the guest RAM in MiB from the VM's registry XML under
-// root. The template always renders unit='MiB'; any other unit is refused so a
-// caller sizing the hugepage pool cannot mis-scale it.
-func ReadMemoryMiB(root, name string) (uint64, error) {
-	b, err := os.ReadFile(filepath.Join(root, xmlPath(name)))
-	if err != nil {
-		return 0, err
-	}
-	var doc struct {
-		Memory struct {
-			Unit  string `xml:"unit,attr"`
-			Value string `xml:",chardata"`
-		} `xml:"memory"`
-	}
-	if err := xml.Unmarshal(b, &doc); err != nil {
-		return 0, fmt.Errorf("parse domain memory: %w", err)
-	}
-	if doc.Memory.Unit != "MiB" {
-		return 0, fmt.Errorf("domain memory unit %q is not MiB", doc.Memory.Unit)
-	}
-	n, err := strconv.ParseUint(strings.TrimSpace(doc.Memory.Value), 10, 64)
-	if err != nil || n == 0 {
-		return 0, fmt.Errorf("bad domain memory %q", doc.Memory.Value)
-	}
-	return n, nil
-}
-
 // KVMFRSizeMiB returns the buffer a VM's registry XML asks kvmfr for, and
 // whether that VM uses the kvmfr backend at all. Root-only — the registry copy
 // is 0600 because it carries the guest password; an unprivileged caller takes
@@ -479,21 +452,23 @@ func KVMFRSizeXML(b []byte) (uint64, bool) {
 		return 0, false
 	}
 	for _, arg := range doc.Args {
-		if !strings.Contains(arg.Value, `"mem-path":"`+steps.KVMFRDevice+`"`) {
+		// The arg is the qemu -object JSON that the template renders. A JSON
+		// parse reads it, and a text match does not, so neither the field order
+		// nor the spacing can change the answer.
+		var backend struct {
+			MemPath string `json:"mem-path"`
+			Size    uint64 `json:"size"`
+		}
+		if err := json.Unmarshal([]byte(arg.Value), &backend); err != nil {
 			continue
 		}
-		m := backendSizeRe.FindStringSubmatch(arg.Value)
-		if m == nil {
-			return 0, false
-		}
-		size, err := strconv.ParseUint(m[1], 10, 64)
-		if err != nil {
-			return 0, false
+		if backend.MemPath != steps.KVMFRDevice {
+			continue
 		}
 		// Round up, or the module sizes below the backend; divide before adding,
 		// since size+BytesPerMiB-1 wraps within a MiB of MaxUint64.
-		n := size / utils.BytesPerMiB
-		if size%utils.BytesPerMiB != 0 {
+		n := backend.Size / utils.BytesPerMiB
+		if backend.Size%utils.BytesPerMiB != 0 {
 			n++
 		}
 		// static_size_mb is a C int in the module.
@@ -504,9 +479,6 @@ func KVMFRSizeXML(b []byte) (uint64, bool) {
 	}
 	return 0, false
 }
-
-// backendSizeRe pulls the byte count out of the rendered memory-backend-file.
-var backendSizeRe = regexp.MustCompile(`"size":(\d+)`)
 
 // ReadPinnedCPUs returns the sorted union of host CPUs the VM's XML pins to
 // guest threads (vcpu, emulator, iothread).

@@ -11,19 +11,14 @@
   </metadata>
   <memory unit='MiB'>{{.RAMMiB}}</memory>
   <currentMemory unit='MiB'>{{.RAMMiB}}</currentMemory>
-  <!-- 2M hugepages: the qemu hook reserves nr_hugepages before QEMU starts and
-       frees them at shutdown; the pool must exist or QEMU cannot map guest RAM. -->
-  <memoryBacking>
-    <hugepages>
-      <page size='2' unit='M'/>
-    </hugepages>
 {{- if .Shares}}
-    <!-- virtiofsd maps guest RAM out of process: without shared access libvirt
-         refuses the domain. memfd needs no shared hugetlbfs mount of its own. -->
+  <!-- virtiofsd maps guest RAM out of process. If the access is not shared,
+       libvirt refuses the domain. -->
+  <memoryBacking>
     <source type='memfd'/>
     <access mode='shared'/>
-{{- end}}
   </memoryBacking>
+{{- end}}
   <vcpu placement='static'>{{.VCPUs}}</vcpu>
   <iothreads>1</iothreads>
   <cputune>

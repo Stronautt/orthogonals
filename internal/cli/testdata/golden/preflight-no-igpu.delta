@@ -1,0 +1,18 @@
+-      "message": "Intel iGPU 0000:00:02.0 + NVIDIA dGPU 0000:01:00.0",
++      "message": "single-GPU host: the only GPU cannot both drive the desktop and be passed through",
+-      "status": "pass"
+-    },
+-    {
+-      "message": "all connected displays are on the iGPU (DP-1)",
++      "remedy": "an iGPU is required for the desktop, plus an NVIDIA dGPU for the guest",
++      "status": "fail"
++    },
++    {
++      "message": "skipped (no iGPU — see gpu-topology)",
+-      "message": "the firmware primary GPU (boot_vga) is the Intel iGPU",
++      "message": "the firmware primary GPU is the dGPU at 0000:01:00.0 — the desktop still runs on the iGPU, but GRUB and early boot output render on the dGPU's outputs, invisible once your monitors are on the motherboard",
+-      "status": "pass"
++      "remedy": "optional: set the BIOS primary display to the CPU/integrated graphics (ASUS: Advanced \u003e System Agent \u003e Graphics Configuration \u003e \"Primary Display: CPU Graphics\") so the boot menu stays visible — this matters if you ever need the GRUB recovery steps",
++      "status": "warn"
+-  "status": "warn"
++  "status": "fail"

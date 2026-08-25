@@ -1,0 +1,58 @@
+-      "address": "0000:00:02.0",
+-      "vendor": "0x8086",
+-      "device": "0xa780",
+-      "class": "0x030000",
+-      "driver": "i915",
+-      "iommu_group": 0,
+-      "has_reset": true,
+-      "boot_vga": true,
+-      "drm_card": "card0",
+-      "connectors": [
+-        "DP-1"
+-      ]
+-    },
+-    {
++    },
++    {
++      "address": "0000:05:00.0",
++      "vendor": "0x1002",
++      "device": "0x1638",
++      "class": "0x030000",
++      "driver": "amdgpu",
++      "iommu_group": 0,
++      "has_reset": true,
++      "boot_vga": true,
++      "drm_card": "card0",
++      "connectors": [
++        "eDP-1"
++      ]
+-      "address": "0000:00:02.0",
+-      "vendor": "0x8086",
+-      "device": "0xa780",
+-      "class": "0x030000",
+-      "driver": "i915",
+-      "iommu_group": 0,
+-      "has_reset": true,
+-      "boot_vga": true,
+-      "drm_card": "card0",
+-      "connectors": [
+-        "DP-1"
++      "address": "0000:05:00.0",
++      "vendor": "0x1002",
++      "device": "0x1638",
++      "class": "0x030000",
++      "driver": "amdgpu",
++      "iommu_group": 0,
++      "has_reset": true,
++      "boot_vga": true,
++      "drm_card": "card0",
++      "connectors": [
++        "eDP-1"
+-    "vendor": "intel",
++    "vendor": "amd",
+-    "iommu_address_width": 39,
+-    "iommu_table": "DMAR",
++    "iommu_address_width": 48,
++    "iommu_table": "IVRS",
+-    "chassis_type": 3,
++    "chassis_type": 10,
